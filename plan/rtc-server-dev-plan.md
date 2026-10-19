@@ -3,7 +3,7 @@
 > 配套文档：[项目计划](./project-plan.md) · [信令协议](./talk-protocol.md) · [环境/账号/进度速查](./env-access.md) · [RK3576 libwebrtc 编译计划](./rk3576-libwebrtc-build-plan.md)
 > 本文只覆盖**服务端（talk-server + mediasoup + coturn）**的开发、部署与联调；客户端核心库 talk-core 见项目计划。
 >
-> **进度速览（2026-10-19）**：S0 ✅ · S1 ✅ · S2 ✅（代码已推 GitHub，测试机仍是 S1）· **下一步 S3 P2P 与模式切换**。机器账号、公钥、口令见本地 [env-access.md](./env-access.md)（该文件含口令，后续推送不要带上它的改动）。
+> **进度速览（2026-10-19）**：S0 ✅ · S1 ✅ · S2 ✅（已发布测试机 `7426bc9`）· **下一步 S3 P2P 与模式切换**。机器账号、公钥、口令见本地 [env-access.md](./env-access.md)（该文件含口令，推送时不要带上它的改动）。
 
 ## 1. 两台机器现状（2026-10-18 实测）
 
@@ -305,5 +305,5 @@ npm run bot -- --url http://47.117.159.193:8080 --room s2 --count 4 --duration 3
 | 客户端 | bot 用 `werift`（纯 TypeScript，标准 SDP），不依赖 `@roamhq/wrtc` 的原生编译 |
 | 测试 | 新增 1 个集成用例：两个 werift 端互通 Opus。连同原有用例共 39 个通过 |
 | 本地验收 | 开发容器里 4 个 bot：2 秒内每端收到约 280–590 个 RTP 包 |
-| 仓库 | S2 已推到 GitHub `main`。`plan/env-access.md` 含测试机口令，按要求不推送这次对它的修改，本地文件仍写着 S2 进度 |
-| 测试机 | 仍是 S1 `abea707`。S2 包已在本地打好，尚未发布，所以公网还没有音频 |
+| 公网验收 | `7426bc9` 已发布。4 个 bot 连测试机房间 `s2-accept`：入房 110–225ms，3 秒内每端收到 425–888 个 RTP 包，离开后会话/房间计数归零，日志无告警 |
+| 仓库 | S2 在 GitHub `main`。`plan/env-access.md` 含测试机口令，不推送该文件的本地修改 |
