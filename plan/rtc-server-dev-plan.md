@@ -148,13 +148,15 @@ rtc-talk/                   # github.com/feng9201/rtc-talk
 │   └── web-debug/          # 网页调试页（可选）
 ├── client/                 # talk-core（C++，后续），talk-cli（Windows）
 ├── deploy/
-│   ├── docker/             # 开发容器、compose
+│   ├── docker/             # 开发容器（Dockerfile.dev、compose.yaml、dev.sh）
 │   ├── systemd/            # talk-server.service
 │   ├── coturn/             # turnserver.conf 模板
 │   ├── setup-test-server.sh
-│   └── deploy.sh
-├── docs/                   # 现有的 project-plan、talk-protocol 等迁移进来
-└── .github/workflows/      # CI
+│   ├── package.sh          # 打部署包（容器内执行）
+│   └── deploy.sh           # 发布 / 回滚 / 状态（开发机宿主执行）
+├── scripts/                # fetch-mediasoup-worker.mjs 等
+├── plan/                   # project-plan、talk-protocol、本文
+└── .github/workflows/      # CI（待建）
 ```
 
 ### 4.5 日常开发循环
@@ -221,8 +223,44 @@ Cursor 改代码 → 容器里 tsx watch 热重载 → bot / talk-cli 在局域�
 
 | # | 事项 | 用途 | 方式 |
 |---|---|---|---|
-| 1 | **GitHub 推送权限** | 推送代码、CI | 把开发机 wdz 的公钥（`~/.ssh/id_rsa.pub`）加到仓库 Settings → Deploy keys，勾选 Allow write access |
-| 2 | 关闭测试机 SSH 密码登录前，提供你本机的 SSH 公钥 | 防止关闭后你自己登不上 | 发给我即可 |
-| 3 | 3~4 名测试同事和设备（Windows 电脑 + 耳机 + 4G 热点） | S2 之后的真人联调 | 到时候约时间 |
-| 4 | RK3576 板子（SSH 地址、账号）及音频 codec 型号、是否带硬件回采 | RK 上板验证、回声消除方案 | P3 之前提供 |
-| 5 | Windows 开发机及 `webrtc_sdk_hevc` 的访问方式 | 编译 `talk-cli` | S2 之前提供 |
+| 1 | 关闭测试机 SSH 密码登录前，提供你本机的 SSH 公钥 | 防止关闭后你自己登不上 | 发给我后执行 `setup-test-server.sh --harden-ssh` |
+| 2 | 3~4 名测试同事和设备（Windows 电脑 + 耳机 + 4G 热点） | S2 之后的真人联调 | 到时候约时间 |
+| 3 | RK3576 板子（SSH 地址、账号）及音频 codec 型号、是否带硬件回采 | RK 上板验证、回声消除方案 | P3 之前提供 |
+| 4 | Windows 开发机及 `webrtc_sdk_hevc` 的访问方式 | 编译 `talk-cli` | S2 之前提供 |
+
+GitHub 推送权限已就绪（deploy key），提交身份为 `hxfeng <hxfengv@163.com>`。
+
+## 7. 执行记录
+
+### 7.1 S0 环境（2026-10-19 完成）
+
+常用命令：
+
+```bash
+deploy/docker/dev.sh up                       # 起 wdz-talk-dev、wdz-coturn（镜像不存在时先构建）
+deploy/docker/dev.sh shell                    # 进开发容器
+deploy/docker/dev.sh exec npm test            # 容器内执行命令
+deploy/deploy.sh                              # 打包并发布到测试机（失败自动回滚）
+deploy/deploy.sh --status | --rollback
+```
+
+| 项 | 实际情况 |
+|---|---|
+| Docker 权限 | wdz 已在 docker 组；Cursor 远程服务端没重启时当前 shell 还没有该组，`dev.sh` 会自动经 `sg docker` 执行 |
+| compose / buildx | 系统没有 compose 插件、buildx 太旧（compose 构建要求 ≥ 0.17）；装 compose v5.6.0、buildx v0.38.0 到 `~/.docker/cli-plugins/`，只对 wdz 生效 |
+| seccomp 兼容 | 开发机 Docker 守护进程 20.10.9 的默认 seccomp 不认识 `clone3`，Ubuntu 24.04 镜像里 apt、coturn 创建线程都会失败（20.10.10 修复）。不升级共用的 Docker：构建用 buildx docker-container 驱动（构建器 `wdz-builder`，构建完自动停止），运行的两个容器设 `seccomp=unconfined` |
+| 开发镜像 | `rtc-talk-dev:node22`：Ubuntu 24.04.5、glibc 2.39、Node 22.23.3（npmmirror 下载并校验 sha256）、apt 用阿里云镜像；容器内用户 uid 1000 与 wdz 一致 |
+| 依赖版本 | mediasoup 3.30.1、TypeScript 6、zod 4、pino 10、vitest 5、ESLint 10；`@types/node` 固定 22 以匹配运行时 |
+| mediasoup worker | `scripts/fetch-mediasoup-worker.mjs` 作为根 `postinstall` 下载官方 kernel6 包并按 GitHub release 的 sha256 校验，放 `.cache/mediasoup-worker/`；容器里设了 `MEDIASOUP_WORKER_BIN`，mediasoup 不再自行下载 / 编译。服务启动时检查 worker 与 mediasoup 版本一致 |
+| 本地 coturn | `wdz-coturn`（coturn 4.6.3）监听 `172.16.21.21:13478`，中继端口 49300-49340，开发密钥 |
+| 测试机初始化 | `setup-test-server.sh` 已执行：2GB swap、`vm.swappiness=10`（阿里云 `/etc/sysctl.conf` 默认写 0，配置文件命名为 `zz-talk.conf` 并显式加载）、UDP 缓冲 8MB、Node 22.23.3 装到 `/opt/node`、coturn 4.6.1、`talk-server.service`；`talk` 只对 talk-server 的启停免密 sudo，并加入 `systemd-journal` 组看日志。TURN 密钥随机生成，存 `/etc/talk/talk-server.env`（root:talk 640） |
+| TURN 验证 | 从开发机：STUN 返回公司出口 `221.224.63.26`（srflx 可用）；UDP / TCP TURN 分配成功，中继地址 `47.117.159.193:491xx`（external-ip 映射正确），0 丢包；错误密码被拒。Windows 浏览器 Trickle ICE 可再人工确认一次 |
+| 部署包 | 7.9MB（解压 40MB）：`server/dist` + 生产依赖 + `bin/mediasoup-worker`，删掉了 mediasoup 自带的 C++ 源码 |
+| 发布与回滚 | `/opt/talk/releases/<时间>-<git 短哈希>` + `current` / `previous` 软链，保留最近 5 个版本；已验证正常发布、手动回滚、坏包健康检查失败自动回滚。`http://47.117.159.193:8080/healthz` 公网可访问 |
+| 资源 | 测试机 talk-server（含 1 个 worker）启动后 cgroup 内存约 40MB |
+
+遗留：
+- 开发机 shell 环境里有失效代理 `127.0.0.1:7897`，访问外网前要 unset（`deploy.sh` 的公网检查已用 `--noproxy`）。
+- 系统 git 2.25 太旧（不支持 `git init -b`、`--trailer`），提交时借用 `/home/wdz/projects/hxf/webrtc_m146/tools/git/bin` 的 git 2.56。
+- `package-lock.json` 的下载地址是 npmmirror，GitHub Actions 上也能用，只是慢一些；CI 尚未搭建。
+- SSH 加固（关闭密码登录）等你的公钥。

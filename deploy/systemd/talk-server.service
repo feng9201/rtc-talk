@@ -1,0 +1,26 @@
+[Unit]
+Description=rtc-talk signaling server (talk-server + mediasoup)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=talk
+Group=talk
+EnvironmentFile=/etc/talk/talk-server.env
+EnvironmentFile=-/opt/talk/current/release.env
+Environment=NODE_ENV=production
+Environment=MEDIASOUP_WORKER_BIN=/opt/talk/current/bin/mediasoup-worker
+WorkingDirectory=/opt/talk/current/server
+ExecStart=/opt/node/bin/node dist/index.js
+Restart=always
+RestartSec=2
+TimeoutStopSec=10
+MemoryMax=600M
+LimitNOFILE=65535
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target
