@@ -1,14 +1,13 @@
 import * as mediasoup from 'mediasoup';
+import { createApp } from './app.js';
 import { loadConfig } from './config.js';
-import { createHttpServer, listen } from './http/server.js';
 import { createLogger } from './logger.js';
 import { WorkerPool } from './media/worker-pool.js';
-
-const startedAt = Date.now();
 
 async function main(): Promise<void> {
   const config = loadConfig();
   const logger = createLogger({ level: config.logLevel, pretty: config.env === 'dev' && process.stdout.isTTY });
+  if (config.auth.jwtSecretGenerated) logger.warn('TALK_JWT_SECRET 未设置，使用随机密钥，重启后 token 失效');
 
   const pool = await WorkerPool.create({
     numWorkers: config.mediasoup.numWorkers,
@@ -18,20 +17,15 @@ async function main(): Promise<void> {
     onWorkerDied: () => setTimeout(() => process.exit(1), 1000),
   });
 
-  const server = createHttpServer({
+  const app = createApp({
+    config,
     logger,
     health: () => {
       const workers = pool.status();
-      return {
-        ok: workers.every((w) => !w.closed),
-        env: config.env,
-        rev: config.buildRev,
-        uptime: Math.round((Date.now() - startedAt) / 1000),
-        mediasoup: { version: mediasoup.version, workers },
-      };
+      return { ok: workers.every((w) => !w.closed), mediasoup: { version: mediasoup.version, workers } };
     },
   });
-  await listen(server, config.http.host, config.http.port);
+  await app.listen();
   logger.info(
     { host: config.http.host, port: config.http.port, env: config.env, rev: config.buildRev },
     'talk-server listening',
@@ -42,7 +36,7 @@ async function main(): Promise<void> {
     if (stopping) return;
     stopping = true;
     logger.info({ signal }, 'shutting down');
-    server.close();
+    app.close();
     pool.close();
     setTimeout(() => process.exit(0), 500).unref();
   };

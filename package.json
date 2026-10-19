@@ -6,14 +6,16 @@
     "node": ">=22"
   },
   "workspaces": [
-    "server"
+    "server",
+    "tools/bot"
   ],
   "scripts": {
     "postinstall": "node scripts/fetch-mediasoup-worker.mjs",
     "build": "npm run build -w server",
     "dev": "npm run dev -w server",
     "test": "npm test -w server",
-    "typecheck": "npm run typecheck -w server",
+    "typecheck": "npm run typecheck -w server && npm run typecheck -w tools/bot",
+    "bot": "npm start -s -w tools/bot --",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check ."

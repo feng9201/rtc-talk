@@ -117,6 +117,8 @@ wss://<host>:<port>/talk/v1/ws?token=<JWT>
   "resumed": false,                                        // true 表示恢复了原会话（房间状态保留）
   "server_time": 1760000000000,
   "heartbeat_interval": 15,
+  "resume_ttl": 60,                                        // 断线后会话保留秒数
+  "room": { /* 仅 resumed=true 且仍在房间时出现，结构同 room.join 应答 */ },
   "ice_servers": [
     { "urls": ["stun:turn.example.com:3478"] },
     { "urls": ["turn:turn.example.com:3478?transport=udp",
@@ -128,6 +130,9 @@ wss://<host>:<port>/talk/v1/ws?token=<JWT>
 ```
 
 - TURN 凭证采用 coturn `use-auth-secret`（REST 临时凭证），过期前客户端调 `session.refreshIce` 刷新。
+- 连接上未完成 `session.hello` 时调用其他方法返回 `409`；同一连接重复 hello 也返回 `409`。
+- 恢复条件：`resume.session_id` 仍在保留期内且属于同一 uid；否则按新会话处理（`resumed=false`，客户端需重新入房）。断线期间的通知不补发，以应答里的 `room` 快照为准。
+- 同一 uid 只保留一个会话：不带 resume（或 resume 失败）的新登录会让旧会话失效，旧连接收到 `session.kicked{reason:"replaced"}` 后被以 4001 关闭，房间内其他成员收到 `room.peerLeft{reason:"replaced"}`。
 
 ### 4.2 其他
 
@@ -170,6 +175,10 @@ wss://<host>:<port>/talk/v1/ws?token=<JWT>
 
 房间由客户端即时创建：`room_id` 不存在时，服务端按 `policy` 创建房间，第一个入房者的 `role` 为 `host`；房间已存在时忽略 `policy`。最后一名成员离开（含 `resume_ttl` 超时清理）后房间销毁。
 
+- host 离开后按入房顺序把 host 移交给下一名成员，并广播 `room.peerUpdated{uid, role:"host"}`。
+- 错误：`room_id` 不合法（`[A-Za-z0-9_.-]{1,64}`）或 policy 字段无效 `400`；token 带 `rooms` 声明且不包含该房间 `403`；已在某个房间（一个会话同时只能在一个房间）`409`；人数达到 `max_peers` `429`；`video.enabled`/`video.send` 为 true `501`（二期）。
+- `max_peers` 不超过服务端上限（`TALK_MAX_PEERS`，默认 20）。
+
 应答：
 
 ```jsonc
@@ -195,8 +204,8 @@ wss://<host>:<port>/talk/v1/ws?token=<JWT>
 |---|---|---|---|
 | `room.leave` | C→S req | `{room_id}` | 离开房间 |
 | `room.peerJoined` | S→C ntf | peer 对象 | 新成员 |
-| `room.peerLeft` | S→C ntf | `{uid, reason}` | 成员离开（`leave/timeout/kicked`） |
-| `room.peerUpdated` | S→C ntf | `{uid, audio?, video?, role?}` | 成员状态变化（静音、角色） |
+| `room.peerLeft` | S→C ntf | `{uid, reason}` | 成员离开（`leave/timeout/kicked/replaced`） |
+| `room.peerUpdated` | S→C ntf | `{uid, audio?, video?, role?}` | 成员状态变化（静音、角色）；静音变化不发给本人，角色变化包括本人 |
 | `room.policyChanged` | S→C ntf | policy | 策略变更（主持人切换 talk_mode 等） |
 | `room.mediaMode` | S→C req | `{mode, reason}` | 要求切换媒体模式，见 7.4；客户端完成后回 res |
 | `room.activeSpeaker` | S→C ntf | `{uid}` | 当前主讲人（mediasoup ActiveSpeakerObserver） |

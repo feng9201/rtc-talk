@@ -18,5 +18,9 @@ export default tseslint.config(
     files: ['**/*.mjs', '**/*.js'],
     rules: { '@typescript-eslint/consistent-type-imports': 'off' },
   },
+  {
+    files: ['**/test/**/*.ts'],
+    rules: { '@typescript-eslint/no-explicit-any': 'off' },
+  },
   prettier,
 );

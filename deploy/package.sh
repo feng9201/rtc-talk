@@ -18,9 +18,11 @@ npm test -s
 npm run -s build
 
 echo "==> 生产依赖"
-rm -rf "$STAGE" && mkdir -p "$STAGE/server" "$STAGE/scripts"
+rm -rf "$STAGE" && mkdir -p "$STAGE/server" "$STAGE/tools/bot" "$STAGE/scripts"
 cp package.json package-lock.json "$STAGE/"
 cp server/package.json "$STAGE/server/"
+# npm ci 要求所有 workspace 都在，bot 只带 package.json（依赖 ws 与 server 共用）
+cp tools/bot/package.json "$STAGE/tools/bot/"
 cp scripts/fetch-mediasoup-worker.mjs "$STAGE/scripts/"
 # 预先放入已校验的 worker，postinstall 发现版本一致就不再下载
 mkdir -p "$STAGE/.cache" && cp -a .cache/mediasoup-worker "$STAGE/.cache/"

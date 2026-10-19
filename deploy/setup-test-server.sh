@@ -85,13 +85,15 @@ id "$SERVICE_USER" >/dev/null
 install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 755 /opt/talk /opt/talk/releases
 install -d -o root -g "$SERVICE_USER" -m 750 /etc/talk
 
-if [[ -f "$ENV_FILE" ]] && grep -q '^TALK_TURN_SECRET=' "$ENV_FILE"; then
-  TURN_SECRET="$(sed -n 's/^TALK_TURN_SECRET=//p' "$ENV_FILE")"
-else
-  TURN_SECRET="$(openssl rand -hex 32)"
-fi
+# 密钥只在首次生成，之后沿用
+existing() { [[ -f "$ENV_FILE" ]] && sed -n "s/^$1=//p" "$ENV_FILE" || true; }
+TURN_SECRET="$(existing TALK_TURN_SECRET)"
+[[ -n "$TURN_SECRET" ]] || TURN_SECRET="$(openssl rand -hex 32)"
+JWT_SECRET="$(existing TALK_JWT_SECRET)"
+[[ -n "$JWT_SECRET" ]] || JWT_SECRET="$(openssl rand -hex 32)"
 cat >"$ENV_FILE" <<EOF
 # 由 setup-test-server.sh 生成
+# 测试期 TALK_ENV=dev：启用 /dev/token 开发 token
 TALK_ENV=dev
 TALK_LOG_LEVEL=info
 TALK_HTTP_HOST=0.0.0.0
@@ -102,6 +104,7 @@ TALK_RTC_ANNOUNCED_ADDRESS=$PUBLIC_IP
 TALK_RTC_PORT=44444
 TALK_TURN_URLS=turn:$PUBLIC_IP:3478?transport=udp,turn:$PUBLIC_IP:3478?transport=tcp
 TALK_TURN_SECRET=$TURN_SECRET
+TALK_JWT_SECRET=$JWT_SECRET
 EOF
 chown root:"$SERVICE_USER" "$ENV_FILE"
 chmod 640 "$ENV_FILE"

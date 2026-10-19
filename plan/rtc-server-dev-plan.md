@@ -196,7 +196,7 @@ Cursor 改代码 → 容器里 tsx watch 热重载 → bot / talk-cli 在局域�
 | 阿里云 NAT 导致 ICE 候选错误 | mediasoup 的 `announcedAddress` 和 coturn 的 `external-ip` 都显式配置公网 IP；S0 用 Trickle ICE 验证 |
 | 开发机多人共用，端口冲突、磁盘紧张 | 端口全部可配置；容器和构建产物定期清理；仓库放在 `/home/wdz/projects` 下 |
 | `@roamhq/wrtc` 装不上或不稳定 | 换成 `werift`；最差情况用 talk-cli 做主力测试 |
-| 测试机 root 密码已经在聊天中明文出现 | 初始化完成后改成密钥登录，并修改 root 密码 |
+| 测试机开放 SSH 密码登录（含 root） | root 密码已改；测试机无重要数据，按决定暂不加固，需要时执行 `setup-test-server.sh --harden-ssh` |
 | 公网带宽不足（视频阶段） | 高峰约 5Mbps，只够 4 人低分辨率视频；视频阶段降分辨率或升配带宽 |
 
 ## 6. 需要你提供或确认
@@ -223,12 +223,20 @@ Cursor 改代码 → 容器里 tsx watch 热重载 → bot / talk-cli 在局域�
 
 | # | 事项 | 用途 | 方式 |
 |---|---|---|---|
-| 1 | 关闭测试机 SSH 密码登录前，提供你本机的 SSH 公钥 | 防止关闭后你自己登不上 | 发给我后执行 `setup-test-server.sh --harden-ssh` |
-| 2 | 3~4 名测试同事和设备（Windows 电脑 + 耳机 + 4G 热点） | S2 之后的真人联调 | 到时候约时间 |
-| 3 | RK3576 板子（SSH 地址、账号）及音频 codec 型号、是否带硬件回采 | RK 上板验证、回声消除方案 | P3 之前提供 |
-| 4 | Windows 开发机及 `webrtc_sdk_hevc` 的访问方式 | 编译 `talk-cli` | S2 之前提供 |
+| 1 | 3~4 名测试同事和设备（Windows 电脑 + 耳机 + 4G 热点） | S2 之后的真人联调 | 到时候约时间 |
+| 2 | RK3576 板子（SSH 地址、账号）及音频 codec 型号、是否带硬件回采 | RK 上板验证、回声消除方案 | P3 之前提供 |
+| 3 | Windows 开发机及 `webrtc_sdk_hevc` 的访问方式 | 编译 `talk-cli` | S2 之前提供 |
 
 GitHub 推送权限已就绪（deploy key），提交身份为 `hxfeng <hxfengv@163.com>`。
+
+### 6.3 S0 后的确认（2026-10-19）
+
+| 事项 | 结论 |
+|---|---|
+| Node 版本 | 继续用 Node 22 |
+| 开发机 Docker | 不升级，开发容器保持 `seccomp=unconfined` |
+| 测试机 SSH | 保持密码登录，不做加固（`--harden-ssh` 保留备用） |
+| Trickle ICE | 不再人工验证，以 7.1 的命令行验证为准 |
 
 ## 7. 执行记录
 
@@ -263,4 +271,4 @@ deploy/deploy.sh --status | --rollback
 - 开发机 shell 环境里有失效代理 `127.0.0.1:7897`，访问外网前要 unset（`deploy.sh` 的公网检查已用 `--noproxy`）。
 - 系统 git 2.25 太旧（不支持 `git init -b`、`--trailer`），提交时借用 `/home/wdz/projects/hxf/webrtc_m146/tools/git/bin` 的 git 2.56。
 - `package-lock.json` 的下载地址是 npmmirror，GitHub Actions 上也能用，只是慢一些；CI 尚未搭建。
-- SSH 加固（关闭密码登录）等你的公钥。
+- 测试机按决定保持 SSH 密码登录（含 root），未装 fail2ban。
