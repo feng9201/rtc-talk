@@ -3,7 +3,7 @@
 > 配套文档：[项目计划](./project-plan.md) · [信令协议](./talk-protocol.md) · [环境/账号/进度速查](./env-access.md) · [RK3576 libwebrtc 编译计划](./rk3576-libwebrtc-build-plan.md)
 > 本文只覆盖**服务端（talk-server + mediasoup + coturn）**的开发、部署与联调；客户端核心库 talk-core 见项目计划。
 >
-> **进度速览（2026-10-19）**：S0 ✅ · S1 ✅ · **下一步 S2 SFU 语音 MVP**。机器账号、公钥、GitHub、口令见 [env-access.md](./env-access.md)。
+> **进度速览（2026-10-19）**：S0 ✅ · S1 ✅ · S2 ✅（代码已推 GitHub，测试机仍是 S1）· **下一步 S3 P2P 与模式切换**。机器账号、公钥、口令见本地 [env-access.md](./env-access.md)（该文件含口令，后续推送不要带上它的改动）。
 
 ## 1. 两台机器现状（2026-10-18 实测）
 
@@ -291,3 +291,19 @@ npm run bot -- --url http://47.117.159.193:8080 --room r1 --count 4 --duration 3
 | 测试 | 38 个用例：协议、配置、鉴权、房间状态单测，以及 8 个真实 WS 客户端集成用例（入房互见、静音、离开、host 移交、断线恢复、超时清理、顶号、rooms 权限） |
 | bot | `tools/bot`：独立实现的信令客户端（不引用服务端代码），校验入房互见、静音同步、断线恢复快照、离开通知，失败退出码 1 |
 | 公网验收 | `abea707` 已发布；4 个 bot 从开发机连测试机：入房 186–303ms（含取 token），ping RTT 约 21ms，恢复和全部校验通过，结束后服务端会话/房间计数归零，日志无告警 |
+
+### 7.3 S2 SFU 语音（2026-10-19 完成）
+
+```bash
+npm run bot -- --url http://47.117.159.193:8080 --room s2 --count 4 --duration 3 --audio
+```
+
+| 项 | 实际情况 |
+|---|---|
+| 媒体 | 每个房间一个 Router（Opus 48kHz 双声道），每个 worker 一个 WebRtcServer，UDP/TCP 同端口（`TALK_RTC_PORT` 起） |
+| SDP | 服务端自己做适配：`sfu.publish` 解析 send offer → `produce`，回 ICE-Lite answer（DTLS passive）；多人入房后 100ms 合并成一次 `sfu.offer`，answer 回来再 `consumer.resume()`。关麦只 `producer.pause()`，不重协商 |
+| 客户端 | bot 用 `werift`（纯 TypeScript，标准 SDP），不依赖 `@roamhq/wrtc` 的原生编译 |
+| 测试 | 新增 1 个集成用例：两个 werift 端互通 Opus。连同原有用例共 39 个通过 |
+| 本地验收 | 开发容器里 4 个 bot：2 秒内每端收到约 280–590 个 RTP 包 |
+| 仓库 | S2 已推到 GitHub `main`。`plan/env-access.md` 含测试机口令，按要求不推送这次对它的修改，本地文件仍写着 S2 进度 |
+| 测试机 | 仍是 S1 `abea707`。S2 包已在本地打好，尚未发布，所以公网还没有音频 |

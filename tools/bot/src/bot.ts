@@ -1,5 +1,6 @@
 #!/usr/bin/env -S npx tsx
 import { parseArgs } from 'node:util';
+import { AudioSender } from './audio.js';
 import { SignalClient } from './signal-client.js';
 
 const HELP = `用法: talk-bot --url http://HOST:PORT [选项]
@@ -10,6 +11,7 @@ const HELP = `用法: talk-bot --url http://HOST:PORT [选项]
   --duration   全员入房后停留秒数（默认 5），期间按心跳间隔 ping、轮流切换静音
   --prefix     uid 前缀（默认 bot）
   --resume     停留期间让第一个机器人断线后用 session_id 恢复，校验房间快照
+  --audio      开麦并发布 Opus，停留期间互发 RTP，校验收包数（此时不做静音轮换）
   -h, --help
 `;
 
@@ -26,6 +28,7 @@ interface Bot {
   /** 当前看到的其他成员 */
   others: Map<string, Peer>;
   events: string[];
+  audio?: AudioSender;
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -135,6 +138,7 @@ async function main(): Promise<number> {
       duration: { type: 'string', default: '5' },
       prefix: { type: 'string', default: 'bot' },
       resume: { type: 'boolean', default: false },
+      audio: { type: 'boolean', default: false },
       help: { type: 'boolean', short: 'h', default: false },
     },
   });
@@ -155,11 +159,43 @@ async function main(): Promise<number> {
   await sleep(300);
   errors.push(...checkVisibility(bots, 'after-join'));
 
-  const end = Date.now() + duration * 1000;
+  let resumed = !values.resume;
+  if (values.audio && values.resume) {
+    errors.push(...(await resumeBot(base, room, bots[0]!)));
+    errors.push(...checkVisibility(bots, 'after-resume'));
+    resumed = true;
+  }
+
+  if (values.audio) {
+    const loopback = new URL(base).hostname === '127.0.0.1' || new URL(base).hostname === 'localhost';
+    for (const b of bots) {
+      await b.client.request('media.setMute', { source: 'mic', muted: false });
+      b.audio = new AudioSender(b.client, loopback);
+      await b.audio.publish();
+    }
+    await Promise.race([
+      Promise.all(bots.map((b) => b.audio!.subscribed)),
+      sleep(8000).then(() => {
+        throw new Error('等待 sfu.offer 超时');
+      }),
+    ]);
+    for (const b of bots) b.audio!.start();
+    await sleep(Math.max(duration, 2) * 1000);
+    for (const b of bots) {
+      const expectFrom = bots.length - 1;
+      if (expectFrom > 0 && b.audio!.received < expectFrom * 10) {
+        errors.push(`[audio] ${b.uid} received ${b.audio!.received} rtp packets, expected from ${expectFrom} peers`);
+      } else if (expectFrom > 0) {
+        log(`${b.uid} received ${b.audio!.received} rtp packets`);
+      }
+      b.audio!.stop();
+    }
+  }
+
+  const end = Date.now() + (values.audio ? 0 : duration) * 1000;
   const interval = Math.max(1, Math.min(...bots.map((b) => b.heartbeat))) * 1000;
   const muted = new Map(bots.map((b) => [b.uid, true]));
   let round = 0;
-  let resumed = !values.resume;
   while (Date.now() < end) {
     const rtts = await Promise.all(
       bots.map(async (b) => {
@@ -187,10 +223,12 @@ async function main(): Promise<number> {
 
   await sleep(200);
   errors.push(...checkVisibility(bots, 'before-leave'));
-  for (const b of bots) {
-    for (const [uid, p] of b.others) {
-      if (p.audio?.muted !== muted.get(uid)) {
-        errors.push(`[mute] ${b.uid} sees ${uid} muted=${p.audio?.muted}, expected ${muted.get(uid)}`);
+  if (!values.audio) {
+    for (const b of bots) {
+      for (const [uid, p] of b.others) {
+        if (p.audio?.muted !== muted.get(uid)) {
+          errors.push(`[mute] ${b.uid} sees ${uid} muted=${p.audio?.muted}, expected ${muted.get(uid)}`);
+        }
       }
     }
   }

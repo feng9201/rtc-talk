@@ -6,12 +6,15 @@ import { TalkError } from './gateway/protocol.js';
 import { WsGateway } from './gateway/ws-gateway.js';
 import { createHttpServer, listen, type HealthInfo, type Route } from './http/server.js';
 import type { Logger } from './logger.js';
+import type { MediaNode } from './media/media-node.js';
 import { ROOM_ID_RE } from './room/room-manager.js';
 import { Signaling } from './signaling.js';
 
 export interface AppOptions {
   config: Config;
   logger: Logger;
+  /** 不传则只有信令，sfu.* 返回 501（单测用） */
+  media?: MediaNode;
   /** 额外的健康信息（如 mediasoup worker 状态），ok=false 时 /healthz 返回 503 */
   health?: () => HealthInfo;
 }
@@ -48,7 +51,9 @@ export function createApp(opts: AppOptions): App {
     heartbeatInterval: config.session.heartbeatInterval,
     resumeTtlMs: config.session.resumeTtlMs,
     maxPeersLimit: config.room.maxPeers,
+    ...(opts.media ? { media: opts.media } : {}),
   });
+  opts.media?.setAnswerHandler((uid, offer) => signaling.answerRecvOffer(uid, offer));
 
   const routes: Record<string, Route> = {};
   if (config.env === 'dev') routes['/dev/token'] = devTokenRoute(tokens, config.auth.devTokenTtl);

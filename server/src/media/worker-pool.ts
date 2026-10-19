@@ -63,6 +63,10 @@ export class WorkerPool {
     logger.info({ index, pid: worker.pid, version: mediasoup.version }, 'mediasoup worker started');
   }
 
+  list(): readonly ms.Worker[] {
+    return this.workers;
+  }
+
   /** 轮询分配 worker */
   pick(): ms.Worker {
     const worker = this.workers[this.next % this.workers.length];

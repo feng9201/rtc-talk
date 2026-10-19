@@ -25,6 +25,7 @@ export class SignalClient {
     { method: string; resolve: (d: unknown) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }
   >();
   private readonly listeners = new Set<NotifyListener>();
+  private onRequest?: (method: string, data: Record<string, unknown>) => Promise<unknown>;
   readonly closed: Promise<{ code: number; reason: string }>;
 
   private constructor(private readonly ws: WebSocket) {
@@ -50,6 +51,11 @@ export class SignalClient {
       ws.once('unexpected-response', (_req, res) => reject(new Error(`ws upgrade rejected: HTTP ${res.statusCode}`)));
       ws.once('error', reject);
     });
+  }
+
+  /** 应答服务端请求（如 sfu.offer）。未注册时回 501。 */
+  handleRequest(handler: (method: string, data: Record<string, unknown>) => Promise<unknown>): void {
+    this.onRequest = handler;
   }
 
   onNotify(listener: NotifyListener): () => void {
@@ -93,9 +99,28 @@ export class SignalClient {
       else p.reject(new RequestError(p.method, msg.error ?? { code: 500, reason: 'internal' }));
     } else if (msg.type === 'ntf' && msg.method) {
       for (const l of this.listeners) l(msg.method, (msg.data ?? {}) as Record<string, unknown>);
-    } else if (msg.type === 'req' && msg.id) {
-      this.ws.send(
-        JSON.stringify({ v: 1, type: 'res', id: msg.id, ok: false, error: { code: 501, reason: 'not_implemented' } }),
+    } else if (msg.type === 'req' && msg.id && msg.method) {
+      const id = msg.id;
+      const method = msg.method;
+      const handler = this.onRequest;
+      if (!handler) {
+        this.ws.send(
+          JSON.stringify({ v: 1, type: 'res', id, ok: false, error: { code: 501, reason: 'not_implemented' } }),
+        );
+        return;
+      }
+      void handler(method, (msg.data ?? {}) as Record<string, unknown>).then(
+        (data) => this.ws.send(JSON.stringify({ v: 1, type: 'res', id, ok: true, data: data ?? {} })),
+        (err: Error) =>
+          this.ws.send(
+            JSON.stringify({
+              v: 1,
+              type: 'res',
+              id,
+              ok: false,
+              error: { code: 500, reason: 'internal', msg: err.message },
+            }),
+          ),
       );
     }
   }
