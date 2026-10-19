@@ -272,3 +272,20 @@ deploy/deploy.sh --status | --rollback
 - 系统 git 2.25 太旧（不支持 `git init -b`、`--trailer`），提交时借用 `/home/wdz/projects/hxf/webrtc_m146/tools/git/bin` 的 git 2.56。
 - `package-lock.json` 的下载地址是 npmmirror，GitHub Actions 上也能用，只是慢一些；CI 尚未搭建。
 - 测试机按决定保持 SSH 密码登录（含 root），未装 fail2ban。
+
+### 7.2 S1 信令骨架（2026-10-19 完成）
+
+```bash
+npm run bot -- --url http://47.117.159.193:8080 --room r1 --count 4 --duration 30 --resume
+```
+
+| 项 | 实际情况 |
+|---|---|
+| 代码结构 | `gateway/`（协议封装、连接、WS 网关）、`auth/`（JWT、TURN 凭证）、`session/`、`room/`、`signaling.ts`（方法表与通知广播）、`app.ts`（组装 HTTP + WS，供 `index.ts` 和集成测试共用） |
+| 连接层 | 路径 `/talk/v1/ws`、子协议 `talk.v1.json`、握手时校验 token（`?token=` 或 Bearer），失败 401；令牌桶限流（默认 50 次/秒，超限 req 回 429）；45s 无消息断开（4408）；拒绝二进制帧；服务端 req 带超时 |
+| 会话 | hello/ping/refreshIce/bye；断线保留 60s，带 `session_id` 恢复时应答附房间快照；同 uid 新登录顶掉旧连接（`session.kicked` + 4001） |
+| 房间 | 即时创建、首人 host、host 按入房顺序移交、人数上限、token `rooms` 权限、一个会话只能在一个房间；`media.setMute` 只同步状态。`media_mode` 暂固定 `sfu`（S3 实现模式决策） |
+| 开发 token | `GET /dev/token?uid=&rooms=&ttl=`，只在 `TALK_ENV=dev` 时注册；测试机 `TALK_JWT_SECRET` 已由 `setup-test-server.sh` 生成并持久化，重启后 token 仍有效 |
+| 测试 | 38 个用例：协议、配置、鉴权、房间状态单测，以及 8 个真实 WS 客户端集成用例（入房互见、静音、离开、host 移交、断线恢复、超时清理、顶号、rooms 权限） |
+| bot | `tools/bot`：独立实现的信令客户端（不引用服务端代码），校验入房互见、静音同步、断线恢复快照、离开通知，失败退出码 1 |
+| 公网验收 | `abea707` 已发布；4 个 bot 从开发机连测试机：入房 186–303ms（含取 token），ping RTT 约 21ms，恢复和全部校验通过，结束后服务端会话/房间计数归零，日志无告警 |
