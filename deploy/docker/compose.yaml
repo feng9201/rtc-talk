@@ -1,0 +1,64 @@
+# 开发环境：deploy/docker/dev.sh up（镜像构建见 dev.sh build）
+# 开发机 Docker 多人共用，项目名、容器名统一带 TALK_DEV_PREFIX 前缀（默认 wdz）。
+# 本地覆盖项写在 deploy/docker/.env（参考 .env.example，不入库）。
+name: ${TALK_DEV_PREFIX:-wdz}-talk
+
+services:
+  talk-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    image: rtc-talk-dev:node22
+    pull_policy: never
+    container_name: ${TALK_DEV_PREFIX:-wdz}-talk-dev
+    # mediasoup / coturn 需要直接收发宿主网卡上的 UDP，不能走端口映射
+    network_mode: host
+    # 开发机 Docker 20.10.9 的默认 seccomp 与 Ubuntu 24.04 的 glibc 不兼容（clone3）
+    security_opt:
+      - seccomp=unconfined
+    init: true
+    user: '1000:1000'
+    working_dir: /workspace
+    command: ['sleep', 'infinity']
+    cpus: 4
+    mem_limit: 4g
+    volumes:
+      - ../..:/workspace
+      - npm-cache:/home/ubuntu/.npm
+    environment:
+      NPM_CONFIG_REGISTRY: ${NPM_REGISTRY:-https://registry.npmmirror.com}
+      MEDIASOUP_WORKER_BIN: /workspace/.cache/mediasoup-worker/mediasoup-worker
+      TALK_ENV: dev
+      TALK_HTTP_PORT: ${TALK_HTTP_PORT:-18080}
+      TALK_RTC_PORT: ${TALK_RTC_PORT:-44444}
+      TALK_RTC_ANNOUNCED_ADDRESS: ${TALK_LAN_IP:-172.16.21.21}
+      TALK_TURN_URLS: turn:${TALK_LAN_IP:-172.16.21.21}:${TALK_TURN_PORT:-13478}
+      TALK_TURN_SECRET: ${TALK_TURN_SECRET:-talk-dev-turn-secret}
+
+  coturn:
+    image: coturn/coturn:4.6
+    container_name: ${TALK_DEV_PREFIX:-wdz}-coturn
+    network_mode: host
+    security_opt:
+      - seccomp=unconfined
+    cpus: 1
+    mem_limit: 256m
+    # 开发用：不屏蔽内网 peer，便于局域网内测试 relay
+    command:
+      - -n
+      - --log-file=stdout
+      - --listening-ip=${TALK_LAN_IP:-172.16.21.21}
+      - --listening-port=${TALK_TURN_PORT:-13478}
+      - --min-port=${TALK_TURN_MIN_PORT:-49300}
+      - --max-port=${TALK_TURN_MAX_PORT:-49340}
+      - --realm=talk.dev
+      - --use-auth-secret
+      - --static-auth-secret=${TALK_TURN_SECRET:-talk-dev-turn-secret}
+      - --fingerprint
+      - --no-tls
+      - --no-dtls
+      - --no-cli
+      - --no-multicast-peers
+
+volumes:
+  npm-cache:

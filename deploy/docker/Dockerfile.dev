@@ -1,0 +1,33 @@
+# 开发容器：与测试机一致的 Ubuntu 24.04 + Node 22
+FROM ubuntu:24.04
+
+ARG APT_MIRROR=http://mirrors.aliyun.com/ubuntu
+ARG NODE_VERSION=22.23.3
+ARG NODE_MIRROR=https://npmmirror.com/mirrors/node
+
+RUN sed -i "s#http://archive.ubuntu.com/ubuntu#${APT_MIRROR}#g; s#http://security.ubuntu.com/ubuntu#${APT_MIRROR}#g" \
+        /etc/apt/sources.list.d/ubuntu.sources \
+    && apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        ca-certificates curl xz-utils git python3 make g++ \
+        iproute2 iputils-ping procps less tzdata \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN set -eux; \
+    cd /tmp; \
+    tarball="node-v${NODE_VERSION}-linux-x64.tar.xz"; \
+    curl -fsSLO "${NODE_MIRROR}/v${NODE_VERSION}/${tarball}"; \
+    curl -fsSLO "${NODE_MIRROR}/v${NODE_VERSION}/SHASUMS256.txt"; \
+    grep " ${tarball}\$" SHASUMS256.txt | sha256sum -c -; \
+    tar -xJf "${tarball}" -C /usr/local --strip-components=1 --no-same-owner; \
+    rm -f "${tarball}" SHASUMS256.txt; \
+    node --version; npm --version
+
+ENV TZ=Asia/Shanghai
+
+# npm 缓存挂命名卷；先建好目录，卷首次创建时继承 ubuntu 属主
+RUN mkdir -p /home/ubuntu/.npm && chown -R 1000:1000 /home/ubuntu/.npm
+
+# 镜像自带的 ubuntu 用户 uid/gid 为 1000，与开发机 wdz 一致，挂载目录里生成的文件归属正确
+USER ubuntu
+WORKDIR /workspace

@@ -1,0 +1,10 @@
+node_modules/
+dist/
+coverage/
+.cache/
+*.log
+*.tsbuildinfo
+.env
+deploy/docker/.env
+build/
+release/
