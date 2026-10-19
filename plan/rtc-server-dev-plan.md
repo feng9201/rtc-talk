@@ -1,7 +1,9 @@
 # RTC 对讲服务：开发环境与开发计划
 
-> 配套文档：[项目计划](./project-plan.md) · [信令协议](./talk-protocol.md) · [RK3576 libwebrtc 编译计划](../rk3576-libwebrtc-build-plan.md)
+> 配套文档：[项目计划](./project-plan.md) · [信令协议](./talk-protocol.md) · [环境/账号/进度速查](./env-access.md) · [RK3576 libwebrtc 编译计划](./rk3576-libwebrtc-build-plan.md)
 > 本文只覆盖**服务端（talk-server + mediasoup + coturn）**的开发、部署与联调；客户端核心库 talk-core 见项目计划。
+>
+> **进度速览（2026-10-19）**：S0 ✅ · S1 ✅ · **下一步 S2 SFU 语音 MVP**。机器账号、公钥、GitHub、口令见 [env-access.md](./env-access.md)。
 
 ## 1. 两台机器现状（2026-10-18 实测）
 

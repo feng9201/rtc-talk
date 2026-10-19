@@ -1,6 +1,6 @@
 # WebRTC 对讲服务 项目计划
 
-> 配套文档：[信令协议规范](./talk-protocol.md)
+> 配套文档：[信令协议规范](./talk-protocol.md) · [服务端开发计划](./rtc-server-dev-plan.md) · [环境/账号/进度速查](./env-access.md)
 
 ## 1. 需求基线
 
