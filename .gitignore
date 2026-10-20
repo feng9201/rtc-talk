@@ -3,6 +3,8 @@ dist/
 coverage/
 .cache/
 *.log
+*.pyc
+__pycache__/
 *.tsbuildinfo
 .env
 deploy/docker/.env
