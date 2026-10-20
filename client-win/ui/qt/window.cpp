@@ -13,10 +13,22 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSettings>
+#include <QSignalBlocker>
 #include <QSlider>
 #include <QTimer>
 #include <QUrlQuery>
 #include <QVBoxLayout>
+namespace {
+// 首项固定为系统默认通信设备（空 id），其余为枚举结果。
+void fill_devices(QComboBox* box,const QJsonArray& devices,const QString& selected){
+  QSignalBlocker block(box);
+  box->clear();
+  box->addItem(QStringLiteral("系统默认（通信设备）"),QString());
+  for(const auto& v:devices){const auto d=v.toObject();box->addItem(d["name"].toString(),d["id"].toString());}
+  const int index=box->findData(selected);
+  box->setCurrentIndex(index<0?0:index);
+}
+}
 TalkWindow::TalkWindow(){
   setWindowTitle(QStringLiteral("RTC Talk · Windows"));resize(800,600);
   setStyleSheet("QPushButton,QLineEdit,QComboBox{min-height:34px;font-size:16px;} QLabel,QCheckBox{font-size:16px;}");
@@ -27,7 +39,12 @@ TalkWindow::TalkWindow(){
   token_=new QLineEdit;token_->setEchoMode(QLineEdit::Password);token_->setPlaceholderText(QStringLiteral("仅保存在内存，不写配置"));
   dev_=new QCheckBox(QStringLiteral("开发测试：从 /dev/token 获取凭证"));
   backend_=new QComboBox;backend_->addItem(QStringLiteral("仅信令（不访问声卡）"),"none");backend_->addItem(QStringLiteral("合成音频（不访问声卡）"),"fake");backend_->addItem(QStringLiteral("WASAPI（Core Audio）"),"wasapi");
+  {const int saved=backend_->findData(settings.value("backend","none").toString());backend_->setCurrentIndex(saved<0?0:saved);}
   recording_=new QComboBox;playout_=new QComboBox;devices_=new QPushButton(QStringLiteral("枚举设备"));
+  recording_->setMinimumWidth(200);playout_->setMinimumWidth(200);
+  recording_->setToolTip(QStringLiteral("采集设备：默认使用系统通信设备"));playout_->setToolTip(QStringLiteral("播放设备：默认使用系统通信设备"));
+  recording_id_=settings.value("recording_device").toString();playout_id_=settings.value("playout_device").toString();
+  fill_devices(recording_,QJsonArray(),recording_id_);fill_devices(playout_,QJsonArray(),playout_id_);
   form->addRow(QStringLiteral("信令服务"),url_);form->addRow(QStringLiteral("用户标识"),uid_);form->addRow(QStringLiteral("房间 ID"),room_);form->addRow("Token",token_);form->addRow(dev_);form->addRow(QStringLiteral("音频后端"),backend_);
   auto* audio=new QHBoxLayout;audio->addWidget(recording_);audio->addWidget(playout_);audio->addWidget(devices_);form->addRow(QStringLiteral("采集 / 播放"),audio);layout->addLayout(form);
   connect_=new QPushButton(QStringLiteral("连接"));disconnect_=new QPushButton(QStringLiteral("断开"));join_=new QPushButton(QStringLiteral("加入房间"));leave_=new QPushButton(QStringLiteral("离开"));mute_=new QPushButton(QStringLiteral("开麦"));
@@ -42,17 +59,43 @@ TalkWindow::TalkWindow(){
   connect(join_,&QPushButton::clicked,this,[this]{join_->setEnabled(false);command("room.join",{{"room_id",room_->text()},{"display",uid_->text()}});});
   connect(leave_,&QPushButton::clicked,this,[this]{command("room.leave");});
   connect(mute_,&QPushButton::clicked,this,[this]{mute_->setEnabled(false);command("media.setMute",{{"muted",!muted_}});});
-  connect(devices_,&QPushButton::clicked,this,[this]{if(create_core())command("audio.devices");});
+  connect(devices_,&QPushButton::clicked,this,[this]{refresh_devices();});
+  connect(backend_,QOverload<int>::of(&QComboBox::currentIndexChanged),this,[this]{
+    QSettings().setValue("backend",backend_->currentData().toString());
+    reset_buttons();
+    refresh_devices();
+  });
+  connect(recording_,QOverload<int>::of(&QComboBox::currentIndexChanged),this,[this]{
+    recording_id_=recording_->currentData().toString();QSettings().setValue("recording_device",recording_id_);
+    if(connect_->isEnabled())log_->appendPlainText(QStringLiteral("采集设备已更新，下次连接生效"));
+  });
+  connect(playout_,QOverload<int>::of(&QComboBox::currentIndexChanged),this,[this]{
+    playout_id_=playout_->currentData().toString();QSettings().setValue("playout_device",playout_id_);
+    if(connect_->isEnabled())log_->appendPlainText(QStringLiteral("播放设备已更新，下次连接生效"));
+  });
   connect(volume_,&QSlider::sliderReleased,this,[this]{command("audio.volume",{{"gain",volume_->value()/100.0}});});
   auto* stats=new QTimer(this);stats->setInterval(10000);connect(stats,&QTimer::timeout,this,[this]{if(leave_->isEnabled()&&backend_->currentData().toString()!="none")command("media.stats");});stats->start();
+  QTimer::singleShot(0,this,[this]{refresh_devices();});
 }
 TalkWindow::~TalkWindow(){
   QSettings s;s.setValue("url",url_->text());s.setValue("uid",uid_->text());s.setValue("room",room_->text());
+  s.setValue("backend",backend_->currentData().toString());
+  s.setValue("recording_device",recording_->currentData().toString());s.setValue("playout_device",playout_->currentData().toString());
   if(core_)talk_destroy(core_);
 }
 void TalkWindow::reset_buttons(){
   connect_->setEnabled(true);disconnect_->setEnabled(false);join_->setEnabled(false);leave_->setEnabled(false);mute_->setEnabled(false);
-  devices_->setEnabled(true);backend_->setEnabled(true);recording_->setEnabled(true);playout_->setEnabled(true);muted_=true;mute_->setText(QStringLiteral("开麦"));
+  devices_->setEnabled(true);backend_->setEnabled(true);
+  const bool audio=backend_->currentData().toString()=="wasapi";
+  recording_->setEnabled(audio);playout_->setEnabled(audio);muted_=true;mute_->setText(QStringLiteral("开麦"));
+}
+void TalkWindow::refresh_devices(){
+  if(!connect_->isEnabled())return;  // 连接或通话中不改动核心库
+  const bool audio=backend_->currentData().toString()=="wasapi";
+  recording_->setEnabled(audio);playout_->setEnabled(audio);
+  if(!audio){fill_devices(recording_,QJsonArray(),recording_id_);fill_devices(playout_,QJsonArray(),playout_id_);return;}
+  if(!create_core())return;
+  command("audio.devices");
 }
 bool TalkWindow::create_core(){
   ++generation_;
@@ -121,8 +164,10 @@ void TalkWindow::receive(const QString& name,const QJsonObject& d){
       mute_->setText(muted_?QStringLiteral("开麦"):QStringLiteral("静音"));mute_->setEnabled(leave_->isEnabled());
     }
     if(method=="audio.devices"&&ok){
-      recording_->clear();playout_->clear();for(auto pair:{qMakePair(QString("recording"),recording_),qMakePair(QString("playout"),playout_)})
-        for(auto v:d["data"].toObject()[pair.first].toArray()){auto device=v.toObject();pair.second->addItem(device["name"].toString(),device["id"].toString());}
+      const auto list=d["data"].toObject();
+      fill_devices(recording_,list["recording"].toArray(),recording_id_);
+      fill_devices(playout_,list["playout"].toArray(),playout_id_);
+      log_->appendPlainText(QStringLiteral("音频设备：采集 %1 个，播放 %2 个").arg(list["recording"].toArray().size()).arg(list["playout"].toArray().size()));
     }
     if(method=="media.stats"&&ok)log_->appendPlainText(QString::fromUtf8(QJsonDocument(d["data"].toObject()).toJson(QJsonDocument::Compact)));
   }else if(name=="media.error"||name=="error")log_->appendPlainText(QStringLiteral("%1：%2").arg(name,d["msg"].toString()));

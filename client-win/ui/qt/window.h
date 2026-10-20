@@ -15,6 +15,7 @@ class TalkWindow : public QWidget {
   void receive(const QString&,const QJsonObject&);
   bool create_core();
   void connect_server();
+  void refresh_devices();
   void command(const char*,const QJsonObject& data=QJsonObject());
   void refresh_members();
   void reset_buttons();
@@ -25,6 +26,7 @@ class TalkWindow : public QWidget {
   talk_handle* core_=nullptr;
   QLineEdit *url_,*uid_,*room_,*token_;
   QComboBox *backend_,*recording_,*playout_;
+  QString recording_id_,playout_id_;
   QPushButton *connect_,*disconnect_,*join_,*leave_,*mute_,*devices_;
   QLabel *state_,*media_;
   QListWidget* members_;
