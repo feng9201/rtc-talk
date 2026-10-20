@@ -51,6 +51,8 @@ export function createApp(opts: AppOptions): App {
     heartbeatInterval: config.session.heartbeatInterval,
     resumeTtlMs: config.session.resumeTtlMs,
     maxPeersLimit: config.room.maxPeers,
+    ringTimeoutMs: config.call.ringTimeoutMs,
+    p2pTimeoutMs: config.call.p2pTimeoutMs,
     ...(opts.media ? { media: opts.media } : {}),
   });
   opts.media?.setAnswerHandler((uid, offer) => signaling.answerRecvOffer(uid, offer));

@@ -41,6 +41,8 @@ const EnvSchema = z.object({
   TALK_REQUEST_TIMEOUT: z.coerce.number().int().positive().default(10),
   TALK_RATE_LIMIT: z.coerce.number().int().positive().default(50),
   TALK_MAX_PEERS: z.coerce.number().int().min(2).max(200).default(20),
+  TALK_CALL_RING_SEC: z.coerce.number().int().positive().default(45),
+  TALK_P2P_TIMEOUT: z.coerce.number().int().positive().default(10),
 });
 
 export type Config = ReturnType<typeof loadConfig>;
@@ -102,5 +104,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
       rateLimit: e.TALK_RATE_LIMIT,
     },
     room: { maxPeers: e.TALK_MAX_PEERS },
+    call: {
+      ringTimeoutMs: e.TALK_CALL_RING_SEC * 1000,
+      p2pTimeoutMs: e.TALK_P2P_TIMEOUT * 1000,
+    },
   };
 }

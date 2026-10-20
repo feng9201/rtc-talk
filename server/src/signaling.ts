@@ -1,5 +1,7 @@
 import { z } from 'zod';
 import { buildIceServers, type IceConfig } from './auth/ice.js';
+import { CallManager } from './call/call-manager.js';
+import { RoomMode, type ModeView } from './call/room-mode.js';
 import { CloseCode, type Connection, type ConnectionHandlers } from './gateway/connection.js';
 import { parseData, TalkError, type NotifyMessage, type RequestMessage } from './gateway/protocol.js';
 import type { Logger } from './logger.js';
@@ -15,6 +17,8 @@ export interface SignalingOptions {
   heartbeatInterval: number;
   resumeTtlMs: number;
   maxPeersLimit: number;
+  ringTimeoutMs: number;
+  p2pTimeoutMs: number;
   media?: MediaNode;
 }
 
@@ -68,9 +72,17 @@ type Handler = (session: Session, data: unknown, conn: Connection) => unknown;
 
 const DESTROY_TO_LEAVE: Record<DestroyReason, LeaveReason> = { bye: 'leave', timeout: 'timeout', replaced: 'replaced' };
 
+const P2P_NOTIFY = new Set(['p2p.offer', 'p2p.answer', 'p2p.candidate', 'p2p.state']);
+
+function supportsP2p(caps: unknown): boolean {
+  return typeof caps === 'object' && caps !== null && (caps as { p2p?: unknown }).p2p === true;
+}
+
 export class Signaling {
   readonly sessions: SessionManager;
   readonly rooms: RoomManager;
+  private readonly calls: CallManager;
+  private readonly modes: RoomMode;
   private readonly log: Logger;
   private readonly handlers: Record<string, Handler>;
 
@@ -83,7 +95,29 @@ export class Signaling {
         this.log.info({ uid: s.uid, session: s.id, reason }, 'session destroyed');
         if (s.roomId) this.rooms.leave(s.roomId, s.uid, DESTROY_TO_LEAVE[reason]);
         s.roomId = null;
+        this.calls.onUserGone(s.uid);
       },
+    });
+    this.calls = new CallManager({
+      logger: opts.logger,
+      ringTimeoutMs: opts.ringTimeoutMs,
+      lookup: (uid) => {
+        const s = this.sessions.ofUid(uid);
+        if (!s) return undefined;
+        return { online: Boolean(s.conn?.isOpen), roomId: s.roomId };
+      },
+      roomMembers: (roomId) => this.rooms.get(roomId)?.members.size ?? 0,
+      notify: (uid, method, data) => this.notify(uid, method, data),
+    });
+    this.modes = new RoomMode({
+      logger: opts.logger,
+      p2pTimeoutMs: opts.p2pTimeoutMs,
+      room: (roomId) => this.rooms.get(roomId),
+      supportsP2p: (uid) => supportsP2p(this.sessions.ofUid(uid)?.caps),
+      callerOf: (roomId) => this.calls.callerOf(roomId),
+      online: (uid) => Boolean(this.sessions.ofUid(uid)?.conn?.isOpen),
+      request: (uid, method, data) => this.request(uid, method, data),
+      notify: (uid, method, data) => this.notify(uid, method, data),
     });
     this.handlers = {
       'session.ping': () => ({ server_time: Date.now() }),
@@ -95,14 +129,17 @@ export class Signaling {
       },
       'room.join': (s, d) => this.join(s, d),
       'room.leave': (s, d) => this.leave(s, d),
+      'host.setPolicy': (s, d) => this.setPolicy(s, d),
       'media.setMute': (s, d) => this.setMute(s, d),
-      ...(opts.media
-        ? {
-            'sfu.publish': (s: Session, d: unknown) => this.publish(s, d),
-            'sfu.restartIce': (s: Session, d: unknown) => this.restartIce(s, d),
-            'sfu.stats': () => ({}),
-          }
-        : {}),
+      'call.invite': (s, d) => this.calls.invite(s, d),
+      'call.ringing': (s, d) => this.calls.ringing(s.uid, d),
+      'call.accept': (s, d) => this.calls.accept(s.uid, d),
+      'call.reject': (s, d) => this.calls.reject(s.uid, d),
+      'call.cancel': (s, d) => this.calls.cancel(s.uid, d),
+      'call.hangup': (s, d) => this.hangup(s, d),
+      'sfu.publish': (s, d) => this.publish(s, d),
+      'sfu.restartIce': (s, d) => this.restartIce(s, d),
+      'sfu.stats': () => ({}),
     };
   }
 
@@ -134,10 +171,15 @@ export class Signaling {
   }
 
   private onNotify(conn: Connection, ntf: NotifyMessage): void {
+    const session = this.sessions.ofConn(conn);
+    if (session?.roomId && P2P_NOTIFY.has(ntf.method)) {
+      this.modes.onNotify(session.uid, session.roomId, ntf.method, ntf.data);
+      return;
+    }
     conn.log.debug({ method: ntf.method }, 'unhandled notify');
   }
 
-  private hello(conn: Connection, data: unknown) {
+  private async hello(conn: Connection, data: unknown) {
     if (this.sessions.ofConn(conn)) throw new TalkError(409, 'session already established');
     const d = parseData(HelloSchema, data);
     const { session, resumed, previousConn } = this.sessions.hello(conn, d.client, d.caps, d.resume?.session_id);
@@ -147,7 +189,7 @@ export class Signaling {
     }
     conn.log.info({ session: session.id, resumed, client: d.client }, 'session hello');
 
-    const snapshot = resumed && session.roomId ? this.rooms.snapshot(session.roomId, session.uid) : undefined;
+    const snapshot = resumed && session.roomId ? await this.roomView(session.roomId, session.uid) : undefined;
     if (resumed && session.roomId) this.opts.media?.onPeerOnline(session.roomId, session.uid);
     return {
       session_id: session.id,
@@ -176,8 +218,23 @@ export class Signaling {
     });
     s.roomId = d.room_id;
     await this.opts.media?.addPeer(d.room_id, s.uid, joined.peer.audio.muted);
-    this.log.info({ uid: s.uid, room: d.room_id }, 'room joined');
-    return this.rooms.snapshot(d.room_id, s.uid);
+    const view = await this.roomView(d.room_id, s.uid);
+    if (!view) throw new TalkError(409, 'not in room');
+    this.log.info({ uid: s.uid, room: d.room_id, media: view.media_mode }, 'room joined');
+    return view;
+  }
+
+  private setPolicy(s: Session, data: unknown) {
+    if (!s.roomId) throw new TalkError(409, 'not in room');
+    const policy = this.rooms.setPolicy(s.roomId, s.uid, parseData(PolicyInputSchema, data));
+    return { policy };
+  }
+
+  private hangup(s: Session, data: unknown) {
+    const result = this.calls.hangup(s.uid, data);
+    if (result.action === 'dissolve') this.rooms.dissolve(result.roomId, 'leave', 'hangup');
+    else if (result.action === 'leave') this.rooms.leave(result.roomId, s.uid, 'leave');
+    return {};
   }
 
   private leave(s: Session, data: unknown) {
@@ -201,6 +258,7 @@ export class Signaling {
   private async publish(s: Session, data: unknown) {
     const d = parseData(PublishSchema, data);
     if (!s.roomId) throw new TalkError(409, 'not in room');
+    if (this.modes.current(s.roomId) === 'p2p') throw new TalkError(409, 'room is in p2p mode');
     if (d.tracks?.some((t) => t.kind === 'video' && !t.closed)) throw new TalkError(501, 'video is not supported yet');
     if (!this.opts.media) throw new TalkError(501, 'sfu not enabled');
     return this.opts.media.publish(s.roomId, s.uid, d.sdp);
@@ -209,6 +267,7 @@ export class Signaling {
   private async restartIce(s: Session, data: unknown) {
     const d = parseData(RestartIceSchema, data);
     if (!s.roomId || !this.opts.media) throw new TalkError(409, 'not in room');
+    if (this.modes.current(s.roomId) === 'p2p') throw new TalkError(409, 'room is in p2p mode');
     await this.opts.media.restartIce(s.roomId, s.uid, d.pc);
     return {};
   }
@@ -226,21 +285,51 @@ export class Signaling {
       case 'peerJoined':
         this.broadcast(ev.room, 'room.peerJoined', ev.peer, ev.peer.uid);
         break;
-      case 'peerLeft':
+      case 'peerLeft': {
+        const sess = this.sessions.ofUid(ev.uid);
+        if (sess?.roomId === ev.room.id) sess.roomId = null;
         this.opts.media?.removePeer(ev.room.id, ev.uid);
         this.broadcast(ev.room, 'room.peerLeft', { uid: ev.uid, reason: ev.reason });
+        void this.modes.sync(ev.room.id).catch((err: unknown) => this.log.error({ err }, 'mode sync failed'));
         break;
+      }
       case 'peerUpdated':
         this.broadcast(ev.room, 'room.peerUpdated', { uid: ev.uid, ...ev.patch }, ev.patch.role ? undefined : ev.uid);
         break;
+      case 'policyChanged':
+        this.broadcast(ev.room, 'room.policyChanged', ev.policy);
+        void this.modes.onPolicy(ev.room.id, ev.policy.media_mode);
+        break;
       case 'roomClosed':
         this.opts.media?.closeRoom(ev.room.id);
-        this.log.info({ room: ev.room.id }, 'room closed');
+        this.modes.onRoomClosed(ev.room.id);
+        this.calls.onRoomClosed(ev.room.id);
+        for (const uid of ev.uids) this.notify(uid, 'room.closed', { reason: ev.reason });
+        this.log.info({ room: ev.room.id, reason: ev.reason }, 'room closed');
         break;
     }
   }
 
+  private async roomView(roomId: string, uid: string) {
+    const snap = this.rooms.snapshot(roomId, uid);
+    if (!snap) return undefined;
+    const mode: ModeView = await this.modes.sync(roomId, uid);
+    return { ...snap, ...mode };
+  }
+
+  private notify(uid: string, method: string, data: unknown): void {
+    this.sessions.ofUid(uid)?.conn?.notify(method, data);
+  }
+
+  private request(uid: string, method: string, data: unknown): Promise<unknown> {
+    const conn = this.sessions.ofUid(uid)?.conn;
+    if (!conn?.isOpen) return Promise.reject(new TalkError(480, 'peer offline'));
+    return conn.request(method, data);
+  }
+
   close(): void {
     this.sessions.destroyAll();
+    this.calls.close();
+    this.modes.close();
   }
 }

@@ -6,10 +6,34 @@ interface Ntf {
   data: Record<string, unknown>;
 }
 
+type Waiter = { method: string; pred: (d: any) => boolean; resolve: (d: any) => void };
+
+function waitFor(list: Ntf[], queued: Waiter[], method: string, pred: (d: any) => boolean, timeoutMs: number) {
+  const i = list.findIndex((n) => n.method === method && pred(n.data));
+  if (i >= 0) return Promise.resolve(list.splice(i, 1)[0]!.data);
+  return new Promise((resolve, reject) => {
+    const w = { method, pred, resolve };
+    queued.push(w);
+    setTimeout(() => {
+      const j = queued.indexOf(w);
+      if (j >= 0) {
+        queued.splice(j, 1);
+        reject(new Error(`timeout waiting ${method}`));
+      }
+    }, timeoutMs);
+  });
+}
+
 export interface TestClient {
   ws: WebSocket;
-  req(method: string, data?: unknown): Promise<{ ok: boolean; data?: any; error?: { code: number; reason: string } }>;
+  req(
+    method: string,
+    data?: unknown,
+  ): Promise<{ ok: boolean; data?: any; error?: { code: number; reason: string; msg?: string } }>;
+  ntf(method: string, data?: unknown): void;
   waitNtf(method: string, pred?: (data: any) => boolean, timeoutMs?: number): Promise<any>;
+  /** 服务端发来的 req（如 room.mediaMode）。默认自动回空应答 */
+  waitReq(method: string, pred?: (data: any) => boolean, timeoutMs?: number): Promise<any>;
   closed: Promise<number>;
 }
 
@@ -18,7 +42,15 @@ export function connect(base: string, token: string): Promise<TestClient> {
   let seq = 1;
   const pending = new Map<string, (msg: any) => void>();
   const ntfs: Ntf[] = [];
-  const waiters: Array<{ method: string; pred: (d: any) => boolean; resolve: (d: any) => void }> = [];
+  const reqs: Ntf[] = [];
+  const waiters: Waiter[] = [];
+  const reqWaiters: Waiter[] = [];
+
+  function take(list: Ntf[], queued: Waiter[], method: string, data: any) {
+    const i = queued.findIndex((w) => w.method === method && w.pred(data));
+    if (i >= 0) queued.splice(i, 1)[0]!.resolve(data);
+    else list.push({ method, data });
+  }
 
   ws.on('message', (raw) => {
     const msg = JSON.parse(raw.toString());
@@ -26,9 +58,10 @@ export function connect(base: string, token: string): Promise<TestClient> {
       pending.get(msg.id)?.(msg);
       pending.delete(msg.id);
     } else if (msg.type === 'ntf') {
-      const i = waiters.findIndex((w) => w.method === msg.method && w.pred(msg.data));
-      if (i >= 0) waiters.splice(i, 1)[0]!.resolve(msg.data);
-      else ntfs.push({ method: msg.method, data: msg.data });
+      take(ntfs, waiters, msg.method, msg.data);
+    } else if (msg.type === 'req') {
+      take(reqs, reqWaiters, msg.method, msg.data);
+      ws.send(JSON.stringify({ v: 1, type: 'res', id: msg.id, ok: true, data: {} }));
     }
   });
 
@@ -44,20 +77,14 @@ export function connect(base: string, token: string): Promise<TestClient> {
         ws.send(JSON.stringify({ v: 1, type: 'req', id, method, data }));
       });
     },
+    ntf(method, data = {}) {
+      ws.send(JSON.stringify({ v: 1, type: 'ntf', method, data }));
+    },
     waitNtf(method, pred = () => true, timeoutMs = 2000) {
-      const i = ntfs.findIndex((n) => n.method === method && pred(n.data));
-      if (i >= 0) return Promise.resolve(ntfs.splice(i, 1)[0]!.data);
-      return new Promise((resolve, reject) => {
-        const w = { method, pred, resolve };
-        waiters.push(w);
-        setTimeout(() => {
-          const j = waiters.indexOf(w);
-          if (j >= 0) {
-            waiters.splice(j, 1);
-            reject(new Error(`timeout waiting ${method}`));
-          }
-        }, timeoutMs);
-      });
+      return waitFor(ntfs, waiters, method, pred, timeoutMs);
+    },
+    waitReq(method, pred = () => true, timeoutMs = 2000) {
+      return waitFor(reqs, reqWaiters, method, pred, timeoutMs);
     },
   };
   return new Promise((resolve, reject) => {
