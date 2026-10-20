@@ -195,8 +195,10 @@ class WebRtcMedia : public Media {
     if(!sender_){
       webrtc::RtpTransceiverInit init;init.direction=webrtc::RtpTransceiverDirection::kSendOnly;init.stream_ids={"talk"};
       auto r=send_.pc->AddTransceiver(track_,init);if(!r.ok())throw std::runtime_error("添加音轨失败");sender_=r.value()->sender();
+      apply_sender(sender_,sfu_send_&&!muted_);
     }
-    set_local(send_,true);mute(true);
+    // 不在此重置静音：初次发布由构造默认静音，切回 SFU 时保留用户已开麦状态。
+    set_local(send_,true);
     const auto transceivers=send_.pc->GetTransceivers();
     const auto mid=transceivers.front()->mid().value_or("0");
     return {{"sdp",local(send_)},{"tracks",Json::array({{{"mid",mid},{"kind","audio"},{"source","mic"}}})}};

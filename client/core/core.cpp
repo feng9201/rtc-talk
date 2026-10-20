@@ -19,7 +19,7 @@ class Core {
  public:
   Core(const talk_options& options, Json config)
       : config_(std::move(config)), callback_(options.on_event), user_(options.userdata),
-        guard_(asio::make_work_guard(io_)), heartbeat_(io_), reconnect_(io_), ice_timer_(io_), media_pool_(1) {
+        guard_(asio::make_work_guard(io_)), heartbeat_(io_), reconnect_(io_), ice_timer_(io_), p2p_path_timer_(io_), media_pool_(1) {
     ws_.clear_access_channels(websocketpp::log::alevel::all);
     ws_.clear_error_channels(websocketpp::log::elevel::all);
     ws_.init_asio(&io_);
@@ -31,7 +31,7 @@ class Core {
     asio::post(io_, [this, &barrier] {
       stopping_ = true; retry_ = false; ++epoch_;
       mute_gate_->store(true);media_valid_->store(false);
-      heartbeat_.cancel(); reconnect_.cancel(); ice_timer_.cancel();
+      heartbeat_.cancel(); reconnect_.cancel(); ice_timer_.cancel(); p2p_path_timer_.cancel();
       for (auto& p : pending_) p.second.timer->cancel();
       pending_.clear();
       if (connection_) { websocketpp::lib::error_code ec; connection_->terminate(ec); }
@@ -172,7 +172,7 @@ class Core {
     if(ready_)resume_deadline_=std::chrono::steady_clock::now()+std::chrono::seconds(resume_seconds_);
     mute_gate_->store(true);
     ++epoch_; ++mute_epoch_; ready_=false; open_=false; joining_=false; disconnecting_=false;
-    heartbeat_.cancel(); reconnect_.cancel(); ice_timer_.cancel(); publishing_=false;
+    heartbeat_.cancel(); reconnect_.cancel(); ice_timer_.cancel(); p2p_path_timer_.cancel(); publishing_=false;
     if (connection_) { websocketpp::lib::error_code ec; connection_->terminate(ec); }
     auto pending=std::move(pending_); pending_.clear();
     for (auto& p:pending) { p.second.timer->cancel(); p.second.done(failure(p.first,480,"连接断开")); }
@@ -303,13 +303,21 @@ class Core {
     notify("p2p.state",d);
     emit("p2p.state",d);
   }
-  void query_p2p_path(){
+  void query_p2p_path(int attempt=0){
     const auto session=p2p_session_;
     if(session.empty()||!media_enabled())return;
-    media_job([](Media& m){return m.p2p_path();},[this,session](Json r){
+    media_job([](Media& m){return m.p2p_path();},[this,session,attempt](Json r){
       if(!r.value("ok",false)||session!=p2p_session_||p2p_session_.empty())return;
       const auto path=r["data"].value("path","");
-      if(path.empty())return;
+      if(path.empty()){
+        // 候选对状态可能晚于 connected 事件就绪，短暂重试。
+        if(attempt>=3)return;
+        p2p_path_timer_.expires_after(std::chrono::seconds(1));
+        p2p_path_timer_.async_wait([this,session,attempt](const asio::error_code& ec){
+          if(!ec&&session==p2p_session_)query_p2p_path(attempt+1);
+        });
+        return;
+      }
       notify("p2p.state",{{"session",session},{"state","connected"},{"path",path}});
       emit("p2p.path",{{"path",path}});
     },false);
@@ -441,6 +449,7 @@ class Core {
     send(failure(id,400,"未知媒体模式"));
   }
   void reset_p2p(){
+    p2p_path_timer_.cancel();
     p2p_session_.clear();p2p_role_.clear();p2p_peer_.clear();
     p2p_started_=false;p2p_remote_ready_=false;p2p_pending_candidates_=Json::array();
   }
@@ -574,7 +583,7 @@ class Core {
   std::chrono::steady_clock::time_point resume_deadline_{};
   talk_event_fn callback_; void* user_;
   asio::io_context io_; asio::executor_work_guard<asio::io_context::executor_type> guard_;
-  asio::steady_timer heartbeat_,reconnect_,ice_timer_; Ws ws_; Ws::connection_ptr connection_;
+  asio::steady_timer heartbeat_,reconnect_,ice_timer_,p2p_path_timer_; Ws ws_; Ws::connection_ptr connection_;
   asio::thread_pool media_pool_; std::unique_ptr<Media> media_;
   std::thread thread_; std::atomic<uint64_t> next_operation_{1}; std::atomic<int> queued_{0};
   std::map<std::string,Pending> pending_;
