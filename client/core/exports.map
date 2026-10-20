@@ -1,0 +1,4 @@
+TALK_1.0 {
+  global: talk_version; talk_create; talk_command; talk_destroy;
+  local: *;
+};

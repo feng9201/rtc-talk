@@ -1,0 +1,10 @@
+{
+  "name": "rtc-talk-client",
+  "version-string": "0.1.0",
+  "builtin-baseline": "d4d39d71b3e6dd7536592c36ab2f7e84a8a64942",
+  "dependencies": [
+    {"name": "websocketpp", "default-features": false},
+    {"name": "asio", "default-features": false},
+    "nlohmann-json"
+  ]
+}

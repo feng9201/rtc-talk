@@ -1,0 +1,49 @@
+{
+  "version": 5,
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "VCPKG_MANIFEST_INSTALL": "OFF",
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_INSTALLED_DIR": "${sourceDir}/build/${presetName}/vcpkg_installed",
+        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/cmake/triplets",
+        "VCPKG_HOST_TRIPLET": "x64-linux"
+      }
+    },
+    {
+      "name": "host-test",
+      "inherits": "base",
+      "binaryDir": "${sourceDir}/build/host-test",
+      "cacheVariables": {
+        "VCPKG_TARGET_TRIPLET": "x64-linux",
+        "TALK_WITH_WEBRTC": "OFF",
+        "TALK_WITH_QT": "OFF"
+      }
+    },
+    {
+      "name": "rk3576",
+      "inherits": "base",
+      "binaryDir": "${sourceDir}/build/rk3576",
+      "cacheVariables": {
+        "VCPKG_TARGET_TRIPLET": "arm64-rk3576",
+        "VCPKG_CHAINLOAD_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchain-rk3576.cmake",
+        "RK3576_HOST": "$env{RK3576_HOST}",
+        "WEBRTC_SOURCE_DIR": "$env{WEBRTC_SOURCE_DIR}",
+        "WEBRTC_BUILD_DIR": "$env{WEBRTC_BUILD_DIR}",
+        "TALK_WITH_WEBRTC": "ON",
+        "TALK_WITH_QT": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {"name": "host-test", "configurePreset": "host-test", "jobs": 4},
+    {"name": "rk3576", "configurePreset": "rk3576", "jobs": 4}
+  ],
+  "testPresets": [
+    {"name": "host-test", "configurePreset": "host-test", "output": {"outputOnFailure": true}}
+  ]
+}
