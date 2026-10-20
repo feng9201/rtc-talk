@@ -11,7 +11,7 @@
 using Json=nlohmann::json;
 struct App {
   talk_handle* core=nullptr;std::string room;bool audio=false;
-  std::atomic<bool> joined{false},published{false},failed{false},left{false},stats_pending{false},disconnected{false};
+  std::atomic<bool> joined{false},published{false},failed{false},left{false},stats_pending{false},disconnected{false},devices_done{false};
   std::mutex mutex;std::condition_variable condition;
   void command(const char* method,const Json& data){if(!talk_command(core,method,data.dump().c_str()))failed=true;}
   static void event(void* context,const char* name,const char* text){
@@ -24,6 +24,7 @@ struct App {
       if(type=="published"){a.published=true;a.command("media.setMute",{{"muted",false}});}
       if(type=="left")a.left=true;
       if(type=="result"&&j.value("method","")=="media.stats")a.stats_pending=false;
+      if(type=="result"&&j.value("method","")=="audio.devices")a.devices_done=true;
       if(type=="result"&&j.value("method","")=="disconnect")a.disconnected=true;
       if(type=="media.error"||type=="error"||(type=="result"&&!j.value("ok",false)))a.failed=true;
       a.condition.notify_all();
@@ -31,13 +32,14 @@ struct App {
   }
 };
 int main(int argc,char** argv){
-  std::string url,token_file,config_file;bool token_stdin=false;int duration=10;App app;
+  std::string url,token_file,config_file;bool token_stdin=false,list_devices=false;int duration=10;App app;
   Json config={{"audio_backend","none"}};
   try {
     for(int i=1;i<argc;++i){
       const std::string arg=argv[i];
       if(arg=="--version"){std::cout<<talk_version()<<'\n';return 0;}
       if(arg=="--token-stdin"){token_stdin=true;continue;}
+      if(arg=="--list-devices"){list_devices=true;continue;}
       if(i+1==argc)throw std::runtime_error("参数缺少值");
       const std::string value=argv[++i];
       if(arg=="--url")url=value;
@@ -49,8 +51,21 @@ int main(int argc,char** argv){
       else throw std::runtime_error("未知参数");
     }
     if(!config_file.empty()){std::ifstream in(config_file);in>>config;}
+    if(list_devices){
+      if(config.value("audio_backend","none")=="none")config["audio_backend"]="wasapi";
+      const auto cfg=config.dump();
+      talk_options options{sizeof(talk_options),TALK_ABI_VERSION,App::event,&app,cfg.c_str()};
+      app.core=talk_create(&options);if(!app.core)throw std::runtime_error("创建 core 失败");
+      app.command("audio.devices",Json::object());
+      {
+        std::unique_lock<std::mutex> lock(app.mutex);
+        app.condition.wait_for(lock,std::chrono::seconds(20),[&]{return app.devices_done||app.failed;});
+      }
+      talk_destroy(app.core);app.core=nullptr;
+      return app.failed?1:0;
+    }
     if(url.empty()||app.room.empty()||duration<1||duration>86400||token_stdin==!token_file.empty())
-      throw std::runtime_error("用法：talk-cli --url ws://主机:端口/talk/v1/ws --room 房间 --token-file 文件（或 --token-stdin） [--audio none|fake|wasapi] [--config 文件] [--duration 秒]");
+      throw std::runtime_error("用法：talk-cli --url ws://主机:端口/talk/v1/ws --room 房间 --token-file 文件（或 --token-stdin） [--audio none|fake|wasapi] [--config 文件] [--duration 秒]；单跑 --list-devices 枚举音频设备");
     std::string token;
     if(token_stdin)std::getline(std::cin,token);
     else{

@@ -6,6 +6,7 @@
 #include <future>
 #include <mutex>
 #include <thread>
+#include <vector>
 
 #include "api/audio/audio_device.h"
 #include "api/audio/audio_frame.h"
@@ -40,9 +41,10 @@ using namespace std::chrono_literals;
 // 编码前执行安全静音，不等待 SDP/设备操作队列。
 class CaptureGate : public webrtc::AudioFrameProcessor {
  public:
-  explicit CaptureGate(MuteGate gate) : gate_(std::move(gate)) {}
+  CaptureGate(MuteGate gate, std::atomic<uint64_t>* frames) : gate_(std::move(gate)), frames_(frames) {}
   void Process(std::unique_ptr<webrtc::AudioFrame> frame) override {
     if (gate_->load()) frame->Mute();
+    if (frames_) frames_->fetch_add(1, std::memory_order_relaxed);
     OnAudioFrameCallback sink;
     {
       std::lock_guard<std::mutex> lock(mutex_);
@@ -57,6 +59,7 @@ class CaptureGate : public webrtc::AudioFrameProcessor {
 
  private:
   MuteGate gate_;
+  std::atomic<uint64_t>* frames_;
   std::mutex mutex_;
   OnAudioFrameCallback sink_;
 };
@@ -215,20 +218,33 @@ class WebRtcMedia : public Media {
   WebRtcMedia(const Json& config, const Json& ice, MuteGate gate, Event event)
       : config_(config), event_(std::move(event)), send_("send", event_), recv_("recv", event_) {
     // 默认不输出 WebRTC 的 SDP/候选日志，避免凭证进入诊断输出。
-    webrtc::LogMessage::LogToDebug(webrtc::LS_NONE);
+    const bool verbose = config_.value("webrtc_log", false);
+    webrtc::LogMessage::LogToDebug(verbose ? webrtc::LS_INFO : webrtc::LS_NONE);
+    if (verbose) {
+      webrtc::LogMessage::LogTimestamps();
+      webrtc::LogMessage::LogThreads();
+    }
     if (!init(gate, ice)) {
       if (error_.empty()) error_ = "媒体初始化失败";
     }
   }
 
   ~WebRtcMedia() override {
-    if (send_.pc) send_.pc->Close();
-    if (recv_.pc) recv_.pc->Close();
-    send_.pc = nullptr;
-    recv_.pc = nullptr;
-    sender_ = nullptr;
-    track_ = nullptr;
-    factory_ = nullptr;
+    // PeerConnection 必须在创建它的 signaling 线程上关闭。
+    if (signaling_ && signaling_started_) {
+      signaling_->BlockingCall([this] {
+        if (send_.pc) send_.pc->Close();
+        if (recv_.pc) recv_.pc->Close();
+        send_.pc = nullptr;
+        recv_.pc = nullptr;
+        sender_ = nullptr;
+        track_ = nullptr;
+        factory_ = nullptr;
+      });
+    } else {
+      send_.pc = nullptr;
+      recv_.pc = nullptr;
+    }
     if (worker_ && worker_started_) {
       worker_->BlockingCall([this] {
         if (adm_) {
@@ -251,33 +267,36 @@ class WebRtcMedia : public Media {
   Json offer() override {
     if (!select_devices() || !create(send_)) return Json::object();
     if (!track_) {
-      auto source = factory_->CreateAudioSource(webrtc::AudioOptions());
-      track_ = factory_->CreateAudioTrack("mic", source.get());
-      if (!track_) {
-        fail("创建音轨失败");
+      const bool ready = on_signaling([this] {
+        auto source = factory_->CreateAudioSource(webrtc::AudioOptions());
+        track_ = factory_->CreateAudioTrack("mic", source.get());
+        if (!track_) return false;
+        track_->set_enabled(false);
+        webrtc::RtpTransceiverInit init;
+        init.direction = webrtc::RtpTransceiverDirection::kSendOnly;
+        init.stream_ids = {"talk"};
+        auto r = send_.pc->AddTransceiver(track_, init);
+        if (!r.ok()) return false;
+        sender_ = r.value()->sender();
+        return true;
+      });
+      if (!ready) {
+        fail(track_ ? "添加音轨失败" : "创建音轨失败");
         return Json::object();
       }
-      track_->set_enabled(false);
-      webrtc::RtpTransceiverInit init;
-      init.direction = webrtc::RtpTransceiverDirection::kSendOnly;
-      init.stream_ids = {"talk"};
-      auto r = send_.pc->AddTransceiver(track_, init);
-      if (!r.ok()) {
-        fail("添加音轨失败");
-        return Json::object();
-      }
-      sender_ = r.value()->sender();
     }
     if (!set_local(send_, true)) {
       fail("创建或设置本地 SDP 失败");
       return Json::object();
     }
     mute(true);
-    std::string mid = "0";
-    const auto transceivers = send_.pc->GetTransceivers();
-    if (!transceivers.empty() && transceivers.front()->mid().has_value()) {
-      mid = *transceivers.front()->mid();
-    }
+    std::string mid = on_signaling([this] {
+      const auto transceivers = send_.pc->GetTransceivers();
+      if (!transceivers.empty() && transceivers.front()->mid().has_value()) {
+        return *transceivers.front()->mid();
+      }
+      return std::string("0");
+    });
     std::string sdp;
     if (!local(send_, sdp)) {
       fail("SDP 序列化失败");
@@ -311,17 +330,19 @@ class WebRtcMedia : public Media {
   }
 
   void mute(bool muted) override {
-    if (track_) track_->set_enabled(!muted);
-    if (!sender_) return;
-    auto p = sender_->GetParameters();
-    for (auto& e : p.encodings) {
-      e.active = !muted;
-      e.max_bitrate_bps = 32000;
-    }
-    if (!sender_->SetParameters(p).ok()) {
+    const bool ok = on_signaling([this, muted] {
+      if (track_) track_->set_enabled(!muted);
+      if (!sender_) return true;
+      auto p = sender_->GetParameters();
+      for (auto& e : p.encodings) {
+        e.active = !muted;
+        e.max_bitrate_bps = 32000;
+      }
+      if (sender_->SetParameters(p).ok()) return true;
       if (track_) track_->set_enabled(false);
-      fail("设置发送状态失败");
-    }
+      return false;
+    });
+    if (!ok) fail("设置发送状态失败");
   }
 
   Json devices() override {
@@ -348,23 +369,37 @@ class WebRtcMedia : public Media {
   void volume(double gain) override {
     recv_.gain = gain;
     if (!recv_.pc) return;
-    for (auto& receiver : recv_.pc->GetReceivers()) {
-      auto track = receiver->track();
-      if (track && track->kind() == "audio") {
-        auto* audio = static_cast<webrtc::AudioTrackInterface*>(track.get());
-        if (audio->GetSource()) audio->GetSource()->SetVolume(gain);
+    on_signaling([this, gain] {
+      for (auto& receiver : recv_.pc->GetReceivers()) {
+        auto track = receiver->track();
+        if (track && track->kind() == "audio") {
+          auto* audio = static_cast<webrtc::AudioTrackInterface*>(track.get());
+          if (audio->GetSource()) audio->GetSource()->SetVolume(gain);
+        }
       }
-    }
+    });
   }
 
   Json stats() override {
+    struct Item {
+      std::string name;
+      webrtc::scoped_refptr<StatsObserver> observer;
+      std::future<webrtc::scoped_refptr<const webrtc::RTCStatsReport>> future;
+    };
+    std::vector<Item> items;
+    // GetStats 及其回调都在 signaling 线程，必须先在那边发起，再在媒体线程等结果。
+    on_signaling([this, &items] {
+      for (auto* peer : {&send_, &recv_}) {
+        if (!peer->pc) continue;
+        auto observer = webrtc::make_ref_counted<StatsObserver>();
+        auto future = observer->promise.get_future();
+        peer->pc->GetStats(observer.get());
+        items.push_back({peer == &send_ ? "send" : "recv", observer, std::move(future)});
+      }
+    });
     Json out = Json::object();
-    for (auto* peer : {&send_, &recv_}) {
-      if (!peer->pc) continue;
-      auto observer = webrtc::make_ref_counted<StatsObserver>();
-      auto future = observer->promise.get_future();
-      peer->pc->GetStats(observer.get());
-      auto report = wait(std::move(future));
+    for (auto& item : items) {
+      auto report = wait(std::move(item.future));
       if (!report.get()) continue;
       uint64_t received = 0, sent = 0;
       int64_t lost = 0;
@@ -379,10 +414,30 @@ class WebRtcMedia : public Media {
       for (const auto* s : report->GetStatsOfType<webrtc::RTCOutboundRtpStreamStats>()) {
         if (s->kind.value_or("") == "audio") sent += s->packets_sent.value_or(0);
       }
-      out[peer == &send_ ? "send" : "recv"] = {
+      out[item.name] = {
           {"received", received}, {"sent", sent}, {"lost", lost}, {"jitter_seconds", jitter}};
     }
     if (sine_) out["fake_playout"] = sine_->stats();
+    out["capture"] = {{"frames", capture_frames_.load()}};
+    if (adm_ && !sine_ && worker_ && worker_started_) {
+      out["device"] = worker_->BlockingCall([this] {
+        bool stereo_recording = false, stereo_playout = false;
+        uint16_t delay_ms = 0;
+        adm_->StereoRecording(&stereo_recording);
+        adm_->StereoPlayout(&stereo_playout);
+        adm_->PlayoutDelay(&delay_ms);
+        return Json{{"recording", adm_->Recording()},
+                    {"playing", adm_->Playing()},
+                    {"recording_initialized", adm_->RecordingIsInitialized()},
+                    {"playout_initialized", adm_->PlayoutIsInitialized()},
+                    {"stereo_recording", stereo_recording},
+                    {"stereo_playout", stereo_playout},
+                    {"playout_delay_ms", delay_ms},
+                    {"playout_error", playout_error_},
+                    {"recording_device", recording_name_},
+                    {"playout_device", playout_name_}};
+      });
+    }
     return out;
   }
 
@@ -416,6 +471,7 @@ class WebRtcMedia : public Media {
       return false;
     }
     worker_started_ = true;
+    signaling_started_ = true;
 
     auto env = webrtc::CreateEnvironment();
     if (backend == "fake") {
@@ -457,7 +513,7 @@ class WebRtcMedia : public Media {
     }
     deps.audio_encoder_factory = webrtc::CreateAudioEncoderFactory<webrtc::AudioEncoderOpus>();
     deps.audio_decoder_factory = webrtc::CreateAudioDecoderFactory<webrtc::AudioDecoderOpus>();
-    deps.audio_frame_processor = std::make_unique<CaptureGate>(std::move(gate));
+    deps.audio_frame_processor = std::make_unique<CaptureGate>(std::move(gate), &capture_frames_);
 
     webrtc::EnableMedia(deps);
     factory_ = webrtc::CreateModularPeerConnectionFactory(std::move(deps));
@@ -494,13 +550,18 @@ class WebRtcMedia : public Media {
 
   bool create(Peer& peer) {
     if (peer.pc) return true;
-    auto r = factory_->CreatePeerConnectionOrError(
-        rtc_config_, webrtc::PeerConnectionDependencies(&peer));
-    if (!r.ok()) {
+    const bool created = on_signaling([this, &peer] {
+      auto r = factory_->CreatePeerConnectionOrError(
+          rtc_config_, webrtc::PeerConnectionDependencies(&peer));
+      if (!r.ok()) return false;
+      peer.pc = r.MoveValue();
+      return true;
+    });
+    if (!created) {
       fail("创建 PeerConnection 失败");
       return false;
     }
-    peer.pc = r.MoveValue();
+    ensure_playout();
     return true;
   }
 
@@ -534,17 +595,38 @@ class WebRtcMedia : public Media {
       int status = -1;
       if (index >= 0) {
         status = worker_->BlockingCall([this, recording, index] {
-          return recording ? adm_->SetRecordingDevice(static_cast<uint16_t>(index))
-                           : adm_->SetPlayoutDevice(static_cast<uint16_t>(index));
+          const auto slot = static_cast<uint16_t>(index);
+          const int32_t r = recording ? adm_->SetRecordingDevice(slot)
+                                      : adm_->SetPlayoutDevice(slot);
+          if (r == 0) {
+            char name[webrtc::kAdmMaxDeviceNameSize]{};
+            char guid[webrtc::kAdmMaxGuidSize]{};
+            if (recording) {
+              adm_->RecordingDeviceName(slot, name, guid);
+            } else {
+              adm_->PlayoutDeviceName(slot, name, guid);
+            }
+            (recording ? recording_name_ : playout_name_) = name;
+          }
+          return static_cast<int>(r);
         });
       }
       if (status != 0) {
         status = worker_->BlockingCall([this, recording] {
-          return recording
-                     ? adm_->SetRecordingDevice(
-                           webrtc::AudioDeviceModule::kDefaultCommunicationDevice)
-                     : adm_->SetPlayoutDevice(
-                           webrtc::AudioDeviceModule::kDefaultCommunicationDevice);
+          if (recording) {
+            if (adm_->SetRecordingDevice(
+                    webrtc::AudioDeviceModule::kDefaultCommunicationDevice) != 0) {
+              return -1;
+            }
+            recording_name_ = "default-communication";
+          } else {
+            if (adm_->SetPlayoutDevice(
+                    webrtc::AudioDeviceModule::kDefaultCommunicationDevice) != 0) {
+              return -1;
+            }
+            playout_name_ = "default-communication";
+          }
+          return 0;
         });
       }
       if (status != 0) {
@@ -556,45 +638,76 @@ class WebRtcMedia : public Media {
     return true;
   }
 
-  static bool set_local(Peer& p, bool offer) {
+  // 必须在 AudioTransport 注册之后再启动 playout：Core Audio 在媒体已启动时
+  // 会拒绝 RegisterAudioCallback（"Failed to set audio transport since media was active"）。
+  // 同时内置 AEC 要求 playout 先于 recording 启动。
+  bool ensure_playout() {
+    if (sine_ || playout_started_) return true;
+    playout_started_ = worker_->BlockingCall([this] {
+      if (adm_->Playing()) return true;
+      if (!adm_->PlayoutIsInitialized() && adm_->InitPlayout() != 0) return false;
+      return adm_->StartPlayout() == 0;
+    });
+    if (!playout_started_) playout_error_ = true;
+    return playout_started_;
+  }
+
+  bool set_local(Peer& p, bool offer) {
     if (!p.pc) return false;
     auto c = webrtc::make_ref_counted<CreateObserver>();
     auto f = c->promise.get_future();
-    webrtc::PeerConnectionInterface::RTCOfferAnswerOptions options;
-    if (offer) {
-      p.pc->CreateOffer(c.get(), options);
-    } else {
-      p.pc->CreateAnswer(c.get(), options);
-    }
+    on_signaling([&] {
+      webrtc::PeerConnectionInterface::RTCOfferAnswerOptions options;
+      if (offer) {
+        p.pc->CreateOffer(c.get(), options);
+      } else {
+        p.pc->CreateAnswer(c.get(), options);
+      }
+    });
     auto description = wait(std::move(f));
     if (!description) return false;
     auto s = webrtc::make_ref_counted<SetObserver>();
     auto sf = s->promise.get_future();
-    p.pc->SetLocalDescription(s.get(), description.release());
+    auto* raw = description.release();
+    on_signaling([&] { p.pc->SetLocalDescription(s.get(), raw); });
     return wait(std::move(sf));
   }
 
-  static bool set_remote(Peer& p, webrtc::SdpType type, const std::string& sdp) {
+  bool set_remote(Peer& p, webrtc::SdpType type, const std::string& sdp) {
     if (!p.pc) return false;
     auto d = webrtc::CreateSessionDescription(type, sdp);
     if (!d) return false;
     auto s = webrtc::make_ref_counted<SetObserver>();
     auto f = s->promise.get_future();
-    p.pc->SetRemoteDescription(s.get(), d.release());
+    auto* raw = d.release();
+    on_signaling([&] { p.pc->SetRemoteDescription(s.get(), raw); });
     return wait(std::move(f));
   }
 
-  static bool local(Peer& p, std::string& out) {
-    if (!p.pc || !p.pc->local_description()) return false;
-    return p.pc->local_description()->ToString(&out);
+  bool local(Peer& p, std::string& out) {
+    if (!p.pc) return false;
+    return on_signaling([&] {
+      if (!p.pc->local_description()) return false;
+      return p.pc->local_description()->ToString(&out);
+    });
   }
 
   void fail(const char* message) {
     if (error_.empty()) error_ = message;
   }
 
+  // PeerConnection/factory 的 API 必须在创建它们的 signaling 线程上调用。
+  template <class F>
+  auto on_signaling(F&& f) {
+    return signaling_->BlockingCall(std::forward<F>(f));
+  }
+
   Json config_;
   Event event_;
+  std::atomic<uint64_t> capture_frames_{0};
+  std::string recording_name_, playout_name_;
+  bool playout_error_ = false;
+  bool playout_started_ = false;
   std::unique_ptr<webrtc::Thread> network_, worker_, signaling_;
   webrtc::scoped_refptr<webrtc::AudioDeviceModule> adm_;
   webrtc::scoped_refptr<SineDevice> sine_;
@@ -606,6 +719,7 @@ class WebRtcMedia : public Media {
   webrtc::scoped_refptr<webrtc::RtpSenderInterface> sender_;
   bool selected_ = false;
   bool worker_started_ = false;
+  bool signaling_started_ = false;
   std::string error_;
 };
 }  // namespace
