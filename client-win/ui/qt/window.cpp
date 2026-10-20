@@ -2,6 +2,7 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QFormLayout>
+#include <QHostInfo>
 #include <QHBoxLayout>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -35,11 +36,11 @@ TalkWindow::TalkWindow(){
   auto* layout=new QVBoxLayout(this);auto* form=new QFormLayout;
   QSettings settings;
   url_=new QLineEdit(settings.value("url","ws://47.117.159.193:8080/talk/v1/ws").toString());
-  uid_=new QLineEdit(settings.value("uid","windows-ui").toString());room_=new QLineEdit(settings.value("room","rk-client-test").toString());
+  uid_=new QLineEdit(settings.value("uid",QStringLiteral("windows-")+QHostInfo::localHostName().toLower()).toString());room_=new QLineEdit(settings.value("room","rk-client-test").toString());
   token_=new QLineEdit;token_->setEchoMode(QLineEdit::Password);token_->setPlaceholderText(QStringLiteral("仅保存在内存，不写配置"));
   dev_=new QCheckBox(QStringLiteral("开发测试：从 /dev/token 获取凭证"));
   backend_=new QComboBox;backend_->addItem(QStringLiteral("仅信令（不访问声卡）"),"none");backend_->addItem(QStringLiteral("合成音频（不访问声卡）"),"fake");backend_->addItem(QStringLiteral("WASAPI（Core Audio）"),"wasapi");
-  {const int saved=backend_->findData(settings.value("backend","none").toString());backend_->setCurrentIndex(saved<0?0:saved);}
+  {const int saved=backend_->findData(settings.value("backend","wasapi").toString());backend_->setCurrentIndex(saved<0?0:saved);}
   recording_=new QComboBox;playout_=new QComboBox;devices_=new QPushButton(QStringLiteral("枚举设备"));
   recording_->setMinimumWidth(200);playout_->setMinimumWidth(200);
   recording_->setToolTip(QStringLiteral("采集设备：默认使用系统通信设备"));playout_->setToolTip(QStringLiteral("播放设备：默认使用系统通信设备"));
