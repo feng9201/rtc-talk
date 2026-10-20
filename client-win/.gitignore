@@ -1,0 +1,10 @@
+build/
+out/
+.vs/
+*.user
+*.suo
+*.VC.db
+*.VC.opendb
+CMakeUserPresets.json
+vcpkg_installed/
+qt-smoke.png

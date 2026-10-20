@@ -1,0 +1,58 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "windows-x64",
+      "displayName": "Windows x64 (VS2022)",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/build/windows-x64",
+      "toolchainFile": "D:/vcpkg/scripts/buildsystems/vcpkg.cmake",
+      "cacheVariables": {
+        "VCPKG_TARGET_TRIPLET": "x64-windows",
+        "VCPKG_MANIFEST_INSTALL": "ON",
+        "WEBRTC_SDK_DIR": "D:/google/webrtc_sdk_hevc",
+        "TALK_WITH_WEBRTC": "ON",
+        "TALK_WITH_QT": "ON",
+        "CMAKE_PREFIX_PATH": "C:/Qt/5.15.2/msvc2019_64"
+      }
+    },
+    {
+      "name": "windows-x64-nomedia",
+      "displayName": "Windows x64 仅信令（无 WebRTC/Qt）",
+      "inherits": "windows-x64",
+      "binaryDir": "${sourceDir}/build/windows-x64-nomedia",
+      "cacheVariables": {
+        "TALK_WITH_WEBRTC": "OFF",
+        "TALK_WITH_QT": "OFF"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "windows-x64-debug",
+      "configurePreset": "windows-x64",
+      "configuration": "Debug"
+    },
+    {
+      "name": "windows-x64-release",
+      "configurePreset": "windows-x64",
+      "configuration": "Release"
+    },
+    {
+      "name": "windows-x64-nomedia-debug",
+      "configurePreset": "windows-x64-nomedia",
+      "configuration": "Debug"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "windows-x64-debug",
+      "configurePreset": "windows-x64",
+      "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}

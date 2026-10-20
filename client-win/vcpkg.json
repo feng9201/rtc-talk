@@ -1,0 +1,9 @@
+{
+  "name": "rtc-talk-client-win",
+  "version-string": "0.1.0",
+  "description": "RTC Talk Windows desktop client",
+  "dependencies": [
+    "asio",
+    "nlohmann-json"
+  ]
+}
