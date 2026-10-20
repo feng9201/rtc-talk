@@ -169,6 +169,9 @@ export class Connection {
       this.send(okResponse(req.id, data ?? {}));
     } catch (err) {
       if (err instanceof TalkError) {
+        const fields = { method: req.method, code: err.code, msg: err.message };
+        if (err.code >= 500) this.log.error(fields, 'request rejected');
+        else this.log.warn(fields, 'request rejected');
         this.send(errorResponse(req.id, err));
       } else {
         this.log.error({ err, method: req.method }, 'request handler failed');

@@ -16,8 +16,19 @@ export interface MediaNodeOptions {
   onWorkerDied: (err: Error) => void;
 }
 
+function peerKey(roomId: string, uid: string): string {
+  return `${roomId}\0${uid}`;
+}
+
 export class MediaNode {
   private readonly rooms = new Map<string, RoomMedia>();
+  /** 同一 roomId 正在 createRouter 的共享 Promise，避免并发首建覆盖 */
+  private readonly opening = new Map<string, Promise<RoomMedia | undefined>>();
+  /** closeRoom 发生在 Router 创建完成之前 */
+  private readonly discard = new Set<string>();
+  /** removePeer 发生在 addPeer 的 await 返回之前，回来后不要再把这个人加进去 */
+  private readonly skipped = new Set<string>();
+  private shuttingDown = false;
   private readonly servers: ms.WebRtcServer[] = [];
   private answer: AnswerHandler = () => Promise.reject(new TalkError(500, 'no answer handler'));
 
@@ -62,27 +73,74 @@ export class MediaNode {
   }
 
   async addPeer(roomId: string, uid: string, muted: boolean): Promise<void> {
-    let room = this.rooms.get(roomId);
-    if (!room) {
-      const worker = this.pool.pick();
-      const router = await worker.createRouter({ mediaCodecs: AUDIO_MEDIA_CODECS });
-      room = new RoomMedia(roomId, router, this.serverFor(worker), this.log, this.answer);
-      this.rooms.set(roomId, room);
-      this.log.info({ room: roomId, router: router.id }, 'router created');
+    const key = peerKey(roomId, uid);
+    this.skipped.delete(key);
+    const room = (await this.openRoom(roomId)) ?? this.rooms.get(roomId);
+    if (this.skipped.has(key)) {
+      this.skipped.delete(key);
+      this.log.info({ room: roomId, uid }, 'addPeer skipped, peer already left');
+      return;
     }
+    if (!room) return;
     room.addPeer(uid, muted);
   }
 
+  /** 同一房间只创建一次 Router。并发的 addPeer 等待同一次创建。 */
+  private openRoom(roomId: string): Promise<RoomMedia | undefined> {
+    const existing = this.rooms.get(roomId);
+    if (existing) return Promise.resolve(existing);
+    const pending = this.opening.get(roomId);
+    if (pending) return pending;
+    const task = this.createRoom(roomId);
+    this.opening.set(roomId, task);
+    void task.finally(() => {
+      if (this.opening.get(roomId) === task) this.opening.delete(roomId);
+    });
+    return task;
+  }
+
+  private async createRoom(roomId: string): Promise<RoomMedia | undefined> {
+    const worker = this.pool.pick();
+    const router = await worker.createRouter({ mediaCodecs: AUDIO_MEDIA_CODECS });
+    const discarded = this.discard.delete(roomId);
+    if (discarded || this.shuttingDown) {
+      router.close();
+      this.log.info({ room: roomId, router: router.id }, 'router discarded');
+      return undefined;
+    }
+    const current = this.rooms.get(roomId);
+    if (current) {
+      router.close();
+      this.log.warn({ room: roomId, router: router.id, kept: current.router.id }, 'duplicate router discarded');
+      return current;
+    }
+    const room = new RoomMedia(roomId, router, this.serverFor(worker), this.log, this.answer);
+    this.rooms.set(roomId, room);
+    this.log.info({ room: roomId, router: router.id }, 'router created');
+    return room;
+  }
+
   removePeer(roomId: string, uid: string): void {
-    this.rooms.get(roomId)?.removePeer(uid);
+    const room = this.rooms.get(roomId);
+    if (room?.peers.has(uid)) {
+      room.removePeer(uid);
+      return;
+    }
+    // 房间还在创建，或人还没写进 RoomMedia：记下，避免 await 回来后又加进去
+    this.skipped.add(peerKey(roomId, uid));
+    if (room || !this.opening.has(roomId)) {
+      this.log.warn({ room: roomId, uid }, 'removePeer: peer not in media room');
+    }
   }
 
   closeRoom(roomId: string): void {
+    if (this.opening.has(roomId)) this.discard.add(roomId);
     const room = this.rooms.get(roomId);
     if (!room) return;
+    const routerId = room.router.id;
     room.close();
     this.rooms.delete(roomId);
-    this.log.info({ room: roomId }, 'router closed');
+    this.log.info({ room: roomId, router: routerId }, 'router closed');
   }
 
   async publish(roomId: string, uid: string, sdp: string) {
@@ -98,7 +156,12 @@ export class MediaNode {
   }
 
   async setMuted(roomId: string, uid: string, muted: boolean): Promise<void> {
-    await this.rooms.get(roomId)?.peers.get(uid)?.setMuted(muted);
+    const peer = this.rooms.get(roomId)?.peers.get(uid);
+    if (!peer) {
+      this.log.warn({ room: roomId, uid }, 'setMuted: peer not in media room');
+      return;
+    }
+    await peer.setMuted(muted);
   }
 
   async restartIce(roomId: string, uid: string, pc: 'send' | 'recv'): Promise<void> {
@@ -119,6 +182,8 @@ export class MediaNode {
   }
 
   close(): void {
+    this.shuttingDown = true;
+    for (const roomId of this.opening.keys()) this.discard.add(roomId);
     for (const room of this.rooms.values()) room.close();
     this.rooms.clear();
     for (const s of this.servers) s.close();
