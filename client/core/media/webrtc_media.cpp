@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cmath>
 #include <future>
+#include <map>
 #include <thread>
 #include "api/audio/audio_device.h"
 #include "api/audio/audio_frame.h"
@@ -119,7 +120,12 @@ class Peer : public webrtc::PeerConnectionObserver {
   Peer(std::string name,Media::Event event):name_(std::move(name)),event_(std::move(event)){}
   void OnSignalingChange(webrtc::PeerConnectionInterface::SignalingState) override {}
   void OnDataChannel(webrtc::scoped_refptr<webrtc::DataChannelInterface>) override {}
-  void OnIceCandidate(const webrtc::IceCandidate*) override {}
+  void OnIceCandidate(const webrtc::IceCandidate* candidate) override {
+    // 只有 P2P 需要逐条交换候选；SFU 由服务端从连通性检查学习反射地址。
+    if(!trickle_||!candidate)return;
+    event_("p2p.candidate",{{"candidate",candidate->ToString()},{"sdp_mid",candidate->sdp_mid()},
+                            {"sdp_mline_index",candidate->sdp_mline_index()}});
+  }
   void OnIceGatheringChange(webrtc::PeerConnectionInterface::IceGatheringState) override {}
   void OnConnectionChange(webrtc::PeerConnectionInterface::PeerConnectionState state) override {
     event_("media.state",{{"pc",name_},{"state",static_cast<int>(state)}});
@@ -129,6 +135,7 @@ class Peer : public webrtc::PeerConnectionObserver {
     if(track&&track->kind()=="audio")static_cast<webrtc::AudioTrackInterface*>(track.get())->GetSource()->SetVolume(gain.load());
   }
   std::atomic<double> gain{0.5};
+  bool trickle_=false;
   webrtc::scoped_refptr<webrtc::PeerConnectionInterface> pc;
  private:
   std::string name_;Media::Event event_;
@@ -136,7 +143,8 @@ class Peer : public webrtc::PeerConnectionObserver {
 class WebRtcMedia : public Media {
  public:
   WebRtcMedia(const Json& config,const Json& ice,MuteGate gate,Event event)
-      : config_(config),event_(std::move(event)),send_("send",event_),recv_("recv",event_) {
+      : config_(config),event_(std::move(event)),send_("send",event_),recv_("recv",event_),p2p_("p2p",event_) {
+    p2p_.trickle_=true;
     // 默认不输出 WebRTC 的 SDP/候选日志，避免凭证进入诊断输出。
     webrtc::LogMessage::LogToDebug(webrtc::LS_NONE);
     network_=webrtc::Thread::CreateWithSocketServer();worker_=webrtc::Thread::Create();signaling_=webrtc::Thread::Create();
@@ -177,14 +185,14 @@ class WebRtcMedia : public Media {
   ~WebRtcMedia() override {
     if(send_.pc)send_.pc->Close();
     if(recv_.pc)recv_.pc->Close();
-    send_.pc=nullptr;recv_.pc=nullptr;sender_=nullptr;track_=nullptr;factory_=nullptr;
+    if(p2p_.pc)p2p_.pc->Close();
+    send_.pc=nullptr;recv_.pc=nullptr;p2p_.pc=nullptr;sender_=nullptr;p2p_sender_=nullptr;track_=nullptr;factory_=nullptr;
     if(adm_)worker_->BlockingCall([&]{adm_->StopRecording();adm_->StopPlayout();adm_->Terminate();});
     adm_=nullptr;sine_=nullptr;
   }
   Json offer() override {
-    select_devices();create(send_);
-    if(!track_){
-      auto source=factory_->CreateAudioSource(webrtc::AudioOptions());track_=factory_->CreateAudioTrack("mic",source.get());track_->set_enabled(false);
+    select_devices();ensure_track();create(send_);
+    if(!sender_){
       webrtc::RtpTransceiverInit init;init.direction=webrtc::RtpTransceiverDirection::kSendOnly;init.stream_ids={"talk"};
       auto r=send_.pc->AddTransceiver(track_,init);if(!r.ok())throw std::runtime_error("添加音轨失败");sender_=r.value()->sender();
     }
@@ -194,13 +202,12 @@ class WebRtcMedia : public Media {
     return {{"sdp",local(send_)},{"tracks",Json::array({{{"mid",mid},{"kind","audio"},{"source","mic"}}})}};
   }
   void accept(const std::string& sdp) override {set_remote(send_,webrtc::SdpType::kAnswer,sdp);}
-  Json answer(const std::string& sdp) override {select_devices();create(recv_);set_remote(recv_,webrtc::SdpType::kOffer,sdp);set_local(recv_,false);volume(recv_.gain.load());return {{"sdp",local(recv_)}};}
+  Json answer(const std::string& sdp) override {select_devices();create(recv_);set_remote(recv_,webrtc::SdpType::kOffer,sdp);set_local(recv_,false);apply_gain(recv_);return {{"sdp",local(recv_)}};}
   void mute(bool muted) override {
+    muted_=muted;
     if(track_)track_->set_enabled(!muted);
-    if(sender_){
-      auto p=sender_->GetParameters();for(auto& e:p.encodings){e.active=!muted;e.max_bitrate_bps=32000;}
-      if(!sender_->SetParameters(p).ok()) {if(track_)track_->set_enabled(false);throw std::runtime_error("设置发送状态失败");}
-    }
+    apply_sender(sender_,sfu_send_&&!muted);
+    apply_sender(p2p_sender_,!muted);
   }
   Json devices() override {
     return worker_->BlockingCall([&]{
@@ -217,14 +224,11 @@ class WebRtcMedia : public Media {
     });
   }
   void volume(double gain) override {
-    recv_.gain=gain;if(!recv_.pc)return;
-    for(auto& receiver:recv_.pc->GetReceivers()){
-      auto track=receiver->track();if(track&&track->kind()=="audio")static_cast<webrtc::AudioTrackInterface*>(track.get())->GetSource()->SetVolume(gain);
-    }
+    user_gain_=gain;apply_gain(recv_);apply_gain(p2p_);
   }
   Json stats() override {
     Json out=Json::object();
-    for(auto* peer:{&send_,&recv_}){
+    for(auto* peer:{&send_,&recv_,&p2p_}){
       if(!peer->pc)continue;
       auto observer=webrtc::make_ref_counted<StatsObserver>();auto future=observer->promise.get_future();peer->pc->GetStats(observer.get());auto report=wait(std::move(future));
       uint64_t received=0,sent=0;int64_t lost=0;double jitter=0;
@@ -232,12 +236,114 @@ class WebRtcMedia : public Media {
         received+=s->packets_received.value_or(0);lost+=s->packets_lost.value_or(0);jitter=std::max(jitter,s->jitter.value_or(0));
       }
       for(const auto* s:report->GetStatsOfType<webrtc::RTCOutboundRtpStreamStats>())if(s->kind.value_or("")=="audio")sent+=s->packets_sent.value_or(0);
-      out[peer==&send_?"send":"recv"]={{"received",received},{"sent",sent},{"lost",lost},{"jitter_seconds",jitter}};
+      const auto key=peer==&send_?"send":peer==&recv_?"recv":"p2p";
+      out[key]={{"received",received},{"sent",sent},{"lost",lost},{"jitter_seconds",jitter}};
+      if(peer==&p2p_){
+        const auto path=candidate_path(*report);
+        if(!path.empty())out[key]["path"]=path;
+      }
     }
     if(sine_)out["fake_playout"]=sine_->stats();
     return out;
   }
+  /* ---- P2P ---- */
+  Json p2p_offer() override {
+    select_devices();ensure_track();create(p2p_);
+    add_p2p_sender();
+    set_local(p2p_,true);
+    return {{"sdp",local(p2p_)}};
+  }
+  void p2p_accept(const std::string& sdp) override {
+    if(!p2p_.pc)throw std::runtime_error("P2P PC 尚未建立");
+    set_remote(p2p_,webrtc::SdpType::kAnswer,sdp);
+    apply_gain(p2p_);
+  }
+  Json p2p_answer(const std::string& sdp) override {
+    select_devices();ensure_track();create(p2p_);
+    add_p2p_sender();
+    set_remote(p2p_,webrtc::SdpType::kOffer,sdp);set_local(p2p_,false);apply_gain(p2p_);
+    return {{"sdp",local(p2p_)}};
+  }
+  void p2p_candidate(const std::string& candidate,const std::string& mid,int index) override {
+    if(candidate.empty())return;
+    if(!p2p_.pc)throw std::runtime_error("P2P PC 尚未建立");
+    auto parsed=webrtc::IceCandidate::Create(mid,index,candidate);
+    if(!parsed||!p2p_.pc->AddIceCandidate(parsed.get()))throw std::runtime_error("远端 P2P 候选无效");
+  }
+  void p2p_close() override {
+    if(p2p_.pc)p2p_.pc->Close();
+    p2p_.pc=nullptr;p2p_sender_=nullptr;
+  }
+  Json p2p_path() override {
+    Json out=Json::object();
+    if(!p2p_.pc)return out;
+    auto observer=webrtc::make_ref_counted<StatsObserver>();auto future=observer->promise.get_future();p2p_.pc->GetStats(observer.get());auto report=wait(std::move(future));
+    if(!report)return out;
+    const auto path=candidate_path(*report);
+    if(!path.empty())out["path"]=path;
+    return out;
+  }
+  /* ---- 模式切换 ---- */
+  void sfu_send(bool enabled) override {
+    sfu_send_=enabled;
+    apply_sender(sender_,enabled&&!muted_);
+  }
+  void sfu_playback(bool enabled) override {
+    playback_=enabled;
+    apply_gain(recv_);
+  }
+  void update_ice(const Json& ice) override {
+    rtc_config_.servers.clear();
+    for(const auto& item:ice){
+      webrtc::PeerConnectionInterface::IceServer server;
+      if(item.at("urls").is_array())server.urls=item.at("urls").get<std::vector<std::string>>();
+      else server.urls={item.at("urls").get<std::string>()};
+      server.username=item.value("username","");server.password=item.value("credential","");
+      rtc_config_.servers.push_back(server);
+    }
+    // 新凭证在下次 ICE restart/新建 PC 生效；已有 PC 尝试热更新，失败不阻断。
+    for(auto* peer:{&send_,&recv_,&p2p_})if(peer->pc)(void)peer->pc->SetConfiguration(rtc_config_);
+  }
  private:
+  void ensure_track(){
+    if(track_)return;
+    auto source=factory_->CreateAudioSource(webrtc::AudioOptions());track_=factory_->CreateAudioTrack("mic",source.get());track_->set_enabled(false);
+  }
+  void add_p2p_sender(){
+    if(p2p_sender_){apply_sender(p2p_sender_,!muted_);return;}
+    webrtc::RtpTransceiverInit init;init.direction=webrtc::RtpTransceiverDirection::kSendRecv;init.stream_ids={"talk"};
+    auto r=p2p_.pc->AddTransceiver(track_,init);if(!r.ok())throw std::runtime_error("添加 P2P 音轨失败");
+    p2p_sender_=r.value()->sender();
+    apply_sender(p2p_sender_,!muted_);
+  }
+  void apply_sender(const webrtc::scoped_refptr<webrtc::RtpSenderInterface>& sender,bool enabled){
+    if(!sender)return;
+    auto p=sender->GetParameters();for(auto& e:p.encodings){e.active=enabled;e.max_bitrate_bps=32000;}
+    if(!sender->SetParameters(p).ok()){if(track_)track_->set_enabled(false);throw std::runtime_error("设置发送状态失败");}
+  }
+  void apply_gain(Peer& peer){
+    peer.gain=(&peer==&recv_&&!playback_)?0.0:user_gain_;
+    if(!peer.pc)return;
+    for(auto& receiver:peer.pc->GetReceivers()){
+      auto track=receiver->track();if(track&&track->kind()=="audio")static_cast<webrtc::AudioTrackInterface*>(track.get())->GetSource()->SetVolume(peer.gain.load());
+    }
+  }
+  /* 从选中且已提名的候选对判定实际路径；relay 优先于 srflx。 */
+  static std::string candidate_path(const webrtc::RTCStatsReport& report){
+    std::map<std::string,std::string> types;
+    for(const auto* c:report.GetStatsOfType<webrtc::RTCLocalIceCandidateStats>())if(c->candidate_type)types[c->id()]=*c->candidate_type;
+    for(const auto* c:report.GetStatsOfType<webrtc::RTCRemoteIceCandidateStats>())if(c->candidate_type)types[c->id()]=*c->candidate_type;
+    for(const auto* pair:report.GetStatsOfType<webrtc::RTCIceCandidatePairStats>()){
+      if(!pair->state||*pair->state!="succeeded"||!pair->nominated.value_or(false))continue;
+      if(!pair->local_candidate_id||!pair->remote_candidate_id)continue;
+      const auto local=types.find(*pair->local_candidate_id);const auto remote=types.find(*pair->remote_candidate_id);
+      if(local==types.end()||remote==types.end())continue;
+      if(local->second=="relay"||remote->second=="relay")return "relay";
+      if(local->second=="srflx"||remote->second=="srflx"||local->second=="prflx"||remote->second=="prflx")return "srflx";
+      return "host";
+    }
+    return "";
+  }
   void create(Peer& peer){
     if(peer.pc)return;
     auto r=factory_->CreatePeerConnectionOrError(rtc_config_,webrtc::PeerConnectionDependencies(&peer));
@@ -279,10 +385,11 @@ class WebRtcMedia : public Media {
   webrtc::scoped_refptr<SineDevice> sine_;
   webrtc::scoped_refptr<webrtc::PeerConnectionFactoryInterface> factory_;
   webrtc::PeerConnectionInterface::RTCConfiguration rtc_config_;
-  Peer send_,recv_;
+  Peer send_,recv_,p2p_;
   webrtc::scoped_refptr<webrtc::AudioTrackInterface> track_;
-  webrtc::scoped_refptr<webrtc::RtpSenderInterface> sender_;
-  bool selected_=false;
+  webrtc::scoped_refptr<webrtc::RtpSenderInterface> sender_,p2p_sender_;
+  bool selected_=false,muted_=true,sfu_send_=true,playback_=true;
+  double user_gain_=0.5;
 };
 }
 std::unique_ptr<Media> make_media(const Json& config,const Json& ice,MuteGate gate,Media::Event event){return std::make_unique<WebRtcMedia>(config,ice,std::move(gate),std::move(event));}

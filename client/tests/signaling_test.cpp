@@ -43,6 +43,21 @@ struct Events {
         throw std::runtime_error("等待客户端事件超时：" + name);
     }
   }
+  Json wait_str(const std::string& name, const std::string& id, std::chrono::seconds timeout = 5s) {
+    std::unique_lock<std::mutex> lock(mutex);
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    for (;;) {
+      for (auto it = items.begin(); it != items.end(); ++it) {
+        if (it->first == name && it->second.is_object() && it->second.value("id", "") == id) {
+          Json result = it->second;
+          items.erase(it);
+          return result;
+        }
+      }
+      if (condition.wait_until(lock, deadline) == std::cv_status::timeout)
+        throw std::runtime_error("等待客户端事件超时：" + name);
+    }
+  }
 };
 class Fixture {
  public:
@@ -68,6 +83,7 @@ class Fixture {
       const auto method = j["method"].get<std::string>();
       Json data = Json::object();
       if (method == "session.hello") {
+        hello = j["data"];
         const bool resumed = j["data"].contains("resume");
         data = {{"session_id", "test-session"}, {"uid", "self"}, {"resumed", resumed},
                 {"heartbeat_interval", 30}, {"resume_ttl", 60}, {"ice_servers", Json::array()}};
@@ -75,9 +91,13 @@ class Fixture {
       } else if (method == "room.join") {
         ++joins;
         check(j["data"]["media"]["audio"]["muted"] == true, "初始状态不是静音");
+        check(j["data"]["policy"].contains("media_mode"), "入房缺少 media_mode");
+        join_policy = j["data"]["policy"]["media_mode"].get<std::string>();
         joined = true; data = snapshot();
       } else if (method == "room.leave") {
         joined = false;
+      } else if (method == "call.invite") {
+        data = {{"call_id", "call-test"}, {"room_id", "test-room"}};
       } else if (method == "media.setMute") {
         if (!j["data"]["muted"].get<bool>() && delay_unmute) { delayed = j; return; }
         data = {{"audio", {{"muted", j["data"]["muted"]}}}};
@@ -119,7 +139,15 @@ class Fixture {
     server.get_io_service().post([&] { try { task(); done.set_value(); } catch (...) { done.set_exception(std::current_exception()); } });
     done.get_future().get();
   }
-  Json snapshot() { return {{"room", {{"room_id", "test-room"}}}, {"peers", Json::array()}}; }
+  Json snapshot() {
+    Json out = {{"room", {{"room_id", "test-room"}}}, {"peers", Json::array()},
+                {"media_mode", view_media_mode}};
+    if (!view_p2p.is_null()) out["p2p"] = view_p2p;
+    return out;
+  }
+  void server_send(const Json& message) {
+    on_server([&] { server.send(connection, message.dump(), websocketpp::frame::opcode::text); });
+  }
   Server server;
   websocketpp::connection_hdl connection;
   std::thread thread;
@@ -129,6 +157,10 @@ class Fixture {
   bool joined = false, delay_unmute = false, drop_ping = false;
   int joins = 0, byes = 0, opens = 0;
   Json delayed;
+  Json hello = Json::object();
+  std::string join_policy;
+  std::string view_media_mode = "sfu";
+  Json view_p2p = nullptr;
 };
 int main() {
   try {
@@ -161,7 +193,65 @@ int main() {
     f.events.wait("session.kicked");
     std::this_thread::sleep_for(1500ms);
     f.on_server([&] { check(f.opens == 3, "顶号后不应自动重新连接"); });
-    std::cout << "信令：握手、入房、双向请求、迟到开麦、resume、超时、bye、顶号通过\n";
+
+    {
+      Fixture g;
+      g.connect();
+      check(g.result(g.command("room.join", {{"room_id", "p2p-room"}}))["ok"] == true, "S3 入房失败");
+      g.events.wait("joined");
+      g.on_server([&] {
+        check(g.hello["caps"]["p2p"] == true, "hello 未声明 p2p 能力");
+        check(g.join_policy == "auto", "入房未使用 auto 模式");
+      });
+
+      // 服务端要求进入 P2P：先应答，再处理媒体。
+      g.server_send({{"v",1},{"type","req"},{"id","s-p2p"},{"method","room.mediaMode"},
+                     {"data",{{"mode","p2p"},{"reason","peer_count"},
+                              {"p2p",{{"role","offerer"},{"peer","bob"},{"session","sess-1"}}}}}});
+      check(g.replies.wait_str("server-result", "s-p2p")["ok"] == true, "room.mediaMode p2p 未成功应答");
+      check(g.events.wait("mediaMode")["media_mode"] == "p2p", "未报告 p2p 模式");
+
+      // 无媒体后端时不建链，但 P2P 通知不能破坏会话。
+      g.server_send({{"v",1},{"type","ntf"},{"method","p2p.answer"},
+                     {"data",{{"session","sess-1"},{"from","bob"},{"sdp","v=0"}}}});
+      g.server_send({{"v",1},{"type","ntf"},{"method","p2p.candidate"},
+                     {"data",{{"session","sess-1"},{"from","bob"},
+                               {"candidate","candidate:1 1 UDP 1 127.0.0.1 9000 typ host"},
+                               {"sdp_mid","0"},{"sdp_mline_index",0}}}});
+      check(g.result(g.command("session.ping"))["ok"] == true, "P2P 通知后会话不可用");
+
+      g.server_send({{"v",1},{"type","ntf"},{"method","p2p.close"},{"data",{{"session","sess-1"}}}});
+      check(g.events.wait("p2p.closed")["session"] == "sess-1", "未处理 p2p.close");
+      check(g.events.wait("mediaMode")["media_mode"] == "sfu", "p2p.close 后未回到 sfu");
+
+      // 切回 SFU：无媒体后端时立即应答。
+      g.server_send({{"v",1},{"type","req"},{"id","s-sfu"},{"method","room.mediaMode"},
+                     {"data",{{"mode","sfu"},{"reason","peer_count"},{"media_mode","sfu"}}}});
+      check(g.replies.wait_str("server-result", "s-sfu")["ok"] == true, "room.mediaMode sfu 未成功应答");
+
+      // call.* 命令与通知透传。
+      auto invited = g.result(g.command("call.invite", {{"callees", Json::array({"bob"})}, {"room_id", "p2p-room"}}));
+      check(invited["ok"] == true && invited["data"]["call_id"] == "call-test", "call.invite 未透传");
+      g.server_send({{"v",1},{"type","ntf"},{"method","call.incoming"},
+                     {"data",{{"call_id","call-test"},{"room_id","p2p-room"},{"from","bob"}}}});
+      check(g.events.wait("call.incoming")["call_id"] == "call-test", "call.incoming 未上报");
+      g.server_send({{"v",1},{"type","ntf"},{"method","call.state"},
+                     {"data",{{"call_id","call-test"},{"state","accepted"}}}});
+      check(g.events.wait("call.state")["state"] == "accepted", "call.state 未上报");
+
+      // resume 快照带 P2P 模式时不重发入房。
+      g.on_server([&] {
+        g.view_media_mode = "p2p";
+        g.view_p2p = {{"role","offerer"},{"peer","bob"},{"session","sess-1"}};
+        websocketpp::lib::error_code ec;
+        g.server.get_con_from_hdl(g.connection)->terminate(ec);
+      });
+      check(g.events.wait("ready")["resumed"] == true, "S3 resume 未恢复");
+      check(g.events.wait("joined")["media_mode"] == "p2p", "resume 快照未恢复 p2p 模式");
+      check(g.result(g.command("disconnect"))["ok"] == true, "S3 断开失败");
+    }
+
+    std::cout << "信令：握手、入房、双向请求、迟到开麦、resume、超时、bye、顶号、S3 模式与呼叫通过\n";
     return 0;
   } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }
 }
