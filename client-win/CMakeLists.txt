@@ -108,10 +108,16 @@ if(TALK_WITH_QT)
   target_include_directories(talk-qt PRIVATE include ui/qt)
   target_link_libraries(talk-qt PRIVATE talk_core Qt5::Widgets Qt5::Network)
   target_compile_options(talk-qt PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/utf-8 /EHsc /GR /W3>)
+  # 版本资源：安装包用 GetFileVersion 读版本号，同时在资源管理器可见版本信息。
+  if(MSVC)
+    configure_file(cmake/version.rc.in "${CMAKE_CURRENT_BINARY_DIR}/talk-qt.rc" @ONLY)
+    target_sources(talk-qt PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/talk-qt.rc")
+  endif()
   set_target_properties(talk-qt PROPERTIES
     CXX_STANDARD 17
     CXX_STANDARD_REQUIRED ON
     AUTOMOC ON
+    WIN32_EXECUTABLE TRUE
     MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
   )
   add_custom_command(TARGET talk-qt POST_BUILD
