@@ -46,6 +46,7 @@ int main(int argc,char** argv){
       else if(arg=="--room")app.room=value;
       else if(arg=="--token-file")token_file=value;
       else if(arg=="--audio")config["audio_backend"]=value;
+      else if(arg=="--media-mode")config["media_mode"]=value;
       else if(arg=="--config")config_file=value;
       else if(arg=="--duration")duration=std::stoi(value);
       else throw std::runtime_error("未知参数");
@@ -65,7 +66,11 @@ int main(int argc,char** argv){
       return app.failed?1:0;
     }
     if(url.empty()||app.room.empty()||duration<1||duration>86400||token_stdin==!token_file.empty())
-      throw std::runtime_error("用法：talk-cli --url ws://主机:端口/talk/v1/ws --room 房间 --token-file 文件（或 --token-stdin） [--audio none|fake|wasapi] [--config 文件] [--duration 秒]；单跑 --list-devices 枚举音频设备");
+      throw std::runtime_error("用法：talk-cli --url ws://主机:端口/talk/v1/ws --room 房间 --token-file 文件（或 --token-stdin） [--audio none|fake|wasapi] [--media-mode auto|sfu|p2p] [--config 文件] [--duration 秒]；单跑 --list-devices 枚举音频设备");
+    if(config.contains("media_mode")){
+      const auto mode=config["media_mode"].get<std::string>();
+      if(mode!="auto"&&mode!="sfu"&&mode!="p2p")throw std::runtime_error("media_mode 必须是 auto/sfu/p2p");
+    }
     std::string token;
     if(token_stdin)std::getline(std::cin,token);
     else{

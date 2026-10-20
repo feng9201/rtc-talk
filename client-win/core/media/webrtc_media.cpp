@@ -19,6 +19,7 @@
 #include "api/audio_codecs/opus/audio_decoder_opus.h"
 #include "api/audio_codecs/opus/audio_encoder_opus.h"
 #include "api/audio_options.h"
+#include "api/candidate.h"
 #include "api/create_modular_peer_connection_factory.h"
 #include "api/enable_media.h"
 #include "api/environment/environment_factory.h"
@@ -30,6 +31,7 @@
 #include "api/stats/rtc_stats_report.h"
 #include "api/stats/rtcstats_objects.h"
 #include "modules/audio_device/include/audio_device_default.h"
+#include "p2p/base/port.h"
 #include "rtc_base/logging.h"
 #include "rtc_base/thread.h"
 #include "rtc_base/win/scoped_com_initializer.h"
@@ -193,20 +195,60 @@ class Peer : public webrtc::PeerConnectionObserver {
   Peer(std::string name, Media::Event event) : name_(std::move(name)), event_(std::move(event)) {}
   void OnSignalingChange(webrtc::PeerConnectionInterface::SignalingState) override {}
   void OnDataChannel(webrtc::scoped_refptr<webrtc::DataChannelInterface>) override {}
-  void OnIceCandidate(const webrtc::IceCandidate*) override {}
+  void OnIceCandidate(const webrtc::IceCandidate* candidate) override {
+    if (!event_ || name_ != "p2p") return;
+    Json data = {{"candidate", candidate ? candidate->ToString() : std::string()}};
+    if (candidate) {
+      data["sdp_mid"] = candidate->sdp_mid();
+      data["sdp_mline_index"] = candidate->sdp_mline_index();
+    }
+    event_("p2p.candidate", std::move(data));
+  }
   void OnIceGatheringChange(webrtc::PeerConnectionInterface::IceGatheringState) override {}
+  void OnIceSelectedCandidatePairChanged(const webrtc::CandidatePairChangeEvent& e) override {
+    using webrtc::IceCandidateType;
+    const auto local = e.selected_candidate_pair.local_candidate().type();
+    const auto remote = e.selected_candidate_pair.remote_candidate().type();
+    path = (local == IceCandidateType::kRelay || remote == IceCandidateType::kRelay) ? "relay"
+         : (local == IceCandidateType::kSrflx || remote == IceCandidateType::kSrflx) ? "srflx"
+         : "host";
+  }
   void OnConnectionChange(webrtc::PeerConnectionInterface::PeerConnectionState state) override {
-    if (event_) event_("media.state", {{"pc", name_}, {"state", static_cast<int>(state)}});
+    if (!event_) return;
+    event_("media.state", {{"pc", name_}, {"state", static_cast<int>(state)}});
+    if (name_ != "p2p") return;
+    const char* text = state == webrtc::PeerConnectionInterface::PeerConnectionState::kConnected  ? "connected"
+                     : state == webrtc::PeerConnectionInterface::PeerConnectionState::kConnecting ? "connecting"
+                     : state == webrtc::PeerConnectionInterface::PeerConnectionState::kFailed     ? "failed"
+                     : state == webrtc::PeerConnectionInterface::PeerConnectionState::kClosed     ? "closed"
+                                                                                                  : nullptr;
+    if (!text) return;
+    Json data = {{"state", text}};
+    if (state == webrtc::PeerConnectionInterface::PeerConnectionState::kConnected) {
+      data["path"] = path.empty() ? "host" : path;
+    }
+    event_("p2p.state", std::move(data));
   }
   void OnTrack(webrtc::scoped_refptr<webrtc::RtpTransceiverInterface> t) override {
     auto track = t->receiver()->track();
     if (track && track->kind() == "audio") {
       auto* audio = static_cast<webrtc::AudioTrackInterface*>(track.get());
       if (audio->GetSource()) audio->GetSource()->SetVolume(gain.load());
+      // P2P 期间 SFU 下行只暂停播放，保持 ICE/DTLS 不断，切回时可直接复用。
+      track->set_enabled(!paused.load());
     }
   }
+  // 只能在 signaling 线程调用。
+  void reset() {
+    pc = nullptr;
+    sender = nullptr;
+    path.clear();
+  }
   std::atomic<double> gain{0.5};
+  std::atomic<bool> paused{false};
+  std::string path;
   webrtc::scoped_refptr<webrtc::PeerConnectionInterface> pc;
+  webrtc::scoped_refptr<webrtc::RtpSenderInterface> sender;
 
  private:
   std::string name_;
@@ -216,7 +258,8 @@ class Peer : public webrtc::PeerConnectionObserver {
 class WebRtcMedia : public Media {
  public:
   WebRtcMedia(const Json& config, const Json& ice, MuteGate gate, Event event)
-      : config_(config), event_(std::move(event)), send_("send", event_), recv_("recv", event_) {
+      : config_(config), event_(std::move(event)), send_("send", event_), recv_("recv", event_),
+        p2p_("p2p", event_) {
     // 默认不输出 WebRTC 的 SDP/候选日志，避免凭证进入诊断输出。
     const bool verbose = config_.value("webrtc_log", false);
     webrtc::LogMessage::LogToDebug(verbose ? webrtc::LS_INFO : webrtc::LS_NONE);
@@ -235,15 +278,17 @@ class WebRtcMedia : public Media {
       signaling_->BlockingCall([this] {
         if (send_.pc) send_.pc->Close();
         if (recv_.pc) recv_.pc->Close();
-        send_.pc = nullptr;
-        recv_.pc = nullptr;
-        sender_ = nullptr;
+        if (p2p_.pc) p2p_.pc->Close();
+        send_.reset();
+        recv_.reset();
+        p2p_.reset();
         track_ = nullptr;
         factory_ = nullptr;
       });
     } else {
-      send_.pc = nullptr;
-      recv_.pc = nullptr;
+      send_.reset();
+      recv_.reset();
+      p2p_.reset();
     }
     if (worker_ && worker_started_) {
       worker_->BlockingCall([this] {
@@ -265,31 +310,16 @@ class WebRtcMedia : public Media {
   bool ok() const { return error_.empty(); }
 
   Json offer() override {
-    if (!select_devices() || !create(send_)) return Json::object();
-    if (!track_) {
-      const bool ready = on_signaling([this] {
-        auto source = factory_->CreateAudioSource(webrtc::AudioOptions());
-        track_ = factory_->CreateAudioTrack("mic", source.get());
-        if (!track_) return false;
-        track_->set_enabled(false);
-        webrtc::RtpTransceiverInit init;
-        init.direction = webrtc::RtpTransceiverDirection::kSendOnly;
-        init.stream_ids = {"talk"};
-        auto r = send_.pc->AddTransceiver(track_, init);
-        if (!r.ok()) return false;
-        sender_ = r.value()->sender();
-        return true;
-      });
-      if (!ready) {
-        fail(track_ ? "添加音轨失败" : "创建音轨失败");
-        return Json::object();
-      }
+    if (!select_devices() || !create(send_) || !ensure_track() ||
+        !add_track(send_, webrtc::RtpTransceiverDirection::kSendOnly, "talk")) {
+      return Json::object();
     }
     if (!set_local(send_, true)) {
       fail("创建或设置本地 SDP 失败");
       return Json::object();
     }
-    mute(true);
+    // 新 SFU 上行等服务端应答后再按静音状态恢复；不要动 P2P 上行。
+    on_signaling([this] { set_send_active(send_, false); });
     std::string mid = on_signaling([this] {
       const auto transceivers = send_.pc->GetTransceivers();
       if (!transceivers.empty() && transceivers.front()->mid().has_value()) {
@@ -329,18 +359,108 @@ class WebRtcMedia : public Media {
     return {{"sdp", out}};
   }
 
+  // ---- S3：1v1 P2P ----
+  Json p2p_start(bool offerer) override {
+    if (!select_devices() || !ensure_track()) return Json::object();
+    // answerer 等收到 offer 时再建 PC，避免刚建就丢掉。
+    if (!offerer) return {{"sdp", ""}};
+    // 新的分配可能晚于旧会话的 p2p.close，先清掉残留 PC。
+    on_signaling([this] {
+      if (p2p_.pc) p2p_.pc->Close();
+      p2p_.reset();
+    });
+    if (!create(p2p_) || !add_track(p2p_, webrtc::RtpTransceiverDirection::kSendRecv, "talk-p2p")) {
+      return Json::object();
+    }
+    std::string sdp;
+    if (!set_local(p2p_, true) || !local(p2p_, sdp)) {
+      fail("创建 P2P offer 失败");
+      return Json::object();
+    }
+    return {{"sdp", sdp}};
+  }
+
+  Json p2p_answer(const std::string& sdp) override {
+    if (!select_devices() || !create(p2p_) || !ensure_track() ||
+        !add_track(p2p_, webrtc::RtpTransceiverDirection::kSendRecv, "talk-p2p")) {
+      return Json::object();
+    }
+    if (!set_remote(p2p_, webrtc::SdpType::kOffer, sdp)) {
+      fail("设置 P2P offer 失败");
+      return Json::object();
+    }
+    if (!set_local(p2p_, false)) {
+      fail("创建 P2P answer 失败");
+      return Json::object();
+    }
+    volume(p2p_.gain.load());
+    std::string out;
+    if (!local(p2p_, out)) {
+      fail("P2P SDP 序列化失败");
+      return Json::object();
+    }
+    return {{"sdp", out}};
+  }
+
+  void p2p_accept(const std::string& sdp) override {
+    if (!set_remote(p2p_, webrtc::SdpType::kAnswer, sdp)) {
+      fail("设置 P2P answer 失败");
+      return;
+    }
+    volume(p2p_.gain.load());
+  }
+
+  bool p2p_candidate(const std::string& candidate, const std::string& mid, int index) override {
+    if (!p2p_.pc) return false;
+    if (candidate.empty()) return true;  // 结束标记，无需添加
+    auto ice = webrtc::IceCandidate::Create(mid, index, candidate);
+    if (!ice) {
+      fail("P2P 候选解析失败");
+      return false;
+    }
+    return on_signaling([this, &ice] { return p2p_.pc->AddIceCandidate(ice.get()); });
+  }
+
+  void p2p_close() override {
+    if (!p2p_.pc) return;
+    on_signaling([this] {
+      if (p2p_.pc) p2p_.pc->Close();
+      p2p_.reset();
+    });
+  }
+
+  void sfu_pause(bool paused) override {
+    sfu_paused_ = paused;
+    on_signaling([this, paused] {
+      recv_.paused = paused;
+      if (recv_.pc) {
+        for (auto& receiver : recv_.pc->GetReceivers()) {
+          auto track = receiver->track();
+          if (track) track->set_enabled(!paused);
+        }
+      }
+      set_send_active(send_, !muted_.load() && !paused);
+    });
+  }
+
   void mute(bool muted) override {
+    muted_ = muted;
     const bool ok = on_signaling([this, muted] {
       if (track_) track_->set_enabled(!muted);
-      if (!sender_) return true;
-      auto p = sender_->GetParameters();
-      for (auto& e : p.encodings) {
-        e.active = !muted;
-        e.max_bitrate_bps = 32000;
+      bool ok = true;
+      for (auto* sender : {&send_.sender, &p2p_.sender}) {
+        if (!*sender) continue;
+        auto p = (*sender)->GetParameters();
+        for (auto& e : p.encodings) {
+          e.active = !muted;
+          e.max_bitrate_bps = 32000;
+        }
+        if (!(*sender)->SetParameters(p).ok()) ok = false;
       }
-      if (sender_->SetParameters(p).ok()) return true;
-      if (track_) track_->set_enabled(false);
-      return false;
+      if (!ok && track_) track_->set_enabled(false);
+      // P2P 期间暂停 SFU 上行；解除暂停后仍按当前静音状态恢复。
+      set_send_active(send_, !muted && !sfu_paused_.load());
+      return ok;
     });
     if (!ok) fail("设置发送状态失败");
   }
@@ -368,13 +488,16 @@ class WebRtcMedia : public Media {
 
   void volume(double gain) override {
     recv_.gain = gain;
-    if (!recv_.pc) return;
+    p2p_.gain = gain;
     on_signaling([this, gain] {
-      for (auto& receiver : recv_.pc->GetReceivers()) {
-        auto track = receiver->track();
-        if (track && track->kind() == "audio") {
-          auto* audio = static_cast<webrtc::AudioTrackInterface*>(track.get());
-          if (audio->GetSource()) audio->GetSource()->SetVolume(gain);
+      for (auto* peer : {&recv_, &p2p_}) {
+        if (!peer->pc) continue;
+        for (auto& receiver : peer->pc->GetReceivers()) {
+          auto track = receiver->track();
+          if (track && track->kind() == "audio") {
+            auto* audio = static_cast<webrtc::AudioTrackInterface*>(track.get());
+            if (audio->GetSource()) audio->GetSource()->SetVolume(gain);
+          }
         }
       }
     });
@@ -387,15 +510,18 @@ class WebRtcMedia : public Media {
       std::future<webrtc::scoped_refptr<const webrtc::RTCStatsReport>> future;
     };
     std::vector<Item> items;
+    std::string p2p_path;
     // GetStats 及其回调都在 signaling 线程，必须先在那边发起，再在媒体线程等结果。
-    on_signaling([this, &items] {
-      for (auto* peer : {&send_, &recv_}) {
+    on_signaling([this, &items, &p2p_path] {
+      for (auto* peer : {&send_, &recv_, &p2p_}) {
         if (!peer->pc) continue;
         auto observer = webrtc::make_ref_counted<StatsObserver>();
         auto future = observer->promise.get_future();
         peer->pc->GetStats(observer.get());
-        items.push_back({peer == &send_ ? "send" : "recv", observer, std::move(future)});
+        items.push_back({peer == &send_ ? "send" : peer == &recv_ ? "recv" : "p2p", observer,
+                         std::move(future)});
       }
+      p2p_path = p2p_.path;
     });
     Json out = Json::object();
     for (auto& item : items) {
@@ -417,6 +543,7 @@ class WebRtcMedia : public Media {
       out[item.name] = {
           {"received", received}, {"sent", sent}, {"lost", lost}, {"jitter_seconds", jitter}};
     }
+    if (!p2p_path.empty()) out["p2p_path"] = p2p_path;
     if (sine_) out["fake_playout"] = sine_->stats();
     out["capture"] = {{"frames", capture_frames_.load()}};
     if (adm_ && !sine_ && worker_ && worker_started_) {
@@ -546,6 +673,45 @@ class WebRtcMedia : public Media {
       }
     }
     return true;
+  }
+
+  bool ensure_track() {
+    if (track_) return true;
+    const bool ready = on_signaling([this] {
+      auto source = factory_->CreateAudioSource(webrtc::AudioOptions());
+      track_ = factory_->CreateAudioTrack("mic", source.get());
+      if (!track_) return false;
+      track_->set_enabled(!muted_.load());
+      return true;
+    });
+    if (!ready) fail("创建音轨失败");
+    return ready;
+  }
+
+  bool add_track(Peer& peer, webrtc::RtpTransceiverDirection direction, const char* stream) {
+    if (peer.sender) return true;
+    const bool ready = on_signaling([this, &peer, direction, stream] {
+      webrtc::RtpTransceiverInit init;
+      init.direction = direction;
+      init.stream_ids = {stream};
+      auto r = peer.pc->AddTransceiver(track_, init);
+      if (!r.ok()) return false;
+      peer.sender = r.value()->sender();
+      return true;
+    });
+    if (!ready) fail("添加音轨失败");
+    return ready;
+  }
+
+  // 只能在 signaling 线程调用。
+  void set_send_active(Peer& peer, bool active) {
+    if (!peer.sender) return;
+    auto p = peer.sender->GetParameters();
+    for (auto& e : p.encodings) {
+      e.active = active;
+      e.max_bitrate_bps = 32000;
+    }
+    peer.sender->SetParameters(p);
   }
 
   bool create(Peer& peer) {
@@ -714,9 +880,10 @@ class WebRtcMedia : public Media {
   std::unique_ptr<webrtc::ScopedCOMInitializer> com_;
   webrtc::scoped_refptr<webrtc::PeerConnectionFactoryInterface> factory_;
   webrtc::PeerConnectionInterface::RTCConfiguration rtc_config_;
-  Peer send_, recv_;
+  Peer send_, recv_, p2p_;
+  std::atomic<bool> muted_{true};
+  std::atomic<bool> sfu_paused_{false};
   webrtc::scoped_refptr<webrtc::AudioTrackInterface> track_;
-  webrtc::scoped_refptr<webrtc::RtpSenderInterface> sender_;
   bool selected_ = false;
   bool worker_started_ = false;
   bool signaling_started_ = false;

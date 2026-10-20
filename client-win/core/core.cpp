@@ -19,7 +19,7 @@ class Core {
  public:
   Core(const talk_options& options, Json config)
       : config_(std::move(config)), callback_(options.on_event), user_(options.userdata),
-        guard_(asio::make_work_guard(io_)), heartbeat_(io_), reconnect_(io_), media_pool_(1) {
+        guard_(asio::make_work_guard(io_)), heartbeat_(io_), reconnect_(io_), mode_timer_(io_), media_pool_(1) {
     ws_.clear_access_channels(websocketpp::log::alevel::all);
     ws_.clear_error_channels(websocketpp::log::elevel::all);
     ws_.init_asio(&io_);
@@ -104,7 +104,7 @@ class Core {
       if (epoch != epoch_ || stopping_) return;
       open_=true;
       Json hello={{"client",{{"platform","windows-x64"},{"version",talk_version()},{"sdk","webrtc-m146"}}},
-                  {"caps",{{"audio",{{"codecs",Json::array({"opus"})},{"aec","webrtc"}}},{"p2p",false},{"sfu_sdp","unified-plan"}}}};
+                  {"caps",{{"audio",{{"codecs",Json::array({"opus"})},{"aec","webrtc"}}},{"p2p",true},{"sfu_sdp","unified-plan"}}}};
       if (!session_.empty()) hello["resume"]={{"session_id",session_}};
       request("session.hello",hello,[this,epoch,operation,recovery](Json r) {
         if (epoch!=epoch_) { result(operation,"connect",failure("",487,"连接已取消")); return; }
@@ -120,7 +120,14 @@ class Core {
         auto public_data=d; public_data.erase("ice_servers"); public_data["recovering"]=recovery;
         result(operation,"connect",response("",public_data)); emit("ready",public_data); ping_later();
         if (recovery && resumed && d.contains("room")) {
-          room_=d["room"]["room"].value("room_id",""); emit("joined",d["room"]);
+          room_=d["room"]["room"].value("room_id","");
+          const auto previous=p2p_session_;
+          apply_mode_view(d["room"]);
+          emit("joined",d["room"]);
+          if(config_.value("audio_backend","none")!="none"){
+            if(media_mode_=="p2p" && (!p2p_started_ || previous!=p2p_session_)) start_p2p();
+            if(media_mode_=="sfu" && p2p_started_) { close_p2p(); publish(); }
+          }
           command(0,"media.setMute",{{"source","mic"},{"muted",true}});
         } else if (recovery && !join_intent_.empty()) command(0,"room.join",join_intent_);
       });
@@ -178,6 +185,9 @@ class Core {
     mute_gate_=std::make_shared<std::atomic<bool>>(true);
     media_valid_=std::make_shared<std::atomic<bool>>(true);
     recv_consumers_=Json::object();
+    media_mode_="sfu"; p2p_session_.clear(); p2p_peer_.clear();
+    p2p_started_=p2p_connected_=false; ++p2p_epoch_;
+    mode_request_.clear(); mode_timer_.cancel();
     ++media_epoch_; ++mute_epoch_;
     asio::post(media_pool_,[this]{media_.reset();});
   }
@@ -192,7 +202,7 @@ class Core {
         if(!valid->load())throw std::runtime_error("媒体任务已取消");
         if (!media_ && create) media_=make_media(config,ice,gate,[this,generation](std::string event,Json data) {
           asio::post(io_,[this,generation,event=std::move(event),data=std::move(data)] {
-            if(generation==media_epoch_) emit(event,data);
+            if(generation==media_epoch_) media_event(std::move(event),std::move(data));
           });
         });
         if(!media_){
@@ -224,6 +234,127 @@ class Core {
       });
     });
   }
+  // ---- S3：P2P 与模式切换 ----
+  void notify_server(const std::string& method, Json data) {
+    send({{"v",1},{"type","ntf"},{"method",method},{"data",std::move(data)}});
+  }
+  void apply_mode_view(const Json& view) {
+    media_mode_ = view.value("media_mode",std::string("sfu")) == "p2p" ? "p2p" : "sfu";
+    if (media_mode_ == "p2p" && view.contains("p2p") && view["p2p"].is_object()) {
+      const auto& p = view["p2p"];
+      p2p_session_ = p.value("session", "");
+      p2p_peer_ = p.value("peer", "");
+      p2p_offerer_ = p.value("role", "") == "offerer";
+    }
+  }
+  void media_event(std::string event, Json data) {
+    if (event == "p2p.candidate") {
+      if (media_mode_ != "p2p" || p2p_session_.empty()) return;
+      Json out = {{"session", p2p_session_}, {"to", p2p_peer_}, {"candidate", data.value("candidate", "")}};
+      if (data.contains("sdp_mid")) out["sdp_mid"] = data["sdp_mid"];
+      if (data.contains("sdp_mline_index")) out["sdp_mline_index"] = data["sdp_mline_index"];
+      notify_server("p2p.candidate", std::move(out));
+      return;
+    }
+    if (event == "p2p.state") {
+      if (media_mode_ != "p2p" || p2p_session_.empty()) return;
+      const auto state = data.value("state", "");
+      Json out = {{"session", p2p_session_}, {"state", state}};
+      if (data.contains("path")) out["path"] = data["path"];
+      notify_server("p2p.state", std::move(out));
+      if (state == "connected") {
+        p2p_started_ = p2p_connected_ = true;
+        // 新链路已出声：SFU 只静音不关闭，切回时复用同一对 PC 重新协商。
+        media_job([](Media& m){m.sfu_pause(true);return Json::object();},[](Json){},false);
+        emit("published",{{"ok",true},{"mode","p2p"}});
+      } else if (state == "failed" || state == "closed") {
+        if (p2p_connected_) {
+          // P2P 断了先把 SFU 旧链路恢复出声，等服务端下发 sfu 切换。
+          media_job([](Media& m){m.sfu_pause(false);return Json::object();},[](Json){},false);
+        }
+        p2p_connected_ = false;
+      }
+      emit(event, data);
+      return;
+    }
+    emit(event, data);
+  }
+  void start_p2p() {
+    const auto epoch=epoch_,generation=media_epoch_,seq=++p2p_epoch_;
+    const std::string session=p2p_session_,peer=p2p_peer_;
+    const bool offerer=p2p_offerer_;
+    if (session.empty() || peer.empty()) { emit("media.error",{{"msg","P2P 会话参数缺失"}}); return; }
+    media_job([offerer](Media& m){return m.p2p_start(offerer);},[this,epoch,generation,seq,session,peer,offerer](Json r){
+      if(epoch!=epoch_||generation!=media_epoch_||seq!=p2p_epoch_||media_mode_!="p2p")return;
+      if(!r.value("ok",false)){
+        emit("media.error",{{"msg","P2P 初始化失败"}});
+        notify_server("p2p.state",{{"session",session},{"state","failed"}});
+        return;
+      }
+      p2p_started_=true;
+      emit("p2p.started",{{"session",session},{"peer",peer},{"role",offerer?"offerer":"answerer"}});
+      const auto sdp=r["data"].value("sdp","");
+      if(offerer && !sdp.empty()) notify_server("p2p.offer",{{"session",session},{"to",peer},{"sdp",sdp}});
+    });
+  }
+  void answer_p2p(const std::string& session,const std::string& from,const std::string& sdp) {
+    const auto epoch=epoch_,generation=media_epoch_,seq=p2p_epoch_;
+    // 重发/重协商的 offer 需要全新 PC，旧 PC 的 DTLS 指纹对不上新 offerer。
+    media_job([sdp](Media& m){m.p2p_close();return m.p2p_answer(sdp);},[this,epoch,generation,seq,session,from](Json r){
+      if(epoch!=epoch_||generation!=media_epoch_||seq!=p2p_epoch_)return;
+      if(!r.value("ok",false)){
+        emit("media.error",{{"msg","P2P answer 失败"}});
+        notify_server("p2p.state",{{"session",session},{"state","failed"}});
+        return;
+      }
+      const auto out=r["data"].value("sdp","");
+      if(!out.empty())notify_server("p2p.answer",{{"session",session},{"to",from},{"sdp",out}});
+    });
+  }
+  void close_p2p() {
+    ++p2p_epoch_;
+    media_job([](Media& m){m.p2p_close();return Json::object();},[](Json){},false);
+    p2p_session_.clear();p2p_peer_.clear();p2p_started_=p2p_connected_=false;
+  }
+  // 服务端 room.mediaMode 请求：p2p 立即建链路；sfu 等新链路出声（或 2s）再回 res。
+  void handle_mode_request(const std::string& id, Json data) {
+    const auto mode=data.value("mode",data.value("media_mode",std::string()));
+    if (config_.value("audio_backend","none")=="none") {
+      media_mode_ = mode=="p2p" ? "p2p" : "sfu";
+      send(response(id,Json::object()));
+      return;
+    }
+    if (mode=="p2p") {
+      if(!data.contains("p2p")||!data["p2p"].is_object()){send(failure(id,400,"缺少 P2P 分配"));return;}
+      ++p2p_epoch_;
+      apply_mode_view({{"media_mode","p2p"},{"p2p",data["p2p"]}});
+      start_p2p();
+      send(response(id,Json::object()));
+      return;
+    }
+    if (mode=="sfu") {
+      ++p2p_epoch_;
+      media_mode_="sfu";p2p_connected_=false;
+      mode_request_=id;
+      // 复用原有 send/recv PC：mediasoup transport 不接受第二次 DTLS connect。
+      media_job([](Media& m){m.sfu_pause(false);return Json::object();},[this,id](Json){
+        if(mode_request_==id)publish();
+      },false);
+      mode_timer_.expires_after(2s);
+      mode_timer_.async_wait([this,id](const asio::error_code& ec){
+        if(ec||mode_request_!=id)return;
+        mode_request_.clear();send(response(id,Json::object()));
+      });
+      return;
+    }
+    send(failure(id,400,"模式无效"));
+  }
+  void finish_mode_switch() {
+    if(mode_request_.empty())return;
+    const auto id=std::move(mode_request_);mode_request_.clear();mode_timer_.cancel();
+    send(response(id,Json::object()));
+    if(media_mode_=="sfu"&&!p2p_session_.empty())close_p2p();
+  }
   void incoming(Json j) {
     const auto type=j["type"].get<std::string>();
     if(type=="res") {
@@ -233,6 +364,7 @@ class Core {
     const auto method=j["method"].get<std::string>(); auto data=j.value("data",Json::object());
     if(type=="req") {
       const auto id=j["id"].get<std::string>(); const auto epoch=epoch_;
+      if(method=="room.mediaMode"){ handle_mode_request(id,std::move(data)); return; }
       if(method!="sfu.offer" || config_.value("audio_backend","none")=="none") {
         send(failure(id,501,"该客户端尚不支持此请求")); return;
       }
@@ -248,9 +380,41 @@ class Core {
         if(r.value("ok",false)){
           recv_consumers_=Json::object();
           for(const auto& c:consumers)recv_consumers_[c.at("mid").get<std::string>()]=c;
+          finish_mode_switch();
         }
         emit("subscribed",{{"ok",r.value("ok",false)},{"consumers",recv_consumers_}});
       }); return;
+    }
+    if(method=="p2p.offer") {
+      const auto session=data.value("session",""),from=data.value("from",""),sdp=data.value("sdp","");
+      if(session.empty()||sdp.empty())return;
+      if(p2p_session_.empty()){
+        p2p_session_=session;p2p_peer_=from;p2p_offerer_=false;media_mode_="p2p";
+      }
+      if(session!=p2p_session_)return;
+      answer_p2p(session,from,sdp); return;
+    }
+    if(method=="p2p.answer") {
+      if(data.value("session","")!=p2p_session_||!p2p_offerer_)return;
+      const auto sdp=data.value("sdp","");
+      if(sdp.empty())return;
+      const auto epoch=epoch_,generation=media_epoch_,seq=p2p_epoch_;
+      media_job([sdp](Media& m){m.p2p_accept(sdp);return Json::object();},[this,epoch,generation,seq](Json r){
+        if(epoch!=epoch_||generation!=media_epoch_||seq!=p2p_epoch_)return;
+        if(!r.value("ok",false))emit("media.error",{{"msg","应用 P2P answer 失败"}});
+      });
+      return;
+    }
+    if(method=="p2p.candidate") {
+      if(data.value("session","")!=p2p_session_)return;
+      const auto candidate=data.value("candidate",""),mid=data.value("sdp_mid","0");
+      const int index=data.value("sdp_mline_index",0);
+      media_job([candidate,mid,index](Media& m){m.p2p_candidate(candidate,mid,index);return Json::object();},[](Json){},false);
+      return;
+    }
+    if(method=="p2p.close") {
+      if(!p2p_session_.empty() && data.value("session","")!=p2p_session_)return;
+      close_p2p(); emit(method,data); return;
     }
     if(method=="session.kicked") { retry_=false; emit(method,data); lost(epoch_); return; }
     if(method=="room.closed") { room_.clear();join_intent_=Json::object();reset_media(); }
@@ -296,14 +460,18 @@ class Core {
     if(method=="room.join") {
       if(!room_.empty() || joining_){result(id,method,failure("",409,"已经入房"));return;}
       data["media"]={{"audio",{{"send",true},{"muted",true}}},{"video",{{"send",false}}}};
-      data["policy"]={{"talk_mode","free"},{"media_mode","sfu"}};
+      data["policy"]={{"talk_mode","free"},{"media_mode",config_.value("media_mode","auto")}};
       joining_=true; const auto epoch=epoch_;
       request(method,data,[this,id,method,data,epoch](Json r){
         joining_=false;
         if(epoch!=epoch_){result(id,method,failure("",487,"入房已取消"));return;}
         if(r.value("ok",false)) {
-          join_intent_=data;room_=data.at("room_id").get<std::string>(); emit("joined",r["data"]);
-          if(config_.value("audio_backend","none")!="none")publish();
+          join_intent_=data;room_=data.at("room_id").get<std::string>();
+          apply_mode_view(r["data"]);
+          emit("joined",r["data"]);
+          if(config_.value("audio_backend","none")!="none"){
+            if(media_mode_=="p2p")start_p2p(); else publish();
+          }
         }
         result(id,method,r);
       });return;
@@ -346,12 +514,14 @@ class Core {
   std::chrono::steady_clock::time_point resume_deadline_{};
   talk_event_fn callback_; void* user_;
   asio::io_context io_; asio::executor_work_guard<asio::io_context::executor_type> guard_;
-  asio::steady_timer heartbeat_,reconnect_; Ws ws_; Ws::connection_ptr connection_;
+  asio::steady_timer heartbeat_,reconnect_,mode_timer_; Ws ws_; Ws::connection_ptr connection_;
   asio::thread_pool media_pool_; std::unique_ptr<Media> media_;
   std::thread thread_; std::atomic<uint64_t> next_operation_{1}; std::atomic<int> queued_{0};
   std::map<std::string,Pending> pending_;
   std::string url_,token_,session_,room_;
-  uint64_t epoch_=0,media_epoch_=0,mute_epoch_=0,next_request_=0;
+  std::string media_mode_="sfu",p2p_session_,p2p_peer_,mode_request_;
+  bool p2p_offerer_=false,p2p_started_=false,p2p_connected_=false;
+  uint64_t epoch_=0,media_epoch_=0,mute_epoch_=0,next_request_=0,p2p_epoch_=0;
   bool stopping_=false,open_=false,ready_=false,retry_=false,joining_=false,disconnecting_=false;
   int retry_count_=0,heartbeat_seconds_=15,media_queued_=0,resume_seconds_=60;
   std::mt19937 random_{std::random_device{}()};

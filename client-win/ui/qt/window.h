@@ -25,7 +25,7 @@ class TalkWindow : public QWidget {
   QString self_uid_;
   talk_handle* core_=nullptr;
   QLineEdit *url_,*uid_,*room_,*token_;
-  QComboBox *backend_,*recording_,*playout_;
+  QComboBox *backend_,*mode_,*recording_,*playout_;
   QString recording_id_,playout_id_;
   QPushButton *connect_,*disconnect_,*join_,*leave_,*mute_,*devices_;
   QLabel *state_,*media_;
