@@ -3,7 +3,7 @@
 > 配套文档：[项目计划](./project-plan.md) · [信令协议](./talk-protocol.md) · [环境/账号/进度速查](./env-access.md) · [RK3576 libwebrtc 编译计划](./rk3576-libwebrtc-build-plan.md)
 > 本文只覆盖**服务端（talk-server + mediasoup + coturn）**的开发、部署与联调；客户端核心库 talk-core 见项目计划。
 >
-> **进度速览（2026-10-19）**：S0 ✅ · S1 ✅ · S2 ✅（已发布测试机 `7426bc9`）· **下一步 S3 P2P 与模式切换**。机器账号、公钥、口令见本地 [env-access.md](./env-access.md)（该文件含口令，推送时不要带上它的改动）。
+> **进度速览（2026-10-20）**：S0 ✅ · S1 ✅ · S2 ✅ · S3 ✅（已发布测试机 `36a5d09`）。机器账号、公钥、口令见本地 [env-access.md](./env-access.md)（该文件含口令，推送时不要带上它的改动）。
 
 ## 1. 两台机器现状（2026-10-18 实测）
 
@@ -307,3 +307,15 @@ npm run bot -- --url http://47.117.159.193:8080 --room s2 --count 4 --duration 3
 | 本地验收 | 开发容器里 4 个 bot：2 秒内每端收到约 280–590 个 RTP 包 |
 | 公网验收 | `7426bc9` 已发布。4 个 bot 连测试机房间 `s2-accept`：入房 110–225ms，3 秒内每端收到 425–888 个 RTP 包，离开后会话/房间计数归零，日志无告警 |
 | 仓库 | S2 在 GitHub `main`。`plan/env-access.md` 含测试机口令，不推送该文件的本地修改 |
+
+### 7.4 S3 P2P 与模式切换（2026-10-20 已发布 `36a5d09`）
+
+| 项 | 实际情况 |
+|---|---|
+| 呼叫 | `call.invite/incoming/ringing/accept/reject/cancel/hangup`，振铃默认 45s（`TALK_CALL_RING_SEC`）。被叫离线 480，忙 486。1v1 挂断解散房间并通知 `room.closed{reason:hangup}` |
+| 模式 | `auto`（默认）或 `p2p`：正好 2 人且双方 `caps.p2p=true` 时 P2P，offerer 优先主叫，否则先入房者。`sfu`、人数不是 2、或有人不支持时保持 SFU |
+| 转发 | `p2p.offer/answer/candidate` 按 session 转发，丢掉旧 session、角色不对和超过 100 条的 candidate。`p2p.state` 只给服务端 |
+| 回退 | 任一方 `failed`、10s 未 `connected`（`TALK_P2P_TIMEOUT`）、或 `p2p_allow_relay=false` 且 path 为 relay：`room.mediaMode{mode:sfu, reason:p2p_failed}`。两端应答后发 `p2p.close` |
+| 加人 | 第 3 人加入发 `room.mediaMode{reason:peer_count}`，先建 SFU 再关 P2P。之后回到 2 人也不再切回 P2P。主持人 `host.setPolicy{media_mode:sfu}` 同样先建后断 |
+| 测试 | 打包时 51 个用例通过。内网直连、跨 NAT、强制中继的真实媒体接通还要在测试机上用客户端验 |
+| 发布 | 测试机 `/opt/talk/releases/20261020-191633-36a5d09`，`/healthz` 的 `rev` 为 `36a5d09`。同一发布包含并发进房修复 `44e9f6d` |
