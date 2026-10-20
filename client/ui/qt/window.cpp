@@ -163,6 +163,7 @@ void TalkWindow::receive(const QString& name,const QJsonObject& d){
     if(s=="connected"){p2p_path_=d.value("path").toString(p2p_path_);apply_mode(QJsonObject{{"media_mode","p2p"}});}
     else if(s=="failed")route_->setText(QStringLiteral("媒体模式：P2P · 连接失败，等待服务端切换"));
   }
+  else if(name=="p2p.path"){p2p_path_=d.value("path").toString(p2p_path_);apply_mode(QJsonObject{{"media_mode","p2p"}});}
   else if(name=="p2p.closed")p2p_path_.clear();
   else if(name=="call.incoming"){
     call_id_=d.value("call_id").toString();call_room_=d.value("room_id").toString();incoming_=true;
