@@ -27,6 +27,8 @@ export interface JoinInput {
   display: string;
   platform: string;
   muted: boolean;
+  /** join 声明 video.send 时摄像头初始为开 */
+  videoOn?: boolean;
   policy?: RoomPolicyInput;
   /** token 中的 rooms 声明，不给表示不限制 */
   allowedRooms?: string[];
@@ -66,7 +68,6 @@ export class RoomManager {
     const created = !room;
     if (!room) {
       const policy = buildPolicy(input.policy, this.opts.maxPeersLimit);
-      if (policy.video.enabled) throw new TalkError(501, 'video is not supported yet');
       room = { id: input.roomId, policy, members: new Map(), createdAt: Date.now() };
     }
     if (room.members.has(input.uid)) throw new TalkError(409, 'already in room');
@@ -78,7 +79,7 @@ export class RoomManager {
       platform: input.platform,
       role: created ? 'host' : 'member',
       audio: { muted: input.muted, speaking: false },
-      video: { on: false },
+      video: { on: input.videoOn ?? false },
     };
     if (created) this.rooms.set(room.id, room);
     room.members.set(peer.uid, peer);
@@ -124,6 +125,18 @@ export class RoomManager {
     return peer;
   }
 
+  /** 摄像头开关。只在状态变化时广播 peerUpdated */
+  setVideo(roomId: string, uid: string, on: boolean): Peer {
+    const peer = this.rooms.get(roomId)?.members.get(uid);
+    if (!peer) throw new TalkError(409, 'not in room');
+    if (peer.video.on !== on) {
+      peer.video.on = on;
+      const room = this.rooms.get(roomId) as Room;
+      this.opts.onEvent({ type: 'peerUpdated', room, uid, patch: { video: { ...peer.video } } });
+    }
+    return peer;
+  }
+
   /** 挂断 1v1：全体离开并关闭房间 */
   dissolve(roomId: string, reason: LeaveReason, closeReason: string): void {
     const room = this.rooms.get(roomId);
@@ -133,7 +146,7 @@ export class RoomManager {
     for (const uid of uids) this.leave(roomId, uid, reason);
   }
 
-  /** 主持人修改策略。视频仍拒绝。返回合并后的策略 */
+  /** 主持人修改策略。返回合并后的策略 */
   setPolicy(roomId: string, uid: string, patch: RoomPolicyInput): RoomPolicy {
     const room = this.rooms.get(roomId);
     const self = room?.members.get(uid);
@@ -143,7 +156,6 @@ export class RoomManager {
       { ...room.policy, ...patch, video: { ...room.policy.video, ...patch.video } },
       this.opts.maxPeersLimit,
     );
-    if (policy.video.enabled) throw new TalkError(501, 'video is not supported yet');
     room.policy = policy;
     this.opts.onEvent({ type: 'policyChanged', room, policy });
     return policy;

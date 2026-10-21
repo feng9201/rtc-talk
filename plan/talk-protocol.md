@@ -84,7 +84,7 @@ wss://<host>:<port>/talk/v1/ws?token=<JWT>
 | 487 | cancelled | 呼叫已取消 |
 | 488 | not_acceptable | 能力不匹配（无共同编解码器） |
 | 500 | internal | 服务端内部错误 |
-| 501 | not_implemented | 未实现的方法/功能（如一期的视频） |
+| 501 | not_implemented | 未实现的方法/功能（当前为仅含 H.265 的视频 offer） |
 | 503 | overloaded | 服务过载/无可用媒体节点 |
 
 ---
@@ -176,7 +176,7 @@ wss://<host>:<port>/talk/v1/ws?token=<JWT>
 房间由客户端即时创建：`room_id` 不存在时，服务端按 `policy` 创建房间，第一个入房者的 `role` 为 `host`；房间已存在时忽略 `policy`。最后一名成员离开（含 `resume_ttl` 超时清理）后房间销毁。
 
 - host 离开后按入房顺序把 host 移交给下一名成员，并广播 `room.peerUpdated{uid, role:"host"}`。
-- 错误：`room_id` 不合法（`[A-Za-z0-9_.-]{1,64}`）或 policy 字段无效 `400`；token 带 `rooms` 声明且不包含该房间 `403`；已在某个房间（一个会话同时只能在一个房间）`409`；人数达到 `max_peers` `429`；`video.enabled`/`video.send` 为 true `501`（二期）。
+- 错误：`room_id` 不合法（`[A-Za-z0-9_.-]{1,64}`）或 policy 字段无效 `400`；token 带 `rooms` 声明且不包含该房间 `403`；已在某个房间（一个会话同时只能在一个房间）`409`；人数达到 `max_peers` `429`。`video.enabled` / `video.send` 已可用于单层 H.264；仅含 H.265 的 offer 仍返回 `501`。
 - `max_peers` 不超过服务端上限（`TALK_MAX_PEERS`，默认 20）。
 
 应答：
@@ -407,13 +407,16 @@ PTT 的媒体实现：
 | 3A | libwebrtc APM：AEC3 + NS + AGC2；带硬件回采的板卡可配置 `aec:"hw"` |
 | RTP 扩展 | `ssrc-audio-level`、`transport-wide-cc`、`abs-send-time` |
 
-### 9.2 视频（预留设计，二期）
+### 9.2 视频
+
+当前服务端已实现单层 H.264。Simulcast、VP8、H.265 和选层仍按下面的后续约定，尚未实现。
 
 | 项 | 约定 |
 |---|---|
-| 编码优先级 | H.264（硬编，Constrained Baseline `42e01f`，`packetization-mode=1`）> VP8 > H.265（需双方 caps 声明且 SDK 以 `rtc_use_h265=true` 重编） |
-| 发布 | Simulcast 3 层（如 720p/360p/180p，rid `h/m/l`）；RK 端 MPP 硬编不支持多路时降为单层 |
-| 订阅 | 每端最多 `video.max_recv` 路；按渲染尺寸通过 `sfu.consumerLayers` 选层 |
+| 当前 | 单层 H.264 Constrained Baseline `42e01f`，`packetization-mode=1`。`sfu.publish` 可带视频轨；`media.setMute{source:camera}` 暂停/恢复摄像头。仅含 H.265/HEVC 的 m-line 返回 `501` |
+| 编码优先级（后续） | H.264 > VP8 > H.265（需双方 caps 声明且 SDK 以 `rtc_use_h265=true` 重编） |
+| 发布（后续） | Simulcast 3 层（如 720p/360p/180p，rid `h/m/l`）；RK 端 MPP 硬编不支持多路时保持单层 |
+| 订阅（后续） | 每端最多 `video.max_recv` 路；按渲染尺寸通过 `sfu.consumerLayers` 选层 |
 | 控制 | NACK、PLI/FIR、TWCC 带宽估计；屏幕共享 `source:"screen"` |
 | 协议影响 | 只新增 `tracks[].source/kind=video` 与 `sfu.consumerLayers/keyframe`，**不改已有消息** |
 

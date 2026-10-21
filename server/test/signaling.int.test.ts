@@ -75,7 +75,10 @@ describe('signaling over websocket', () => {
 
     expect((await a.req('media.setMute', { source: 'mic', muted: false })).ok).toBe(true);
     expect(await b.waitNtf('room.peerUpdated')).toMatchObject({ uid: 'alice', audio: { muted: false } });
-    expect((await a.req('media.setMute', { source: 'camera', muted: false })).error?.code).toBe(501);
+    expect((await a.req('media.setMute', { source: 'camera', muted: false })).data).toMatchObject({
+      video: { on: true },
+    });
+    expect(await b.waitNtf('room.peerUpdated')).toMatchObject({ uid: 'alice', video: { on: true } });
 
     expect((await a.req('room.join', { room_id: 'r-2' })).error?.code).toBe(409);
     expect((await a.req('room.leave', { room_id: 'r-1' })).ok).toBe(true);

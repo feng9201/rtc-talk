@@ -2,7 +2,7 @@ import * as mediasoup from 'mediasoup';
 import type { types as ms } from 'mediasoup';
 import { TalkError } from '../gateway/protocol.js';
 import type { Logger } from '../logger.js';
-import { AUDIO_MEDIA_CODECS } from './codecs.js';
+import { MEDIA_CODECS } from './codecs.js';
 import { RoomMedia, type AnswerHandler } from './room-media.js';
 import { WorkerPool } from './worker-pool.js';
 
@@ -72,7 +72,7 @@ export class MediaNode {
     return server;
   }
 
-  async addPeer(roomId: string, uid: string, muted: boolean): Promise<void> {
+  async addPeer(roomId: string, uid: string, muted: boolean, videoOn = false): Promise<void> {
     const key = peerKey(roomId, uid);
     this.skipped.delete(key);
     const room = (await this.openRoom(roomId)) ?? this.rooms.get(roomId);
@@ -82,7 +82,7 @@ export class MediaNode {
       return;
     }
     if (!room) return;
-    room.addPeer(uid, muted);
+    room.addPeer(uid, muted, videoOn);
   }
 
   /** 同一房间只创建一次 Router。并发的 addPeer 等待同一次创建。 */
@@ -101,7 +101,7 @@ export class MediaNode {
 
   private async createRoom(roomId: string): Promise<RoomMedia | undefined> {
     const worker = this.pool.pick();
-    const router = await worker.createRouter({ mediaCodecs: AUDIO_MEDIA_CODECS });
+    const router = await worker.createRouter({ mediaCodecs: MEDIA_CODECS });
     const discarded = this.discard.delete(roomId);
     if (discarded || this.shuttingDown) {
       router.close();
@@ -143,25 +143,29 @@ export class MediaNode {
     this.log.info({ room: roomId, router: routerId }, 'router closed');
   }
 
-  async publish(roomId: string, uid: string, sdp: string) {
+  async publish(
+    roomId: string,
+    uid: string,
+    sdp: string,
+    tracks?: { mid: string; kind: 'audio' | 'video'; source?: 'mic' | 'camera' | 'screen'; closed?: boolean }[],
+  ) {
     const room = this.rooms.get(roomId);
     const peer = room?.peers.get(uid);
     if (!room || !peer) throw new TalkError(409, 'not in room');
-    const result = await peer.publish(sdp);
-    const producer = peer.micProducer;
-    if (producer) {
+    const result = await peer.publish(sdp, tracks);
+    for (const producer of peer.producers.values()) {
       for (const other of room.peers.values()) other.subscribe(producer, uid);
     }
     return result;
   }
 
-  async setMuted(roomId: string, uid: string, muted: boolean): Promise<void> {
+  async setMuted(roomId: string, uid: string, muted: boolean, source: 'mic' | 'camera' = 'mic'): Promise<void> {
     const peer = this.rooms.get(roomId)?.peers.get(uid);
     if (!peer) {
-      this.log.warn({ room: roomId, uid }, 'setMuted: peer not in media room');
+      this.log.warn({ room: roomId, uid, source }, 'setMuted: peer not in media room');
       return;
     }
-    await peer.setMuted(muted);
+    await peer.setMuted(source, muted);
   }
 
   async restartIce(roomId: string, uid: string, pc: 'send' | 'recv'): Promise<void> {

@@ -206,18 +206,19 @@ export class Signaling {
   private async join(s: Session, data: unknown) {
     const d = parseData(JoinSchema, data);
     if (s.roomId) throw new TalkError(409, `already in room ${s.roomId}`);
-    if (d.media?.video?.send) throw new TalkError(501, 'video is not supported yet');
+    const videoOn = d.media?.video?.send ?? false;
     const joined = this.rooms.join({
       uid: s.uid,
       roomId: d.room_id,
       display: d.display ?? s.uid,
       platform: s.client.platform,
       muted: d.media?.audio?.muted ?? true,
+      videoOn,
       ...(d.policy ? { policy: d.policy } : {}),
       ...(s.claims.rooms ? { allowedRooms: s.claims.rooms } : {}),
     });
     s.roomId = d.room_id;
-    await this.opts.media?.addPeer(d.room_id, s.uid, joined.peer.audio.muted);
+    await this.opts.media?.addPeer(d.room_id, s.uid, joined.peer.audio.muted, videoOn);
     const view = await this.roomView(d.room_id, s.uid);
     if (!view) throw new TalkError(409, 'not in room');
     this.log.info({ uid: s.uid, room: d.room_id, media: view.media_mode }, 'room joined');
@@ -248,10 +249,14 @@ export class Signaling {
 
   private async setMute(s: Session, data: unknown) {
     const d = parseData(SetMuteSchema, data);
-    if (d.source === 'camera') throw new TalkError(501, 'video is not supported yet');
     if (!s.roomId) throw new TalkError(409, 'not in room');
+    if (d.source === 'camera') {
+      const peer = this.rooms.setVideo(s.roomId, s.uid, !d.muted);
+      await this.opts.media?.setMuted(s.roomId, s.uid, d.muted, 'camera');
+      return { video: peer.video };
+    }
     const peer = this.rooms.setMuted(s.roomId, s.uid, d.muted);
-    await this.opts.media?.setMuted(s.roomId, s.uid, d.muted);
+    await this.opts.media?.setMuted(s.roomId, s.uid, d.muted, 'mic');
     return { audio: peer.audio };
   }
 
@@ -259,9 +264,8 @@ export class Signaling {
     const d = parseData(PublishSchema, data);
     if (!s.roomId) throw new TalkError(409, 'not in room');
     if (this.modes.current(s.roomId) === 'p2p') throw new TalkError(409, 'room is in p2p mode');
-    if (d.tracks?.some((t) => t.kind === 'video' && !t.closed)) throw new TalkError(501, 'video is not supported yet');
     if (!this.opts.media) throw new TalkError(501, 'sfu not enabled');
-    return this.opts.media.publish(s.roomId, s.uid, d.sdp);
+    return this.opts.media.publish(s.roomId, s.uid, d.sdp, d.tracks);
   }
 
   private async restartIce(s: Session, data: unknown) {

@@ -1,7 +1,7 @@
 import type { types as ms } from 'mediasoup';
 import { TalkError } from '../gateway/protocol.js';
 import type { Logger } from '../logger.js';
-import { AUDIO_EXTENSIONS } from './codecs.js';
+import { AUDIO_EXTENSIONS, VIDEO_EXTENSIONS } from './codecs.js';
 import { buildSdp, parseSdp, type SdpSection } from './sdp.js';
 
 export interface RecvConsumerInfo {
@@ -9,8 +9,8 @@ export interface RecvConsumerInfo {
   consumer_id: string;
   producer_id: string;
   uid: string;
-  kind: 'audio';
-  source: 'mic';
+  kind: 'audio' | 'video';
+  source: 'mic' | 'camera' | 'screen';
 }
 
 export interface RecvOffer {
@@ -23,23 +23,32 @@ export type AnswerHandler = (uid: string, offer: RecvOffer) => Promise<string>;
 
 interface Slot {
   mid: string;
+  kind: 'audio' | 'video';
   closed: boolean;
   consumer?: ms.Consumer;
   producerId?: string;
   uid?: string;
+  source?: 'mic' | 'camera' | 'screen';
 }
 
 const COALESCE_MS = 100;
 
 function recvCaps(router: ms.Router): ms.RtpCapabilities {
   return {
-    codecs: router.rtpCapabilities.codecs?.filter(
-      (c) => c.kind === 'audio' && c.mimeType.toLowerCase() === 'audio/opus',
-    ),
+    codecs: router.rtpCapabilities.codecs?.filter((c) => {
+      const mime = c.mimeType.toLowerCase();
+      return (c.kind === 'audio' && mime === 'audio/opus') || (c.kind === 'video' && mime === 'video/h264');
+    }),
     headerExtensions: router.rtpCapabilities.headerExtensions?.filter(
-      (e) => e.kind === 'audio' && AUDIO_EXTENSIONS.has(e.uri),
+      (e) => (e.kind === 'audio' && AUDIO_EXTENSIONS.has(e.uri)) || (e.kind === 'video' && VIDEO_EXTENSIONS.has(e.uri)),
     ),
   };
+}
+
+function trackSource(producer: ms.Producer): 'mic' | 'camera' | 'screen' {
+  const source = producer.appData.source;
+  if (source === 'camera' || source === 'screen' || source === 'mic') return source;
+  return producer.kind === 'video' ? 'camera' : 'mic';
 }
 
 export class PeerMedia {
@@ -48,6 +57,8 @@ export class PeerMedia {
   private recv?: ms.WebRtcTransport;
   private sendConnected = false;
   private recvConnected = false;
+  /** 并发订阅音视频时只创建一次 recv transport */
+  private openingRecv?: Promise<ms.WebRtcTransport>;
   private remoteIceUfrag = '';
   private pendingSendRestart = false;
   private readonly slots: Slot[] = [];
@@ -55,6 +66,7 @@ export class PeerMedia {
   private sdpVersion = 0;
   private readonly sessionId = String(Math.floor(Math.random() * 1e9));
   private muted: boolean;
+  private cameraMuted: boolean;
   private timer: NodeJS.Timeout | undefined;
   private busy = false;
   private dirty = false;
@@ -68,8 +80,10 @@ export class PeerMedia {
     private readonly log: Logger,
     private readonly answer: AnswerHandler,
     muted: boolean,
+    videoOn = false,
   ) {
     this.muted = muted;
+    this.cameraMuted = !videoOn;
   }
 
   get micProducer(): ms.Producer | undefined {
@@ -78,6 +92,7 @@ export class PeerMedia {
 
   async publish(
     sdp: string,
+    tracks?: { mid: string; kind: 'audio' | 'video'; source?: 'mic' | 'camera' | 'screen' }[],
   ): Promise<{ sdp: string; producers: { mid: string; producer_id: string; paused: boolean }[] }> {
     const parsed = parseSdp(sdp);
     if (!this.send) {
@@ -106,30 +121,37 @@ export class PeerMedia {
     const produced: { mid: string; producer_id: string; paused: boolean }[] = [];
     const sections: SdpSection[] = [];
     for (const track of parsed.tracks) {
-      if (track.kind === 'video' && !track.closed) throw new TalkError(501, 'video is not supported yet');
       if (track.closed || !track.rtpParameters) {
         const existing = [...this.producers.entries()].find(([, p]) => p.appData.mid === track.mid);
         if (existing) {
           existing[1].close();
           this.producers.delete(existing[0]);
         }
-        sections.push({ mid: track.mid, closed: true, direction: 'inactive' });
+        sections.push({ mid: track.mid, kind: track.kind, closed: true, direction: 'inactive' });
         continue;
       }
+      const declared = tracks?.find((t) => t.mid === track.mid)?.source;
+      const source = track.kind === 'video' ? (declared === 'screen' ? 'screen' : 'camera') : 'mic';
       let producer = [...this.producers.values()].find((p) => p.appData.mid === track.mid && !p.closed);
       if (producer) producer.close();
       producer = await this.send.produce({
-        kind: 'audio',
+        kind: track.kind,
         rtpParameters: track.rtpParameters,
-        paused: this.muted,
-        appData: { uid: this.uid, mid: track.mid, source: 'mic' },
+        paused: source === 'screen' ? false : source === 'camera' ? this.cameraMuted : this.muted,
+        appData: { uid: this.uid, mid: track.mid, source },
       });
       this.producers.set(producer.id, producer);
       this.watchProducer(producer);
       produced.push({ mid: track.mid, producer_id: producer.id, paused: producer.paused });
-      sections.push({ mid: track.mid, closed: false, direction: 'recvonly', rtpParameters: producer.rtpParameters });
+      sections.push({
+        mid: track.mid,
+        kind: track.kind,
+        closed: false,
+        direction: 'recvonly',
+        rtpParameters: producer.rtpParameters,
+      });
     }
-    if (produced.length === 0) throw new TalkError(400, 'no audio track to publish');
+    if (produced.length === 0) throw new TalkError(400, 'no track to publish');
     const answer = buildSdp({
       transport: this.send,
       sections,
@@ -160,12 +182,15 @@ export class PeerMedia {
     this.schedule();
   }
 
-  async setMuted(muted: boolean): Promise<void> {
-    this.muted = muted;
-    const producer = this.micProducer;
-    if (!producer || producer.closed) return;
-    if (muted) await producer.pause();
-    else await producer.resume();
+  async setMuted(source: 'mic' | 'camera', muted: boolean): Promise<void> {
+    if (source === 'camera') this.cameraMuted = muted;
+    else this.muted = muted;
+    const targets = [...this.producers.values()].filter((p) => {
+      if (p.closed) return false;
+      if (source === 'mic') return p.kind === 'audio';
+      return p.kind === 'video' && p.appData.source !== 'screen';
+    });
+    await Promise.all(targets.map((p) => (muted ? p.pause() : p.resume())));
   }
 
   async restartIce(pc: 'send' | 'recv'): Promise<void> {
@@ -198,10 +223,10 @@ export class PeerMedia {
     });
   }
 
-  private async openConsumer(producer: ms.Producer, fromUid: string): Promise<void> {
-    if (this.closed || producer.closed) return;
-    if (!this.recv) {
-      this.recv = await this.router.createWebRtcTransport({
+  private async ensureRecv(): Promise<ms.WebRtcTransport> {
+    if (this.recv) return this.recv;
+    if (!this.openingRecv) {
+      this.openingRecv = this.router.createWebRtcTransport({
         webRtcServer: this.webRtcServer,
         enableUdp: true,
         enableTcp: true,
@@ -210,9 +235,21 @@ export class PeerMedia {
         appData: { uid: this.uid, dir: 'recv' },
       });
     }
-    const slot = this.slots.find((s) => s.closed);
+    try {
+      this.recv = await this.openingRecv;
+    } catch (err) {
+      this.openingRecv = undefined;
+      throw err;
+    }
+    return this.recv;
+  }
+
+  private async openConsumer(producer: ms.Producer, fromUid: string): Promise<void> {
+    if (this.closed || producer.closed) return;
+    const recv = await this.ensureRecv();
+    const slot = this.slots.find((s) => s.closed && s.kind === producer.kind);
     const mid = slot?.mid ?? String(this.nextMid++);
-    const consumer = await this.recv.consume({
+    const consumer = await recv.consume({
       producerId: producer.id,
       rtpCapabilities: recvCaps(this.router),
       paused: true,
@@ -227,13 +264,23 @@ export class PeerMedia {
       current.producerId = undefined;
       this.schedule();
     });
+    const source = trackSource(producer);
     if (slot) {
       slot.closed = false;
       slot.consumer = consumer;
       slot.producerId = producer.id;
       slot.uid = fromUid;
+      slot.source = source;
     } else {
-      this.slots.push({ mid, closed: false, consumer, producerId: producer.id, uid: fromUid });
+      this.slots.push({
+        mid,
+        kind: producer.kind === 'video' ? 'video' : 'audio',
+        closed: false,
+        consumer,
+        producerId: producer.id,
+        uid: fromUid,
+        source,
+      });
     }
     this.schedule();
   }
@@ -270,6 +317,7 @@ export class PeerMedia {
     if (!this.recv || this.slots.length === 0) return;
     const sections: SdpSection[] = this.slots.map((s) => ({
       mid: s.mid,
+      kind: s.kind,
       closed: s.closed || !s.consumer,
       direction: s.closed || !s.consumer ? 'inactive' : 'sendonly',
       rtpParameters: s.consumer?.rtpParameters,
@@ -291,8 +339,8 @@ export class PeerMedia {
         consumer_id: s.consumer!.id,
         producer_id: s.producerId!,
         uid: s.uid!,
-        kind: 'audio' as const,
-        source: 'mic' as const,
+        kind: s.kind,
+        source: s.source ?? (s.kind === 'video' ? 'camera' : 'mic'),
       }));
     const closed = this.slots.filter((s) => s.closed).map((s) => s.mid);
     let answerSdp: string;
@@ -323,15 +371,16 @@ export class RoomMedia {
     private readonly answer: AnswerHandler,
   ) {}
 
-  addPeer(uid: string, muted: boolean): PeerMedia {
+  addPeer(uid: string, muted: boolean, videoOn = false): PeerMedia {
     const existing = this.peers.get(uid);
     if (existing) return existing;
-    const peer = new PeerMedia(uid, this.router, this.webRtcServer, this.log, this.answer, muted);
+    const peer = new PeerMedia(uid, this.router, this.webRtcServer, this.log, this.answer, muted, videoOn);
     this.peers.set(uid, peer);
     for (const other of this.peers.values()) {
       if (other === peer) continue;
-      const producer = other.micProducer;
-      if (producer) peer.subscribe(producer, other.uid);
+      for (const producer of other.producers.values()) {
+        if (!producer.closed) peer.subscribe(producer, other.uid);
+      }
     }
     return peer;
   }
