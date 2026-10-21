@@ -1,39 +1,90 @@
-#pragma once
-#include "talk/talk.h"
-#include <QWidget>
+// File: ui/qt/window.h
+// Brief: Qt 主窗口：只负责控件、用户操作与事件展示。
+#ifndef TALK_UI_WINDOW_H_
+#define TALK_UI_WINDOW_H_
+
 #include <QJsonObject>
 #include <QMap>
-#include <memory>
-class QLineEdit;class QComboBox;class QPushButton;class QLabel;class QListWidget;class QPlainTextEdit;class QCheckBox;class QSlider;class QNetworkAccessManager;
+#include <QString>
+#include <QWidget>
+
+#include "app_settings.h"
+
+class QCheckBox;
+class QComboBox;
+class QLabel;
+class QLineEdit;
+class QListWidget;
+class QNetworkAccessManager;
+class QPlainTextEdit;
+class QPushButton;
+class QSlider;
+class CoreClient;
+
 class TalkWindow : public QWidget {
   Q_OBJECT
+
  public:
-  TalkWindow();
+  explicit TalkWindow(QWidget* parent = nullptr);
   ~TalkWindow() override;
+
+  // 在日志区显示日志文件路径，便于用户回传排障。
+  void SetLogPath(const QString& path);
+
+  // 命令行临时覆盖音频后端：只对本次启动生效，不写回配置。
+  void SetBackendOverride(const QString& backend);
+
  private:
-  static void core_event(void*,const char*,const char*);
-  void receive(const QString&,const QJsonObject&);
-  bool create_core();
-  void connect_server();
-  void refresh_devices();
-  void command(const char*,const QJsonObject& data=QJsonObject());
-  void refresh_members();
-  void reset_buttons();
-  struct CoreContext { TalkWindow* window; uint64_t generation; };
-  std::unique_ptr<CoreContext> context_;
-  uint64_t generation_=0;
+  void BuildUi();
+  void ApplySettings();
+  void ConnectSignals();
+  QJsonObject CoreConfig() const;
+
+  bool EnsureCore();
+  void SendCommand(const QString& method,
+                   const QJsonObject& data = QJsonObject());
+  void ConnectServer();
+  void RefreshDevices();
+  void UpdateSourceControls();
+  void ResetButtons();
+  void RefreshMembers();
+  void AppendLog(const QString& text);
+
+  void HandleEvent(const QString& name, const QJsonObject& data);
+  void HandleState(const QJsonObject& data);
+  void HandleJoined(const QJsonObject& data);
+  void HandleResult(const QJsonObject& data);
+  void HandleMediaError(const QString& name, const QJsonObject& data);
+
+  CoreClient* core_ = nullptr;
+  AppSettings settings_;
+  QString backend_override_;
   QString self_uid_;
-  talk_handle* core_=nullptr;
-  QLineEdit *url_,*uid_,*room_,*token_;
-  QComboBox *backend_,*mode_,*recording_,*playout_;
-  QString recording_id_,playout_id_;
-  QPushButton *connect_,*disconnect_,*join_,*leave_,*mute_,*devices_;
-  QLabel *state_,*media_;
-  QListWidget* members_;
-  QPlainTextEdit* log_;
-  QCheckBox* dev_;
-  QSlider* volume_;
-  QNetworkAccessManager* http_;
-  QMap<QString,QJsonObject> peers_;
-  bool muted_=true;
+  QMap<QString, QJsonObject> peers_;
+  bool muted_ = true;
+
+  QLineEdit* url_ = nullptr;
+  QLineEdit* uid_ = nullptr;
+  QLineEdit* room_ = nullptr;
+  QLineEdit* token_ = nullptr;
+  QCheckBox* dev_ = nullptr;
+  QComboBox* backend_ = nullptr;
+  QComboBox* mode_ = nullptr;
+  QComboBox* source_ = nullptr;
+  QComboBox* recording_ = nullptr;
+  QComboBox* playout_ = nullptr;
+  QPushButton* connect_ = nullptr;
+  QPushButton* disconnect_ = nullptr;
+  QPushButton* join_ = nullptr;
+  QPushButton* leave_ = nullptr;
+  QPushButton* mute_ = nullptr;
+  QPushButton* devices_ = nullptr;
+  QLabel* state_ = nullptr;
+  QLabel* media_ = nullptr;
+  QListWidget* members_ = nullptr;
+  QSlider* volume_ = nullptr;
+  QPlainTextEdit* log_ = nullptr;
+  QNetworkAccessManager* http_ = nullptr;
 };
+
+#endif  // TALK_UI_WINDOW_H_

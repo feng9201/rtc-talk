@@ -1,0 +1,15 @@
+{
+  "default-registry": {
+    "kind": "git",
+    "repository": "https://github.com/feng9201/vcpkg.git",
+    "baseline": "74a04a88ea10fc2bca3fbfa4eb15f4168a4da43e"
+  },
+  "registries": [
+    {
+      "kind": "git",
+      "repository": "https://github.com/feng9201/vcpkg-registrys.git",
+      "baseline": "8334037c2977ae143cfec7b710366dcd7b4d166d",
+      "packages": ["x264", "x265", "ffmpeg", "mttool", "lwrbpp", "cpr", "log-cpp"]
+    }
+  ]
+}

@@ -4,6 +4,16 @@
   "description": "RTC Talk Windows desktop client",
   "dependencies": [
     "asio",
-    "nlohmann-json"
+    "nlohmann-json",
+    {
+      "name": "log-cpp",
+      "features": ["shared"]
+    }
+  ],
+  "overrides": [
+    {
+      "name": "log-cpp",
+      "version-string": "1.0.0#4"
+    }
   ]
 }

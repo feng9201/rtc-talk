@@ -7,6 +7,7 @@
     pwsh -File scripts\package.ps1                  # 构建 + 出安装包 + 出 zip
     pwsh -File scripts\package.ps1 -NoBuild         # 复用已有 Release 产物
     pwsh -File scripts\package.ps1 -NoZip           # 只出安装包
+    pwsh -File scripts\package.ps1 -NoSetup         # 只出便携 zip
     pwsh -File scripts\package.ps1 -Qt D:\Qt\5.15.2\msvc2019_64 -Iscc "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
 #>
 [CmdletBinding()]
@@ -14,7 +15,8 @@ param(
   [string]$Qt = "C:\Qt\5.15.2\msvc2019_64",
   [string]$Iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
   [switch]$NoBuild,
-  [switch]$NoZip
+  [switch]$NoZip,
+  [switch]$NoSetup
 )
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
@@ -51,7 +53,7 @@ if (-not $NoBuild) {
   } finally { Pop-Location }
 }
 
-foreach ($file in "talk-qt.exe", "talk_core.dll", "talk-cli.exe") {
+foreach ($file in "talk-qt.exe", "talk_core.dll", "talk-cli.exe", "log-cpp.dll", "fmt.dll") {
   if (-not (Test-Path (Join-Path $bin $file))) { throw "未找到 $file，请先构建 Release" }
 }
 $windeployqt = Join-Path $Qt "bin\windeployqt.exe"
@@ -60,13 +62,13 @@ if (-not (Test-Path $windeployqt)) { throw "未找到 windeployqt：$windeployqt
 # 1. 准备运行目录（不放测试程序与 pdb）
 if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $stage, $dist | Out-Null
-foreach ($file in "talk-qt.exe", "talk_core.dll", "talk-cli.exe") {
+foreach ($file in "talk-qt.exe", "talk_core.dll", "talk-cli.exe", "log-cpp.dll", "fmt.dll") {
   Copy-Item (Join-Path $bin $file) $stage
 }
 & $windeployqt --release --no-translations --no-opengl-sw --compiler-runtime (Join-Path $stage "talk-qt.exe") | Out-Host
 if ($LASTEXITCODE -ne 0) { throw "windeployqt 失败" }
 Copy-Crt $stage
-foreach ($file in "Qt5Core.dll", "Qt5Widgets.dll", "Qt5Network.dll", "platforms\qwindows.dll", "talk_core.dll") {
+foreach ($file in "Qt5Core.dll", "Qt5Widgets.dll", "Qt5Network.dll", "platforms\qwindows.dll", "talk_core.dll", "log-cpp.dll", "fmt.dll") {
   if (-not (Test-Path (Join-Path $stage $file))) { throw "打包缺少 $file" }
 }
 
@@ -80,10 +82,15 @@ RTC Talk Windows 客户端
 4. 两台电脑对测时：房间 ID 必须一致，用户标识必须不同，否则报 409 already in room。
 5. 音视频设备不对时，用“采集 / 播放”下拉框切换；切换后重新“连接”生效。
 6. 排障：
+   - 日志文件默认在 %LOCALAPPDATA%\rtc-talk\logs\talk-client.log，
+     10MB 滚动、保留 5 份；界面启动时会在日志区显示实际路径。
    - 日志区会打印 信令状态 / 媒体状态 / 错误码。
    - talk-cli.exe --list-devices        列出本机音频设备
    - talk-cli.exe --help                命令行联调用法
-7. talk-cli.exe 为 /MT 独立可执行，可在无 Qt 环境的机器上单独用于抓日志。
+   - talk-cli.exe ... --log-file D:\talk.log --log-level debug
+   - 环境变量 TALK_LOG_FILE / TALK_LOG_LEVEL 可覆盖日志路径与级别。
+7. talk-cli.exe 为 /MT 独立可执行，需与 log-cpp.dll、fmt.dll 同目录；
+   可在无 Qt 环境的机器上单独用于抓日志。
 
 正式环境请去掉“开发测试”勾选，改填业务后端签发的 Token。
 "@
@@ -91,7 +98,9 @@ Set-Content -Path (Join-Path $stage "使用说明.txt") -Value $readme -Encoding
 
 # 2. 编译安装包（版本号取自 talk-qt.exe 的 VERSIONINFO）
 $setup = $null
-if (Test-Path $Iscc) {
+if ($NoSetup) {
+  Write-Host "跳过安装包（-NoSetup）"
+} elseif (Test-Path $Iscc) {
   & $Iscc (Join-Path $root "installer\talk.iss") | Out-Host
   if ($LASTEXITCODE -ne 0) { throw "ISCC 编译失败" }
   $setup = Get-ChildItem (Join-Path $dist "rtc-talk_Setup_*.exe") | Sort-Object LastWriteTime -Descending | Select-Object -First 1

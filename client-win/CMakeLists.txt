@@ -28,6 +28,7 @@ endforeach()
 
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(asio CONFIG REQUIRED)
+find_package(log-cpp CONFIG REQUIRED)
 
 # 协议类型与 JSON 工具（仅头文件，CRT 无关）。
 add_library(talk_protocol INTERFACE)
@@ -38,7 +39,17 @@ target_link_libraries(talk_protocol INTERFACE nlohmann_json::nlohmann_json)
 set(TALK_HAS_MEDIA OFF)
 if(TALK_WITH_WEBRTC)
   include(cmake/webrtc.cmake)
-  add_library(talk_media STATIC core/media/webrtc_media.cpp)
+  add_library(talk_media STATIC
+    core/media/webrtc/audio_device.cpp
+    core/media/webrtc/capture_gate.cpp
+    core/media/webrtc/loopback_audio_capture.cpp
+    core/media/webrtc/media_environment.cpp
+    core/media/webrtc/media_stats.cpp
+    core/media/webrtc/peer_connection.cpp
+    core/media/webrtc/sine_audio_device.cpp
+    core/media/webrtc/switchable_audio_device.cpp
+    core/media/webrtc/webrtc_media.cpp
+  )
   target_link_libraries(talk_media PRIVATE talk_protocol talk_webrtc)
   target_compile_definitions(talk_media PRIVATE
     TALK_WITH_WEBRTC
@@ -55,7 +66,15 @@ if(TALK_WITH_WEBRTC)
 endif()
 
 # 信令核心：/MT 独立 DLL，只导出 talk.h 的 C ABI。
-set(TALK_CORE_SOURCES core/core.cpp)
+set(TALK_CORE_SOURCES
+  core/app/talk_client.cpp
+  core/base/io_runtime.cpp
+  core/c_api.cpp
+  core/media/media_controller.cpp
+  core/media/media_task_queue.cpp
+  core/session/call_session.cpp
+  core/signaling/signaling_client.cpp
+)
 if(NOT TALK_HAS_MEDIA)
   list(APPEND TALK_CORE_SOURCES core/media/null_media.cpp)
 endif()
@@ -64,6 +83,7 @@ add_library(talk_core SHARED ${TALK_CORE_SOURCES})
 target_include_directories(talk_core PUBLIC include PRIVATE core)
 target_compile_definitions(talk_core PRIVATE
   TALK_BUILDING_LIBRARY
+  LOGCPP_ACTIVE_LEVEL=LOGCPP_LEVEL_DEBUG
   ASIO_STANDALONE
   _WEBSOCKETPP_CPP11_STL_
   _WIN32_WINNT=0x0601
@@ -77,7 +97,9 @@ target_compile_definitions(talk_core PRIVATE
 target_compile_options(talk_core PRIVATE
   $<$<CXX_COMPILER_ID:MSVC>:/utf-8 /std:c++20 /EHsc /GR /W3>
 )
-target_link_libraries(talk_core PRIVATE talk_protocol asio::asio ws2_32 mswsock)
+target_link_libraries(talk_core PRIVATE
+  talk_protocol asio::asio log-cpp::log-cpp ws2_32 mswsock
+)
 if(TALK_HAS_MEDIA)
   target_link_libraries(talk_core PRIVATE talk_media)
 endif()
@@ -85,10 +107,22 @@ target_include_directories(talk_core PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/third_
 set_target_properties(talk_core PROPERTIES
   MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
 )
+# 核心 DLL 依赖 log-cpp.dll；放在同一输出目录，ctest 也能直接加载。
+add_custom_command(TARGET talk_core POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          $<TARGET_FILE:log-cpp::log-cpp> $<TARGET_FILE_DIR:talk_core>)
 
 # 命令行联调工具：/MT，只依赖 C API。
-add_executable(talk-cli apps/talk-cli/main.cpp)
-target_link_libraries(talk-cli PRIVATE talk_core talk_protocol)
+add_executable(talk-cli
+  apps/talk-cli/main.cpp
+  apps/common/log_setup.cpp
+  apps/common/log_setup.h
+)
+target_include_directories(talk-cli PRIVATE apps/common)
+target_compile_definitions(talk-cli PRIVATE
+  LOGCPP_ACTIVE_LEVEL=LOGCPP_LEVEL_DEBUG
+)
+target_link_libraries(talk-cli PRIVATE talk_core talk_protocol log-cpp::log-cpp)
 target_compile_options(talk-cli PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/utf-8 /std:c++20 /EHsc /GR /W3>)
 set_target_properties(talk-cli PROPERTIES
   MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
@@ -102,11 +136,22 @@ if(TALK_WITH_QT)
   find_package(Qt5 5.15 COMPONENTS Widgets Network REQUIRED)
   add_executable(talk-qt
     apps/talk-qt/main.cpp
+    apps/common/log_setup.cpp
+    apps/common/log_setup.h
+    ui/qt/app_settings.cpp
+    ui/qt/app_settings.h
+    ui/qt/core_client.cpp
+    ui/qt/core_client.h
     ui/qt/window.cpp
     ui/qt/window.h
   )
-  target_include_directories(talk-qt PRIVATE include ui/qt)
-  target_link_libraries(talk-qt PRIVATE talk_core Qt5::Widgets Qt5::Network)
+  target_include_directories(talk-qt PRIVATE include ui/qt apps/common)
+  target_compile_definitions(talk-qt PRIVATE
+    LOGCPP_ACTIVE_LEVEL=LOGCPP_LEVEL_DEBUG
+  )
+  target_link_libraries(talk-qt PRIVATE
+    talk_core log-cpp::log-cpp Qt5::Widgets Qt5::Network
+  )
   target_compile_options(talk-qt PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/utf-8 /EHsc /GR /W3>)
   # 版本资源：安装包用 GetFileVersion 读版本号，同时在资源管理器可见版本信息。
   if(MSVC)
