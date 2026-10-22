@@ -68,7 +68,6 @@ export class CallManager {
 
   invite(caller: { uid: string; roomId: string | null }, data: unknown): { call_id: string; room_id: string } {
     const d = parseData(InviteSchema, data);
-    if (d.media?.video?.send) throw new TalkError(501, 'video is not supported yet');
     if (this.byUid.has(caller.uid)) throw new TalkError(409, 'call in progress');
     const callees = [...new Set(d.callees)];
     if (callees.length !== d.callees.length) throw new TalkError(400, 'duplicate callee');

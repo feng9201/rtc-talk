@@ -1,7 +1,7 @@
 import * as sdpTransform from 'sdp-transform';
 import type { types as ms } from 'mediasoup';
 import { TalkError } from '../gateway/protocol.js';
-import { AUDIO_EXTENSIONS } from './codecs.js';
+import { AUDIO_EXTENSIONS, VIDEO_EXTENSIONS } from './codecs.js';
 
 export interface ParsedTrack {
   mid: string;
@@ -58,21 +58,39 @@ export function parseSdp(sdp: string): ParsedSdp {
     }
     const closed = m.port === 0 || direction === 'inactive';
     // 接收端 answer 是 recvonly，没有 ssrc；只在发送方向提取 RTP 参数
-    if (kind === 'video' || closed || direction === 'recvonly') {
-      tracks.push({ mid, kind, direction, closed });
+    if (closed || direction === 'recvonly') {
+      tracks.push({ mid, kind, direction, closed: true });
       continue;
     }
-    const rtp = (m.rtp ?? []).find((r) => r.codec.toLowerCase() === 'opus');
-    if (!rtp) throw new TalkError(400, `m-line ${mid} has no opus`);
+    const wanted = kind === 'video' ? 'h264' : 'opus';
+    const rtp = (m.rtp ?? []).find((r) => r.codec.toLowerCase() === wanted);
+    if (!rtp) {
+      const h265 = (m.rtp ?? []).some((r) => ['h265', 'hev1', 'hvc1'].includes(r.codec.toLowerCase()));
+      if (kind === 'video' && h265) throw new TalkError(501, 'h265 is not supported yet');
+      throw new TalkError(400, `m-line ${mid} has no ${wanted}`);
+    }
     const fmtp = (m.fmtp ?? []).find((f) => f.payload === rtp.payload);
     const parameters = fmtp ? numParams(sdpTransform.parseParams(fmtp.config)) : {};
-    parameters.useinbandfec ??= 1;
-    parameters.usedtx ??= 1;
+    if (kind === 'audio') {
+      parameters.useinbandfec ??= 1;
+      parameters.usedtx ??= 1;
+    } else {
+      parameters['packetization-mode'] ??= 1;
+      parameters['level-asymmetry-allowed'] ??= 1;
+      parameters['profile-level-id'] ??= '42e01f';
+      if (Number(parameters['packetization-mode']) !== 1) {
+        throw new TalkError(400, `m-line ${mid} h264 packetization-mode must be 1`);
+      }
+      if (String(parameters['profile-level-id']).toLowerCase() !== '42e01f') {
+        throw new TalkError(400, `m-line ${mid} h264 profile-level-id must be 42e01f`);
+      }
+    }
     const feedback = (m.rtcpFb ?? [])
       .filter((fb) => fb.payload === rtp.payload || fb.payload === '*')
       .map((fb) => (fb.subtype ? { type: fb.type, parameter: fb.subtype } : { type: fb.type }));
+    const allow = kind === 'video' ? VIDEO_EXTENSIONS : AUDIO_EXTENSIONS;
     const headerExtensions = (m.ext ?? [])
-      .filter((e) => !e['encrypt-uri'] && AUDIO_EXTENSIONS.has(e.uri))
+      .filter((e) => !e['encrypt-uri'] && allow.has(e.uri))
       .map((e) => ({ uri: e.uri as ms.RtpHeaderExtensionUri, id: e.value }));
     const ssrcLine = (m.ssrcs ?? []).find((s) => s.attribute === 'cname');
     const ssrc = ssrcLine?.id ?? m.ssrcs?.[0]?.id;
@@ -85,14 +103,25 @@ export function parseSdp(sdp: string): ParsedSdp {
       closed: false,
       rtpParameters: {
         codecs: [
-          {
-            mimeType: 'audio/opus',
-            payloadType: rtp.payload,
-            clockRate: rtp.rate ?? 48000,
-            channels: rtp.encoding ?? 2,
-            parameters,
-            rtcpFeedback: feedback.length > 0 ? feedback : [{ type: 'transport-cc' }],
-          },
+          kind === 'video'
+            ? {
+                mimeType: 'video/H264',
+                payloadType: rtp.payload,
+                clockRate: rtp.rate ?? 90000,
+                parameters,
+                rtcpFeedback:
+                  feedback.length > 0
+                    ? feedback
+                    : [{ type: 'nack' }, { type: 'nack', parameter: 'pli' }, { type: 'transport-cc' }],
+              }
+            : {
+                mimeType: 'audio/opus',
+                payloadType: rtp.payload,
+                clockRate: rtp.rate ?? 48000,
+                channels: rtp.encoding ?? 2,
+                parameters,
+                rtcpFeedback: feedback.length > 0 ? feedback : [{ type: 'transport-cc' }],
+              },
         ],
         headerExtensions,
         encodings: [{ ssrc }],
@@ -121,6 +150,7 @@ interface TransportView {
 
 export interface SdpSection {
   mid: string;
+  kind: 'audio' | 'video';
   closed: boolean;
   /** 本端方向：answer 对 sendonly offer 用 recvonly；recv offer 用 sendonly */
   direction: 'sendonly' | 'recvonly' | 'inactive';
@@ -137,8 +167,9 @@ function mediaFromSection(
   setup: string,
   offering: boolean,
 ): sdpTransform.MediaDescription {
+  const video = section.kind === 'video';
   const codec = section.rtpParameters?.codecs[0];
-  const pt = codec?.payloadType ?? 111;
+  const pt = codec?.payloadType ?? (video ? 102 : 111);
   const inactive = section.closed || section.direction === 'inactive';
   const params = codec?.parameters ?? {};
   const fmtp = Object.entries(params)
@@ -148,7 +179,7 @@ function mediaFromSection(
   const ssrc = section.rtpParameters?.encodings?.[0]?.ssrc;
   const cname = section.rtpParameters?.rtcp?.cname;
   const media: sdpTransform.MediaDescription = {
-    type: 'audio',
+    type: video ? 'video' : 'audio',
     port: inactive && section.mid !== '0' ? 0 : port,
     protocol: 'UDP/TLS/RTP/SAVPF',
     payloads: String(pt),
@@ -156,12 +187,9 @@ function mediaFromSection(
     mid: section.mid,
     direction: inactive ? 'inactive' : section.direction,
     rtp: [
-      {
-        payload: pt,
-        codec: 'opus',
-        rate: codec?.clockRate ?? 48000,
-        encoding: codec?.channels ?? 2,
-      },
+      video
+        ? { payload: pt, codec: 'H264', rate: codec?.clockRate ?? 90000 }
+        : { payload: pt, codec: 'opus', rate: codec?.clockRate ?? 48000, encoding: codec?.channels ?? 2 },
     ],
     rtcpFb: (codec?.rtcpFeedback ?? [{ type: 'transport-cc' }]).map((fb) => ({
       payload: pt,

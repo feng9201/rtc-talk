@@ -47,12 +47,12 @@ describe('RoomManager', () => {
     expect(() => rooms.join(input('d', { roomId: 'bad room' }))).toThrow(expect.objectContaining({ code: 400 }));
   });
 
-  it('clamps max_peers to server limit and rejects video', () => {
+  it('clamps max_peers to server limit and allows single-layer video policy', () => {
     const r = new RoomManager({ maxPeersLimit: 5, onEvent: () => {} });
     expect(r.join(input('a', { policy: { max_peers: 100 } })).room.policy.max_peers).toBe(5);
-    expect(() => r.join(input('a', { roomId: 'v', policy: { video: { enabled: true } } }))).toThrow(
-      expect.objectContaining({ code: 501 }),
-    );
+    const video = r.join(input('a', { roomId: 'v', videoOn: true, policy: { video: { enabled: true } } }));
+    expect(video.room.policy.video.enabled).toBe(true);
+    expect(video.peer.video.on).toBe(true);
   });
 
   it('transfers host on host leave and closes empty room', () => {
@@ -79,5 +79,15 @@ describe('RoomManager', () => {
     rooms.setMuted('r-1', 'a', false);
     expect(events).toMatchObject([{ type: 'peerUpdated', uid: 'a', patch: { audio: { muted: false } } }]);
     expect(() => rooms.setMuted('r-1', 'zz', false)).toThrow(expect.objectContaining({ code: 409 }));
+  });
+
+  it('setVideo emits peerUpdated only on change', () => {
+    rooms.join(input('a'));
+    events = [];
+    rooms.setVideo('r-1', 'a', false);
+    expect(events).toHaveLength(0);
+    rooms.setVideo('r-1', 'a', true);
+    expect(events).toMatchObject([{ type: 'peerUpdated', uid: 'a', patch: { video: { on: true } } }]);
+    expect(() => rooms.setVideo('r-1', 'zz', true)).toThrow(expect.objectContaining({ code: 409 }));
   });
 });

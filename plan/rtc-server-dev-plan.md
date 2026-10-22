@@ -3,7 +3,7 @@
 > 配套文档：[项目计划](./project-plan.md) · [信令协议](./talk-protocol.md) · [环境/账号/进度速查](./env-access.md) · [RK3576 libwebrtc 编译计划](./rk3576-libwebrtc-build-plan.md)
 > 本文只覆盖**服务端（talk-server + mediasoup + coturn）**的开发、部署与联调；客户端核心库 talk-core 见项目计划。
 >
-> **进度速览（2026-10-20）**：S0 ✅ · S1 ✅ · S2 ✅ · S3 ✅（已发布测试机 `36a5d09`）。机器账号、公钥、口令见本地 [env-access.md](./env-access.md)（该文件含口令，推送时不要带上它的改动）。
+> **进度速览（2026-10-21）**：S0 ✅ · S1 ✅ · S2 ✅ · S3 ✅（已发布测试机 `36a5d09`）· **下一步服务端视频 MVP**（S5 音频稳定性由真人联调并行；S4 后置）。机器账号、公钥、口令见本地 [env-access.md](./env-access.md)（该文件含口令，推送时不要带上它的改动）。
 
 ## 1. 两台机器现状（2026-10-18 实测）
 
@@ -179,8 +179,11 @@ Cursor 改代码 → 容器里 tsx watch 热重载 → bot / talk-cli 在局域�
 | **S1 信令骨架** | 消息封装、心跳、错误码；`session.*`；开发用 JWT；`room.join/leave` 和成员通知 | 单元测试覆盖消息封装和房间状态；2 个 bot 能互相看到进出房间 | 1~2 天 |
 | **S2 SFU 语音 MVP** | worker 池、Router、WebRtcServer；SDP 适配（send PC → produce，recv PC → 全量 consumer）；开关麦；入房合并协商 | 测试机上 4 个 bot 互通音频，丢包为 0；`talk-cli` 和 bot 双向能听到；局域网端到端延迟 < 300ms | 3~5 天 |
 | **S3 P2P 与模式切换** | `call.*`、`p2p.*` 转发；TURN 临时凭证；ModePolicy；P2P→SFU 先建后断切换 | 内网直连、跨 NAT、强制只走中继三种场景都能接通；第 3 人加入时 P2P 切到 SFU，断音 < 500ms | 3~4 天 |
-| **S4 对讲形态** | `floor.*`（PTT 抢麦、排队、超时收回）；`host.*`；发言人和音量通知 | PTT 按下到出声 < 300ms；主持人静音和踢人生效 | 2 天 |
-| **S5 稳定性** | 断线恢复（resume）、ICE restart、网络切换；指标；弱网测试（tc netem）；部署脚本和文档 | 拔网线或切 Wi-Fi 后 5 秒内恢复；20% 丢包时语音仍可懂；24 小时长稳无内存泄漏 | 2~3 天 |
+| **视频 MVP** | 单层 H.264（`42e01f`，`packetization-mode=1`）发布、订阅、关摄像头。不做 Simulcast。H.265 先返回 `501` | 两人 werift 互通 H.264 RTP；只含 H.265 的 offer 被拒绝。测试机保持音频版 `36a5d09`，视频单独再发布 | 1~2 天 |
+| **S5 稳定性（与视频并行）** | 断线恢复（resume）、ICE restart、网络切换；指标；弱网测试（tc netem）；部署脚本和文档。音频稳定性先由真人联调，编码后置 | 拔网线或切 Wi-Fi 后 5 秒内恢复；20% 丢包时语音仍可懂；24 小时长稳无内存泄漏 | 2~3 天 |
+| **S4 对讲形态（最后）** | `floor.*`（PTT 抢麦、排队、超时收回）；`host.*`；发言人和音量通知 | PTT 按下到出声 < 300ms；主持人静音和踢人生效 | 2 天 |
+
+2026-10-21 决定：四人全双工联调不依赖 S4。房间默认 `talk_mode=free`、`max_speakers=0`，四人同时开麦即可。音频稳定性由真人并行测；服务端先做单层 H.264，H.265 和 Simulcast 后续再做，S4 放到最后。测试机继续跑 `36a5d09`，视频代码验证通过后再单独发布。
 
 服务端合计约 **2~3 周**能达到"测试机上稳定支撑 3~4 人对讲"。客户端 talk-core（Windows → RK → macOS）和 RK3576 的 libwebrtc 编译并行推进。S2 一完成，客户端就可以接入真实服务端。
 
@@ -319,3 +322,13 @@ npm run bot -- --url http://47.117.159.193:8080 --room s2 --count 4 --duration 3
 | 加人 | 第 3 人加入发 `room.mediaMode{reason:peer_count}`，先建 SFU 再关 P2P。之后回到 2 人也不再切回 P2P。主持人 `host.setPolicy{media_mode:sfu}` 同样先建后断 |
 | 测试 | 打包时 51 个用例通过。内网直连、跨 NAT、强制中继的真实媒体接通还要在测试机上用客户端验 |
 | 发布 | 测试机 `/opt/talk/releases/20261020-191633-36a5d09`，`/healthz` 的 `rev` 为 `36a5d09`。同一发布包含并发进房修复 `44e9f6d` |
+
+### 7.5 视频 MVP（单层 H.264，未发布）
+
+| 项 | 实际情况 |
+|---|---|
+| 编码 | Router 注册 Opus + 单层 H.264 Constrained Baseline `42e01f`，`packetization-mode=1`。不注册 H.265，只含 H.265 的 offer 返回 `501` |
+| 发布 | `sfu.publish` 的视频 m-line `produce`；`video.send` 为 true 时摄像头初始不暂停，否则暂停到 `media.setMute{source:camera, muted:false}`。`source:screen` 不随摄像头静音 |
+| 订阅 | 新成员订阅房间里已有的音频和视频 producer。同一人并发订阅时只建一条 recv transport。recv offer 的 m-line 类型固定，关闭后只复用同类型槽位 |
+| 测试 | 开发容器 56 个用例通过。两人 werift 互通单层 H.264（关键帧之后转发）和同一次协商里的 Opus |
+| 范围外 | Simulcast、`sfu.consumerLayers` / `sfu.keyframe`、VP8、H.265。测试机仍是音频版 `36a5d09` |

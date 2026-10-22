@@ -3,8 +3,12 @@ dist/
 coverage/
 .cache/
 *.log
+*.pyc
+__pycache__/
 *.tsbuildinfo
 .env
 deploy/docker/.env
 build/
 release/
+.qoder
+plan/diagnosis-sfu-publish-409.md
