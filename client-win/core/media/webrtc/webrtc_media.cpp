@@ -220,6 +220,22 @@ void WebRtcMedia::SetVolume(double gain) {
   }
 }
 
+Json WebRtcMedia::SetAudioSource(const std::string& source) {
+  if (!environment_) {
+    return Failed();
+  }
+  const bool system = source == "system";
+  std::string error;
+  if (!environment_->audio()->SetAudioSource(system, &error)) {
+    Fail(error.empty() ? "切换采集源失败" : error);
+    return Failed();
+  }
+  config_["audio_source"] = source;
+  // 采集源变了，同步调整 3A；先切 ADM 再改 APM，避免旧源走新配置。
+  environment_->ApplyApmForSource(system);
+  return Json::object();
+}
+
 void WebRtcMedia::SfuPause(bool paused) {
   sfu_paused_ = paused;
   if (recv_) {

@@ -19,6 +19,34 @@ void SetError(std::string* error, const std::string& message) {
   }
 }
 
+// 在设备列表里按配置 id 定位索引；未找到返回 -1。
+int FindDeviceIndex(const Json& items, const std::string& wanted) {
+  if (wanted.empty()) {
+    return -1;
+  }
+  for (const auto& item : items) {
+    if (item.is_object() && item.value("id", std::string()) == wanted) {
+      return item.value("index", -1);
+    }
+  }
+  return -1;
+}
+
+// 读取设备配置项：缺失返回空串，类型非法时报错。
+bool ReadDeviceConfig(const Json& config, const char* key, std::string* out,
+                      std::string* error) {
+  out->clear();
+  if (!config.contains(key)) {
+    return true;
+  }
+  if (!config[key].is_string()) {
+    SetError(error, "音频设备配置必须是字符串");
+    return false;
+  }
+  *out = config[key].get<std::string>();
+  return true;
+}
+
 }  // namespace
 
 AudioDevice::AudioDevice(webrtc::Thread* worker) : worker_(worker) {}
@@ -141,87 +169,150 @@ bool AudioDevice::SelectDevices(bool need_recording, const Json& config,
     playout_selected_ = true;
     return true;
   }
+  device_config_ = config;
   // 系统音模式不需要选择麦克风；播放设备仍需选择以接收对端声音。
   if (audio_source_ == "system") {
     recording_selected_ = true;
     recording_name_ = "system-audio";
+  } else if (need_recording && !recording_selected_) {
+    if (!SelectRecordingDevice(config, error)) {
+      return false;
+    }
   }
+  if (!playout_selected_ && !SelectPlayoutDevice(config, error)) {
+    return false;
+  }
+  return true;
+}
+
+bool AudioDevice::SelectRecordingDevice(const Json& config,
+                                        std::string* error) {
   const Json list = Enumerate();
-  for (bool recording : {true, false}) {
-    if (recording ? (!need_recording || recording_selected_)
-                  : playout_selected_) {
-      continue;
-    }
-    const auto& items = list[recording ? "recording" : "playout"];
-    if (items.empty()) {
-      SetError(error, recording ? "未检测到采集设备（麦克风）"
-                                : "未检测到播放设备");
+  const Json& items = list["recording"];
+  if (items.empty()) {
+    SetError(error, "未检测到采集设备（麦克风）");
+    return false;
+  }
+  std::string wanted;
+  if (!ReadDeviceConfig(config, "recording_device", &wanted, error)) {
+    return false;
+  }
+  const int index = FindDeviceIndex(items, wanted);
+  int status = -1;
+  if (index >= 0) {
+    status = worker_->BlockingCall([this, index] {
+      const auto slot = static_cast<uint16_t>(
+          std::min(index, static_cast<int>(kDeviceIndexLimit)));
+      const int32_t result = adm_->SetRecordingDevice(slot);
+      if (result == 0) {
+        char name[webrtc::kAdmMaxDeviceNameSize]{};
+        char guid[webrtc::kAdmMaxGuidSize]{};
+        adm_->RecordingDeviceName(slot, name, guid);
+        recording_name_ = name;
+        mic_recording_name_ = recording_name_;
+      }
+      return static_cast<int>(result);
+    });
+  }
+  if (status != 0) {
+    status = worker_->BlockingCall([this] {
+      if (adm_->SetRecordingDevice(
+              webrtc::AudioDeviceModule::kDefaultCommunicationDevice) != 0) {
+        return -1;
+      }
+      recording_name_ = "default-communication";
+      mic_recording_name_ = recording_name_;
+      return 0;
+    });
+  }
+  if (status != 0) {
+    SetError(error, "音频设备不可用");
+    return false;
+  }
+  recording_selected_ = true;
+  mic_device_selected_ = true;
+  return true;
+}
+
+bool AudioDevice::SelectPlayoutDevice(const Json& config, std::string* error) {
+  const Json list = Enumerate();
+  const Json& items = list["playout"];
+  if (items.empty()) {
+    SetError(error, "未检测到播放设备");
+    return false;
+  }
+  std::string wanted;
+  if (!ReadDeviceConfig(config, "playout_device", &wanted, error)) {
+    return false;
+  }
+  const int index = FindDeviceIndex(items, wanted);
+  int status = -1;
+  if (index >= 0) {
+    status = worker_->BlockingCall([this, index] {
+      const auto slot = static_cast<uint16_t>(
+          std::min(index, static_cast<int>(kDeviceIndexLimit)));
+      const int32_t result = adm_->SetPlayoutDevice(slot);
+      if (result == 0) {
+        char name[webrtc::kAdmMaxDeviceNameSize]{};
+        char guid[webrtc::kAdmMaxGuidSize]{};
+        adm_->PlayoutDeviceName(slot, name, guid);
+        playout_name_ = name;
+      }
+      return static_cast<int>(result);
+    });
+  }
+  if (status != 0) {
+    status = worker_->BlockingCall([this] {
+      if (adm_->SetPlayoutDevice(
+              webrtc::AudioDeviceModule::kDefaultCommunicationDevice) != 0) {
+        return -1;
+      }
+      playout_name_ = "default-communication";
+      return 0;
+    });
+  }
+  if (status != 0) {
+    SetError(error, "音频设备不可用");
+    return false;
+  }
+  playout_selected_ = true;
+  return true;
+}
+
+bool AudioDevice::SetAudioSource(bool system, std::string* error) {
+  if (!switchable_ || worker_ == nullptr) {
+    SetError(error, "音频设备未初始化");
+    return false;
+  }
+  // 初始为系统音时从未选择麦克风设备，切回前按配置补选（失败则保持原源）。
+  if (!system && !mic_device_selected_) {
+    std::string select_error;
+    if (!SelectRecordingDevice(device_config_, &select_error)) {
+      SetError(error,
+               select_error.empty() ? "选择麦克风设备失败" : select_error);
       return false;
     }
-    const std::string key = recording ? "recording_device" : "playout_device";
-    std::string wanted;
-    if (config.contains(key)) {
-      if (!config[key].is_string()) {
-        SetError(error, "音频设备配置必须是字符串");
-        return false;
-      }
-      wanted = config[key].get<std::string>();
+  }
+  // ADM 切换必须在 worker（COM）线程执行；切换期间短暂停流可接受。
+  std::string switch_error;
+  const int32_t result = worker_->BlockingCall([this, system, &switch_error] {
+    const int32_t r = switchable_->SetAudioSource(system);
+    if (r != 0) {
+      switch_error = switchable_->last_error();
     }
-    int index = -1;
-    if (!wanted.empty()) {
-      for (const auto& item : items) {
-        if (item.is_object() && item.value("id", std::string()) == wanted) {
-          index = item.value("index", -1);
-          break;
-        }
-      }
-    }
-    int status = -1;
-    if (index >= 0) {
-      status = worker_->BlockingCall([this, recording, index] {
-        const auto slot = static_cast<uint16_t>(
-            std::min(index, static_cast<int>(kDeviceIndexLimit)));
-        const int32_t result = recording ? adm_->SetRecordingDevice(slot)
-                                         : adm_->SetPlayoutDevice(slot);
-        if (result == 0) {
-          char name[webrtc::kAdmMaxDeviceNameSize]{};
-          char guid[webrtc::kAdmMaxGuidSize]{};
-          if (recording) {
-            adm_->RecordingDeviceName(slot, name, guid);
-            recording_name_ = name;
-          } else {
-            adm_->PlayoutDeviceName(slot, name, guid);
-            playout_name_ = name;
-          }
-        }
-        return static_cast<int>(result);
-      });
-    }
-    if (status != 0) {
-      status = worker_->BlockingCall([this, recording] {
-        if (recording) {
-          if (adm_->SetRecordingDevice(
-                  webrtc::AudioDeviceModule::kDefaultCommunicationDevice) !=
-              0) {
-            return -1;
-          }
-          recording_name_ = "default-communication";
-        } else {
-          if (adm_->SetPlayoutDevice(
-                  webrtc::AudioDeviceModule::kDefaultCommunicationDevice) !=
-              0) {
-            return -1;
-          }
-          playout_name_ = "default-communication";
-        }
-        return 0;
-      });
-    }
-    if (status != 0) {
-      SetError(error, "音频设备不可用");
-      return false;
-    }
-    (recording ? recording_selected_ : playout_selected_) = true;
+    // 无论成败都按 ADM 实际状态回写，避免与上层记录分裂。
+    const bool actual = switchable_->system_audio();
+    audio_source_ = actual ? "system" : "mic";
+    recording_selected_ = true;
+    recording_name_ = actual ? std::string("system-audio")
+                             : (mic_recording_name_.empty()
+                                    ? std::string("default-communication")
+                                    : mic_recording_name_);
+    return r;
+  });
+  if (result != 0) {
+    SetError(error, switch_error.empty() ? "切换采集源失败" : switch_error);
+    return false;
   }
   return true;
 }

@@ -100,7 +100,7 @@ void TalkWindow::BuildUi() {
   source_->addItem(QStringLiteral("麦克风"), "mic");
   source_->addItem(QStringLiteral("系统音（默认播放设备）"), "system");
   source_->setToolTip(
-      QStringLiteral("系统音采集默认播放设备；进房前选择，入房后需重连生效"));
+      QStringLiteral("系统音采集默认播放设备的混音；可随时切换，无需重连"));
 
   recording_ = new QComboBox;
   playout_ = new QComboBox;
@@ -174,6 +174,7 @@ void TalkWindow::ApplySettings() {
   mode_->setCurrentIndex(index < 0 ? 0 : index);
   index = source_->findData(settings_.audio_source);
   source_->setCurrentIndex(index < 0 ? 0 : index);
+  active_source_ = source_->currentData().toString();
   FillDevices(recording_, QJsonArray(), settings_.recording_device);
   FillDevices(playout_, QJsonArray(), settings_.playout_device);
 }
@@ -210,11 +211,23 @@ void TalkWindow::ConnectSignals() {
           });
   connect(source_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
           [this] {
-            settings_.audio_source = source_->currentData().toString();
+            const QString source = source_->currentData().toString();
+            settings_.audio_source = source;
             settings_.Save();
             UpdateSourceControls();
+            const bool connected = disconnect_->isEnabled();
+            if (connected && backend_->currentData().toString() != "none") {
+              // 已连接（含入房）：运行时下发切换命令，失败在 HandleResult 回滚。
+              SendCommand("audio.setSource", {{"source", source}});
+              AppendLog(QStringLiteral("正在切换采集源：%1")
+                            .arg(source == "system"
+                                     ? QStringLiteral("系统音")
+                                     : QStringLiteral("麦克风")));
+              return;
+            }
             RefreshDevices();
             if (connect_->isEnabled()) {
+              active_source_ = source;
               AppendLog(QStringLiteral("采集源已更新，下次连接生效"));
             }
           });
@@ -291,7 +304,6 @@ void TalkWindow::ConnectServer() {
   devices_->setEnabled(false);
   backend_->setEnabled(false);
   mode_->setEnabled(false);
-  source_->setEnabled(false);
   recording_->setEnabled(false);
   playout_->setEnabled(false);
   if (!dev_->isChecked()) {
@@ -362,7 +374,9 @@ void TalkWindow::UpdateSourceControls() {
   const bool audio = backend_->currentData().toString() == "wasapi";
   const bool system = source_->currentData().toString() == "system";
   const bool editable = connect_->isEnabled();
-  source_->setEnabled(audio && editable);
+  // 入房后仍允许切换采集源（运行时生效），其余设备需重连生效。
+  const bool live = disconnect_->isEnabled();
+  source_->setEnabled(audio && (editable || live));
   if (!audio) {
     recording_->setEnabled(false);
     return;
@@ -599,6 +613,29 @@ void TalkWindow::HandleResult(const QJsonObject& data) {
     if (!system && list["recording"].toArray().isEmpty()) {
       AppendLog(
           QStringLiteral("未检测到采集设备（麦克风），发布/开麦会失败，只能收听"));
+    }
+  }
+  if (method == "audio.setSource") {
+    if (ok) {
+      active_source_ = source_->currentData().toString();
+      AppendLog(QStringLiteral("采集源已切换为：%1")
+                    .arg(active_source_ == "system"
+                             ? QStringLiteral("系统音（默认播放设备）")
+                             : QStringLiteral("麦克风")));
+      if (active_source_ != "system") {
+        SendCommand("audio.devices");  // 切回麦克风：重新枚举采集设备
+      }
+    } else {
+      const QSignalBlocker blocker(source_);
+      settings_.audio_source = active_source_;
+      settings_.Save();
+      const int index = source_->findData(active_source_);
+      source_->setCurrentIndex(index < 0 ? 0 : index);
+      UpdateSourceControls();
+      if (active_source_ != "system") {
+        SendCommand("audio.devices");  // 回滚到麦克风：重新枚举采集设备
+      }
+      AppendLog(QStringLiteral("采集源切换失败，已恢复为上次成功的源"));
     }
   }
   if (method == "media.stats" && ok) {

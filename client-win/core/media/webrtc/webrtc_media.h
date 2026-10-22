@@ -38,6 +38,7 @@ class WebRtcMedia : public Media {
 
   void SetMuted(bool muted) override;
   void SetVolume(double gain) override;
+  Json SetAudioSource(const std::string& source) override;
   void SfuPause(bool paused) override;
 
   Json GetDevices() override;

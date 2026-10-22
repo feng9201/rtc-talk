@@ -7,6 +7,7 @@
 #include <string>
 #include <utility>
 
+#include "api/audio/audio_processing.h"
 #include "api/peer_connection_interface.h"
 #include "base/json.h"
 #include "media/media.h"
@@ -37,6 +38,9 @@ class MediaEnvironment {
     return rtc_config_;
   }
 
+  // 根据采集源动态调整 APM：系统音不需回声/降噪/AGC。
+  void ApplyApmForSource(bool system_audio);
+
   template <class F>
   auto RunOnSignaling(F&& f) {
     return signaling_->BlockingCall(std::forward<F>(f));
@@ -53,6 +57,8 @@ class MediaEnvironment {
   std::unique_ptr<webrtc::Thread> worker_;
   std::unique_ptr<webrtc::Thread> signaling_;
   std::unique_ptr<AudioDevice> audio_;
+  webrtc::scoped_refptr<webrtc::AudioProcessing> apm_;
+  bool real_device_ = false;
   webrtc::scoped_refptr<webrtc::PeerConnectionFactoryInterface> factory_;
   webrtc::PeerConnectionInterface::RTCConfiguration rtc_config_;
 };

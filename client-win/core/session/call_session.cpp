@@ -64,7 +64,7 @@ void CallSession::Command(uint64_t id, std::string method, Json data) {
     return;
   }
   if (method == "media.stats" || method == "audio.devices" ||
-      method == "audio.volume") {
+      method == "audio.volume" || method == "audio.setSource") {
     HandleMediaCommand(id, method, std::move(data));
     return;
   }
@@ -155,6 +155,19 @@ void CallSession::HandleMediaCommand(uint64_t id, const std::string& method,
     });
   } else if (method == "audio.devices") {
     media_.GetDevices([this, id, method](MediaResult result) {
+      Complete(id, method, ToResponse(result));
+    });
+  } else if (method == "audio.setSource") {
+    if (!data.contains("source") || !data["source"].is_string()) {
+      Complete(id, method, Failure("", 400, "source 必须是字符串"));
+      return;
+    }
+    const std::string source = data["source"].get<std::string>();
+    if (source != "mic" && source != "system") {
+      Complete(id, method, Failure("", 400, "source 必须是 mic/system"));
+      return;
+    }
+    media_.SetAudioSource(source, [this, id, method](MediaResult result) {
       Complete(id, method, ToResponse(result));
     });
   } else {

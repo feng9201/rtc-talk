@@ -39,6 +39,9 @@ class MediaTaskQueue {
   void SetIceServers(const Json& ice_servers);
   void Post(Job job, Done done, bool create = true);
 
+  // 控制线程：更新配置里的采集源，供后续重建媒体实例继承。
+  void SetAudioSourceInConfig(const std::string& source);
+
   // 丢弃当前媒体实例；后续任务会创建新实例和新静音闸门。
   void Reset();
 

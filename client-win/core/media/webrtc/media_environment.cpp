@@ -114,17 +114,16 @@ bool MediaEnvironment::Initialize(const Json& config, const Json& ice_servers,
   deps.adm = audio_->adm();
 
   webrtc::AudioProcessing::Config apm;
-  const bool real_device = backend != "fake";
-  // 系统音不经过麦克风，关闭回声/降噪/AGC，避免对 loopback 数据做无参考处理。
-  const bool use_apm = real_device && audio_source != "system";
-  apm.echo_canceller.enabled = use_apm;
-  apm.noise_suppression.enabled = use_apm;
-  apm.gain_controller2.enabled = use_apm;
+  real_device_ = backend != "fake";
+  // 系统音不经过麦克风，初始即关闭回声/降噪/AGC；运行时切换由
+  // ApplyApmForSource 动态调整。始终持有 APM 实例以便重新配置。
+  const bool initial_3a = real_device_ && audio_source != "system";
+  apm.echo_canceller.enabled = initial_3a;
+  apm.noise_suppression.enabled = initial_3a;
+  apm.gain_controller2.enabled = initial_3a;
   apm.high_pass_filter.enabled = true;
-  if (use_apm) {
-    deps.audio_processing_builder =
-        std::make_unique<webrtc::BuiltinAudioProcessingBuilder>(apm);
-  }
+  apm_ = webrtc::BuiltinAudioProcessingBuilder(apm).Build(env);
+  deps.audio_processing_builder = webrtc::CustomAudioProcessing(apm_);
   deps.audio_encoder_factory =
       webrtc::CreateAudioEncoderFactory<webrtc::AudioEncoderOpus>();
   deps.audio_decoder_factory =
@@ -142,6 +141,20 @@ bool MediaEnvironment::Initialize(const Json& config, const Json& ice_servers,
   rtc_config_.sdp_semantics = webrtc::SdpSemantics::kUnifiedPlan;
   ConfigureIceServers(ice_servers);
   return true;
+}
+
+void MediaEnvironment::ApplyApmForSource(bool system_audio) {
+  if (!apm_) {
+    return;
+  }
+  // 从当前配置起手，只改 3A 开关，避免覆盖其它 APM 子配置。
+  webrtc::AudioProcessing::Config cfg = apm_->GetConfig();
+  const bool enable_3a = real_device_ && !system_audio;
+  cfg.echo_canceller.enabled = enable_3a;
+  cfg.noise_suppression.enabled = enable_3a;
+  cfg.gain_controller2.enabled = enable_3a;
+  cfg.high_pass_filter.enabled = true;
+  apm_->ApplyConfig(cfg);
 }
 
 bool MediaEnvironment::ConfigureIceServers(const Json& ice_servers) {

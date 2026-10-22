@@ -22,6 +22,8 @@ constexpr int kTargetChannels = 1;
 constexpr int kBytesPerSample = 2;
 constexpr int kSamplesPerFrame = 480;  // 10 ms @ 48 kHz
 constexpr size_t kMaxPendingSamples = kTargetSampleRate / 10;  // 100 ms
+// 采集线程每 ~2 秒（400 * 5ms）检查一次默认播放设备是否变化。
+constexpr int kDeviceCheckIterations = 400;
 
 }  // namespace
 
@@ -36,9 +38,32 @@ struct LoopbackAudioCapture::Impl {
   Microsoft::WRL::ComPtr<IAudioClient> client;
   Microsoft::WRL::ComPtr<IAudioCaptureClient> capture;
   Format format = Format::kUnknown;
-  uint32_t sample_rate = kTargetSampleRate;
-  uint16_t channels = 0;
+  // Reopen 在采集线程改写，stats 在 worker 线程读取，故用原子量。
+  std::atomic<uint32_t> sample_rate{kTargetSampleRate};
+  std::atomic<uint16_t> channels{0};
+  std::wstring device_id;  // 当前采集的默认播放设备 ID，用于检测切换
 };
+
+// 取当前默认播放（eConsole）设备 ID；失败返回 false。
+bool DefaultRenderDeviceId(std::wstring* out) {
+  Microsoft::WRL::ComPtr<IMMDeviceEnumerator> enumerator;
+  if (FAILED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
+                              IID_PPV_ARGS(enumerator.GetAddressOf())))) {
+    return false;
+  }
+  Microsoft::WRL::ComPtr<IMMDevice> device;
+  if (FAILED(enumerator->GetDefaultAudioEndpoint(eRender, eConsole,
+                                                 device.GetAddressOf()))) {
+    return false;
+  }
+  LPWSTR id = nullptr;
+  if (FAILED(device->GetId(&id)) || id == nullptr) {
+    return false;
+  }
+  out->assign(id);
+  CoTaskMemFree(id);
+  return true;
+}
 
 LoopbackAudioCapture::LoopbackAudioCapture() = default;
 
@@ -56,8 +81,9 @@ bool LoopbackAudioCapture::Init(std::string* error) {
     return false;
   }
   initialized_ = true;
-  RTC_LOG(LS_INFO) << "loopback capture ready: rate=" << impl_->sample_rate
-                   << " channels=" << impl_->channels
+  RTC_LOG(LS_INFO) << "loopback capture ready: rate="
+                   << impl_->sample_rate.load()
+                   << " channels=" << impl_->channels.load()
                    << " format=" << static_cast<int>(impl_->format);
   return true;
 }
@@ -114,8 +140,8 @@ void LoopbackAudioCapture::Terminate() {
 }
 
 Json LoopbackAudioCapture::stats() const {
-  const uint32_t sample_rate = impl_ ? impl_->sample_rate : 0;
-  const uint16_t channels = impl_ ? impl_->channels : 0;
+  const uint32_t sample_rate = impl_ ? impl_->sample_rate.load() : 0;
+  const uint16_t channels = impl_ ? impl_->channels.load() : 0;
   return {{"initialized", initialized_.load()},
           {"running", running_.load()},
           {"frames", frames_.load()},
@@ -150,6 +176,14 @@ bool LoopbackAudioCapture::Open(std::string* error) {
                                            device.GetAddressOf());
   if (FAILED(hr)) {
     return fail("没有可用的默认播放设备", hr);
+  }
+
+  LPWSTR device_id = nullptr;
+  if (SUCCEEDED(device->GetId(&device_id)) && device_id != nullptr) {
+    impl_->device_id.assign(device_id);
+    CoTaskMemFree(device_id);
+  } else {
+    impl_->device_id.clear();
   }
 
   hr = device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr,
@@ -192,8 +226,9 @@ bool LoopbackAudioCapture::Open(std::string* error) {
   }
   impl_->sample_rate = mix->nSamplesPerSec;
   impl_->channels = mix->nChannels;
-  if (impl_->channels == 0 ||
-      impl_->sample_rate < 8000 || impl_->sample_rate > 192000) {
+  if (impl_->channels.load() == 0 ||
+      impl_->sample_rate.load() < 8000 ||
+      impl_->sample_rate.load() > 192000) {
     CoTaskMemFree(mix);
     if (error != nullptr) {
       *error = "系统音采集播放格式无效";
@@ -224,6 +259,31 @@ void LoopbackAudioCapture::Close() {
   }
 }
 
+// 默认播放设备变更时在采集线程（已 COM 初始化）重开 loopback。
+bool LoopbackAudioCapture::Reopen() {
+  if (!impl_) {
+    return false;
+  }
+  if (impl_->client) {
+    impl_->client->Stop();
+  }
+  impl_->capture.Reset();
+  impl_->client.Reset();
+  std::string error;
+  if (!Open(&error)) {
+    RTC_LOG(LS_WARNING) << "loopback reopen failed: " << error;
+    return false;
+  }
+  pending_.clear();
+  const HRESULT hr = impl_->client->Start();
+  if (FAILED(hr)) {
+    RecordError(hr);
+    return false;
+  }
+  RTC_LOG(LS_INFO) << "loopback reopened on new default render device";
+  return true;
+}
+
 void LoopbackAudioCapture::Run() {
   const HRESULT com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
   if (FAILED(com)) {
@@ -237,8 +297,26 @@ void LoopbackAudioCapture::Run() {
     return;
   }
 
-  IAudioCaptureClient* capture = impl_->capture.Get();
+  int check = 0;
   while (!stop_) {
+    // 默认播放设备可能被用户切换（插入耳机等），跟随重开。
+    if (++check >= kDeviceCheckIterations) {
+      check = 0;
+      std::wstring current;
+      if (DefaultRenderDeviceId(&current) && !current.empty() &&
+          current != impl_->device_id && !Reopen()) {
+        // 重开失败不退出线程：清空设备记录，退避后重试。
+        impl_->device_id.clear();
+      }
+    }
+    if (!impl_->capture || !impl_->client) {
+      // 设备暂时不可用（如正在切换默认设备）：退避后尝试重开。
+      Sleep(500);
+      if (!Reopen()) {
+        continue;
+      }
+    }
+    IAudioCaptureClient* capture = impl_->capture.Get();
     UINT32 packet = 0;
     HRESULT hr = capture->GetNextPacketSize(&packet);
     if (FAILED(hr)) {
@@ -292,7 +370,7 @@ bool LoopbackAudioCapture::Convert(const uint8_t* data, uint32_t frames,
     return true;
   }
 
-  const size_t channels = impl_->channels;
+  const size_t channels = impl_->channels.load();
   switch (impl_->format) {
     case Impl::Format::kFloat32: {
       const float* src = reinterpret_cast<const float*>(data);
@@ -341,11 +419,11 @@ void LoopbackAudioCapture::Push(const int16_t* samples, size_t count) {
   if (samples == nullptr || count == 0) {
     return;
   }
-  if (impl_->sample_rate == kTargetSampleRate) {
+  if (impl_->sample_rate.load() == kTargetSampleRate) {
     pending_.insert(pending_.end(), samples, samples + count);
   } else {
-    const double ratio =
-        static_cast<double>(kTargetSampleRate) / impl_->sample_rate;
+    const double ratio = static_cast<double>(kTargetSampleRate) /
+                         static_cast<double>(impl_->sample_rate.load());
     const size_t out_count = static_cast<size_t>(count * ratio);
     pending_.reserve(pending_.size() + out_count);
     for (size_t i = 0; i < out_count; ++i) {

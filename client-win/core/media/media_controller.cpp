@@ -433,6 +433,22 @@ void MediaController::SetVolume(double gain,
       std::move(done));
 }
 
+void MediaController::SetAudioSource(const std::string& source,
+                                     std::function<void(MediaResult)> done) {
+  TALK_LOG_INFO("media", "切换采集源 source={}", source);
+  // 成功后回写配置（done 在控制线程回调）：失败时保持旧源，
+  // 避免重连/重建媒体时用上用户已放弃的源。
+  Post([source](Media& media) { return media.SetAudioSource(source); },
+       [this, source, done = std::move(done)](MediaResult result) {
+         if (result.ok) {
+           queue_.SetAudioSourceInConfig(source);
+         }
+         if (done) {
+           done(std::move(result));
+         }
+       });
+}
+
 void MediaController::Post(MediaTaskQueue::Job job,
                            MediaTaskQueue::Done done, bool create) {
   queue_.Post(std::move(job), std::move(done), create);

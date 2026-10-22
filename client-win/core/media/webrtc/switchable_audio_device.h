@@ -24,6 +24,11 @@ class SwitchableAudioDevice
                         bool system_audio);
   ~SwitchableAudioDevice() override;
 
+  // 运行时切换采集源：先停当前源再启新源，返回 0 表示成功。
+  // 必须在 worker（COM）线程调用。
+  int32_t SetAudioSource(bool system);
+  bool system_audio() const { return system_audio_; }
+
   int32_t RegisterAudioCallback(webrtc::AudioTransport* transport) override;
   int32_t Init() override;
   int32_t Terminate() override;
@@ -96,11 +101,17 @@ class SwitchableAudioDevice
   const std::string& last_error() const { return last_error_; }
 
  private:
+  bool EnsureLoopback();
+
   webrtc::scoped_refptr<webrtc::AudioDeviceModule> mic_;
   LoopbackAudioCapture loopback_;
   std::atomic<webrtc::AudioTransport*> transport_{nullptr};
   std::atomic<bool> initialized_{false};
   bool system_audio_ = false;
+  // 上层是否要求录音：切换时据此决定是否重启采集，避免依赖 ADM 瞬时状态。
+  bool recording_requested_ = false;
+  // 内置 ADM 采集是否已初始化；旧 Core ADM 的 StopRecording 会释放采集客户端。
+  bool mic_inited_ = false;
   std::string last_error_;
 };
 

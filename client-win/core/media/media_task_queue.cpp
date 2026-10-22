@@ -44,6 +44,10 @@ void MediaTaskQueue::SetIceServers(const Json& ice_servers) {
                  ice_servers_.size());
 }
 
+void MediaTaskQueue::SetAudioSourceInConfig(const std::string& source) {
+  config_["audio_source"] = source;
+}
+
 void MediaTaskQueue::Post(Job job, Done done, bool create) {
   if (stopping_) {
     TALK_LOG_DEBUG("media", "队列已停止，丢弃任务");

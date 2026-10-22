@@ -44,6 +44,7 @@ class LoopbackAudioCapture {
 
   bool Open(std::string* error);
   void Close();
+  bool Reopen();
   void Run();
   bool Convert(const uint8_t* data, uint32_t frames, uint32_t flags,
                std::vector<int16_t>* out);

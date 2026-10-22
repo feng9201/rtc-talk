@@ -37,9 +37,10 @@ TALK_API const char* talk_version(void);
 TALK_API talk_handle* talk_create(const talk_options* options);
 /* 返回操作 ID；0 表示输入无效。结果通过 result 事件返回。
  * 支持 connect/disconnect、room.join/leave、media.setMute、audio.devices/
- * volume、media.stats、session.ping/refreshIce/bye、auth.update。
+ * volume/setSource、media.stats、session.ping/refreshIce/bye、auth.update。
  * 未实现的命令本地返回 501；不透传未知命令。
  * connect: {url,token}；auth.update: {token}，用于后续重连。
+ * audio.setSource: {source: mic|system}，运行时切换采集源（系统音=WASAPI loopback）。
  * room.join 使用协议参数。
  * 事件含 p2p.started / p2p.state（S3，服务端下发的 room.mediaMode 由核心自动应答）。 */
 TALK_API uint64_t talk_command(talk_handle*, const char* method,

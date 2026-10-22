@@ -29,16 +29,61 @@ int32_t SwitchableAudioDevice::Init() {
     last_error_ = "麦克风/播放设备初始化失败";
     return -1;
   }
-  if (system_audio_) {
-    std::string error;
-    if (!loopback_.Init(&error)) {
-      last_error_ = error;
-      RTC_LOG(LS_WARNING) << "system audio init failed: " << error;
-      return -1;
-    }
-  }
+  // loopback 延迟到首次切到系统音时再初始化：没有播放设备的机器仍能用麦克风。
   initialized_ = true;
   return 0;
+}
+
+bool SwitchableAudioDevice::EnsureLoopback() {
+  if (loopback_.initialized()) {
+    return true;
+  }
+  std::string error;
+  if (!loopback_.Init(&error)) {
+    last_error_ = error;
+    RTC_LOG(LS_WARNING) << "system audio init failed: " << error;
+    return false;
+  }
+  return true;
+}
+
+int32_t SwitchableAudioDevice::SetAudioSource(bool system) {
+  last_error_.clear();
+  if (system == system_audio_) {
+    // 同源重复设置：上层要求录音但实际未录（如设备热切换后线程退出），
+    // 尝试补启，避免“看似成功实则静默”。
+    if (recording_requested_ && !Recording()) {
+      return StartRecording();
+    }
+    return 0;
+  }
+  const bool previous = system_audio_;
+  const bool was_recording = recording_requested_ || Recording();
+  if (was_recording) {
+    StopRecording();
+  }
+  system_audio_ = system;
+  if (system && !EnsureLoopback()) {
+    // 回滚到原状态，避免处于“半切换”。
+    system_audio_ = previous;
+    if (was_recording) {
+      StartRecording();
+    }
+    return -1;
+  }
+  if (!was_recording) {
+    return 0;
+  }
+  if (StartRecording() == 0) {
+    return 0;
+  }
+  // 新源无法启动：回到旧源并恢复录音，避免 ADM 与上层状态分裂。
+  system_audio_ = previous;
+  if (previous) {
+    EnsureLoopback();
+  }
+  StartRecording();
+  return -1;
 }
 
 int32_t SwitchableAudioDevice::Terminate() {
@@ -59,29 +104,66 @@ int32_t SwitchableAudioDevice::ActiveAudioLayer(
 
 int32_t SwitchableAudioDevice::InitRecording() {
   if (system_audio_) {
-    return loopback_.initialized() ? 0 : -1;
+    return EnsureLoopback() ? 0 : -1;
   }
-  return mic_ ? mic_->InitRecording() : -1;
+  if (!mic_) {
+    return -1;
+  }
+  const int32_t result = mic_->InitRecording();
+  mic_inited_ = result == 0;
+  return result;
 }
 
 int32_t SwitchableAudioDevice::StartRecording() {
+  recording_requested_ = true;
   if (system_audio_) {
+    if (!EnsureLoopback()) {
+      return -1;
+    }
     std::string error;
     if (!loopback_.Start(transport_.load(), &error)) {
+      last_error_ = error.empty() ? "系统音启动采集失败" : error;
       RTC_LOG(LS_WARNING) << "system audio start failed: " << error;
       return -1;
     }
     return 0;
   }
-  return mic_ ? mic_->StartRecording() : -1;
+  if (!mic_) {
+    last_error_ = "麦克风不可用";
+    return -1;
+  }
+  if (!mic_inited_) {
+    // 旧版 Windows Core ADM 的 StopRecording 会释放采集客户端并重置初始化状态，
+    // 重新启动前必须重新 InitRecording。
+    if (mic_->InitRecording() != 0) {
+      last_error_ = "麦克风采集初始化失败";
+      RTC_LOG(LS_WARNING) << "mic InitRecording failed";
+      return -1;
+    }
+    mic_inited_ = true;
+  }
+  if (mic_->StartRecording() != 0) {
+    last_error_ = "麦克风启动采集失败";
+    mic_inited_ = false;
+    RTC_LOG(LS_WARNING) << "mic StartRecording failed";
+    return -1;
+  }
+  return 0;
 }
 
 int32_t SwitchableAudioDevice::StopRecording() {
+  recording_requested_ = false;
   if (system_audio_) {
     loopback_.Stop();
     return 0;
   }
-  return mic_ ? mic_->StopRecording() : -1;
+  if (!mic_) {
+    return -1;
+  }
+  const int32_t result = mic_->StopRecording();
+  // 旧 Core ADM 无论成败都会释放采集客户端，下次启动前需重新 InitRecording。
+  mic_inited_ = false;
+  return result;
 }
 
 bool SwitchableAudioDevice::RecordingIsInitialized() const {
@@ -99,17 +181,13 @@ bool SwitchableAudioDevice::Recording() const {
 }
 
 int32_t SwitchableAudioDevice::SetRecordingDevice(uint16_t index) {
-  if (system_audio_) {
-    return 0;
-  }
+  // 设备选择只影响内置 ADM 的麦克风；系统音模式下也允许预选，
+  // 以便切回麦克风时立即生效。
   return mic_ ? mic_->SetRecordingDevice(index) : -1;
 }
 
 int32_t SwitchableAudioDevice::SetRecordingDevice(
     WindowsDeviceType device) {
-  if (system_audio_) {
-    return 0;
-  }
   return mic_ ? mic_->SetRecordingDevice(device) : -1;
 }
 

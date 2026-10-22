@@ -92,6 +92,9 @@ class MediaController {
   void GetDevices(std::function<void(MediaResult)> done);
   void GetStats(std::function<void(MediaResult)> done);
   void SetVolume(double gain, std::function<void(MediaResult)> done);
+  // 运行时切换采集源；done 可为空。
+  void SetAudioSource(const std::string& source,
+                      std::function<void(MediaResult)> done);
 
  private:
   void Post(MediaTaskQueue::Job job, MediaTaskQueue::Done done,

@@ -48,6 +48,12 @@ class Media {
   virtual void SetMuted(bool muted) = 0;
   virtual void SetVolume(double gain) = 0;
 
+  // 运行时切换音频采集源（"mic" / "system"）；默认无操作。
+  virtual Json SetAudioSource(const std::string& source) {
+    (void)source;
+    return Json::object();
+  }
+
   // 进入 P2P 后只暂停 SFU 收发，不销毁 PeerConnection：
   // mediasoup transport 只接受一次 DTLS connect，切回 SFU 时需复用。
   virtual void SfuPause(bool paused) = 0;

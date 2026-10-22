@@ -12,6 +12,7 @@
 #include <string>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -33,6 +34,8 @@ struct Options {
   bool list_devices = false;
   bool version = false;
   int duration = 10;
+  // 运行时切换采集源：<第 N 秒, mic|system>，可多次。
+  std::vector<std::pair<int, std::string>> source_switches;
   talk::LogOptions log;
   bool log_file_set = false;
   bool log_level_set = false;
@@ -45,7 +48,7 @@ const char* const kUsage =
     "--token-file 文件（或 --token-stdin） "
     "[--audio none|fake|wasapi] [--audio-source mic|system] "
     "[--media-mode auto|sfu|p2p] "
-    "[--config 文件] [--duration 秒] "
+    "[--config 文件] [--duration 秒] [--switch-source-at 秒:mic|system] "
     "[--log-file 路径] [--log-level trace|debug|info|warn|error] "
     "[--log-console]；单跑 --list-devices 枚举音频设备";
 
@@ -90,6 +93,13 @@ Options ParseOptions(int argc, char** argv) {
       options.config_file = value;
     } else if (arg == "--duration") {
       options.duration = std::stoi(value);
+    } else if (arg == "--switch-source-at") {
+      const size_t sep = value.find(':');
+      if (sep == std::string::npos) {
+        throw std::runtime_error("switch-source-at 格式为 秒:mic|system");
+      }
+      options.source_switches.emplace_back(std::stoi(value.substr(0, sep)),
+                                           value.substr(sep + 1));
     } else if (arg == "--log-file") {
       options.log.file = value;
       options.log_file_set = true;
@@ -153,6 +163,14 @@ void Validate(const Options& options) {
         options.config["audio_source"].get<std::string>();
     if (source != "mic" && source != "system") {
       throw std::runtime_error("audio_source 必须是 mic/system");
+    }
+  }
+  for (const auto& [sec, source] : options.source_switches) {
+    if (sec < 1 || sec > options.duration) {
+      throw std::runtime_error("switch-source-at 秒必须在 duration 范围内");
+    }
+    if (source != "mic" && source != "system") {
+      throw std::runtime_error("switch-source-at 源必须是 mic/system");
     }
   }
 }
@@ -305,6 +323,12 @@ int RunTalk(const Options& options) {
   }
   for (int i = 0; i < options.duration && !app.failed(); ++i) {
     std::this_thread::sleep_for(1s);
+    for (const auto& [sec, source] : options.source_switches) {
+      if (i + 1 == sec) {
+        std::cout << "切换采集源 -> " << source << std::endl;
+        app.Command("audio.setSource", {{"source", source}});
+      }
+    }
     if (app.audio() && (i % 5 == 0 || i == options.duration - 1) &&
         !app.stats_pending()) {
       app.set_stats_pending(true);

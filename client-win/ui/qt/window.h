@@ -60,6 +60,7 @@ class TalkWindow : public QWidget {
   AppSettings settings_;
   QString backend_override_;
   QString self_uid_;
+  QString active_source_ = QStringLiteral("mic");
   QMap<QString, QJsonObject> peers_;
   bool muted_ = true;
 
