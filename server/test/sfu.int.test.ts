@@ -398,6 +398,31 @@ describe('sfu audio', () => {
     expect(res.ok).toBe(false);
     expect(res.error.code).toBe(409);
     expect(res.error.msg).toMatch(/duplicate/);
+
+    // camera + screen 两路同 offer（Windows 客户端的发布形态）应成功：
+    // 修复前数字/字符串 mid 错配导致两路都回退 camera 被误判 duplicate
+    const pc2 = new RTCPeerConnection({
+      iceServers: [] as [],
+      iceAdditionalHostAddresses: ['127.0.0.1'],
+      iceUseTcp: false,
+      codecs: { audio: [useOPUS()], video: [useH264()] },
+    });
+    pc2.addTrack(new MediaStreamTrack({ kind: 'audio' }));
+    pc2.addTrack(new MediaStreamTrack({ kind: 'video' }));
+    pc2.addTrack(new MediaStreamTrack({ kind: 'video' }));
+    const offer2 = await pc2.createOffer();
+    await pc2.setLocalDescription(offer2);
+    const ok2 = await dup.wire.req('sfu.publish', {
+      sdp: pc2.localDescription!.sdp,
+      tracks: [
+        { mid: '0', kind: 'audio', source: 'mic' },
+        { mid: '1', kind: 'video', source: 'camera' },
+        { mid: '2', kind: 'video', source: 'screen' },
+      ],
+    });
+    pc2.close();
+    expect(ok2.ok).toBe(true);
+    expect(ok2.data.producers).toHaveLength(3);
   }, 20000);
 
   it('retries recv offer after a failed answer once the peer publishes', async () => {

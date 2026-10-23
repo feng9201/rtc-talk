@@ -60,6 +60,8 @@ describe('video sdp', () => {
       offer('H264/90000', 'level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f'),
     );
     expect(parsed.tracks.map((t) => t.kind)).toEqual(['audio', 'video']);
+    // sdp-transform 把数字 mid 解析为 number，parseSdp 必须归一化为 string
+    expect(parsed.tracks.map((t) => t.mid)).toEqual(['0', '1']);
     expect(parsed.tracks[1]?.rtpParameters?.codecs[0]).toMatchObject({
       mimeType: 'video/H264',
       clockRate: 90000,
