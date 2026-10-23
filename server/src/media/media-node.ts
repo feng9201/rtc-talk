@@ -148,11 +148,24 @@ export class MediaNode {
     uid: string,
     sdp: string,
     tracks?: { mid: string; kind: 'audio' | 'video'; source?: 'mic' | 'camera' | 'screen'; closed?: boolean }[],
+    video?: { enabled: boolean; max_publishers: number },
   ) {
     const room = this.rooms.get(roomId);
     const peer = room?.peers.get(uid);
     if (!room || !peer) throw new TalkError(409, 'not in room');
-    const result = await peer.publish(sdp, tracks);
+    /** 房间内未关闭的视频 producer 数；本端被本次 offer 原位替换的 mid 不计（重发布/ICE restart） */
+    const countRoomVideo = (excludeMids: Set<string>): number => {
+      let count = 0;
+      for (const other of room.peers.values()) {
+        for (const p of other.producers.values()) {
+          if (p.closed || p.kind !== 'video') continue;
+          if (other === peer && excludeMids.has(String(p.appData.mid))) continue;
+          count++;
+        }
+      }
+      return count;
+    };
+    const result = await peer.publish(sdp, tracks, video, countRoomVideo);
     for (const producer of peer.producers.values()) {
       for (const other of room.peers.values()) other.subscribe(producer, uid);
     }

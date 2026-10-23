@@ -158,7 +158,7 @@ wss://<host>:<port>/talk/v1/ws?token=<JWT>
   "media_mode": "auto|sfu|p2p",        // auto：2 人且双方支持则 P2P，否则 SFU
   "p2p_allow_relay": true,             // P2P 是否允许走 TURN 中继
   "max_peers": 20,
-  "video": { "enabled": false, "max_publishers": 9 }   // 预留
+  "video": { "enabled": true, "max_publishers": 9 }    // 单层 H.264；enabled=false 时房间拒绝视频轨
 }
 ```
 
@@ -259,6 +259,7 @@ wss://<host>:<port>/talk/v1/ws?token=<JWT>
 ```
 
 - 新增/删除发送轨（后续加摄像头）时重新 `sfu.publish`，携带完整 offer；删除的轨在 `tracks` 中标记 `"closed": true`。
+- 视频轨受房间策略约束，违反返回 `409`：`video.enabled=false`；房间内视频 producer 数已达 `video.max_publishers`（按 producer 计数，本端重发布原 mid 不重复计入）；同一 `uid` 重复发布相同 `source` 的视频轨。
 
 ### 6.3 订阅：`sfu.offer`（S→C req）
 

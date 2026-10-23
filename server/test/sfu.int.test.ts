@@ -89,7 +89,7 @@ class Peer {
   private markReady = () => {};
 
   constructor(
-    private readonly wire: Wire,
+    readonly wire: Wire,
     private readonly video = false,
   ) {
     this.recvReady = new Promise((r) => {
@@ -315,5 +315,88 @@ describe('sfu audio', () => {
     expect(b.recvCount).toBeGreaterThan(5);
     expect(a.recvVideo).toBeGreaterThan(5);
     expect(b.recvVideo).toBeGreaterThan(5);
+  }, 20000);
+
+  it('enforces room video policy (disabled / publisher limit / duplicate source)', async () => {
+    const rtcPort = await freePort();
+    media = await MediaNode.create({
+      numWorkers: 1,
+      workerBin: process.env.MEDIASOUP_WORKER_BIN,
+      listenIp: '127.0.0.1',
+      announcedAddress: '127.0.0.1',
+      port: rtcPort,
+      logger,
+      onWorkerDied: () => {},
+    });
+    const config = loadConfig({
+      TALK_ENV: 'dev',
+      TALK_HTTP_HOST: '127.0.0.1',
+      TALK_JWT_SECRET: 's'.repeat(40),
+    });
+    config.http.port = 0;
+    app = createApp({ config, logger, media });
+    const addr = await app.listen();
+    const base = `http://127.0.0.1:${addr.port}`;
+
+    async function open(uid: string, roomId: string, policy?: unknown, video = true): Promise<Peer> {
+      const token = ((await (await fetch(`${base}/dev/token?uid=${uid}`)).json()) as { token: string }).token;
+      const wire = await connect(base, token);
+      const peer = new Peer(wire, video);
+      peers.push(peer);
+      expect((await wire.req('session.hello', { client: { platform: 'linux', version: '0' } })).ok).toBe(true);
+      expect(
+        (
+          await wire.req('room.join', {
+            room_id: roomId,
+            media: { audio: { muted: false }, video: { send: true } },
+            ...(policy ? { policy } : {}),
+          })
+        ).ok,
+      ).toBe(true);
+      return peer;
+    }
+
+    // enabled=false：视频轨被拒，纯音频可发布
+    const v = await open('v1', 'sfu-novideo', { video: { enabled: false } });
+    await expect(v.publish()).rejects.toThrow(/publish failed 409/);
+    const au = await open('a1', 'sfu-novideo', { video: { enabled: false } }, false);
+    await au.publish();
+
+    // max_publishers=2：第 3 路视频被拒；释放一路后可再发
+    const limit = { video: { enabled: true, max_publishers: 2 } };
+    const p1 = await open('l1', 'sfu-limit', limit);
+    const p2 = await open('l2', 'sfu-limit', limit);
+    const p3 = await open('l3', 'sfu-limit', limit);
+    await p1.publish();
+    await p2.publish();
+    await expect(p3.publish()).rejects.toThrow(/publish failed 409/);
+    await p2.wire.req('room.leave', { room_id: 'sfu-limit' });
+    await p3.publish();
+
+    // 默认策略允许视频；同一 uid 重复 source 被拒
+    const dup = await open('dup', 'sfu-dup');
+    const pc = new RTCPeerConnection({
+      iceServers: [] as [],
+      iceAdditionalHostAddresses: ['127.0.0.1'],
+      iceUseTcp: false,
+      codecs: { audio: [useOPUS()], video: [useH264()] },
+    });
+    pc.addTrack(new MediaStreamTrack({ kind: 'audio' }));
+    pc.addTrack(new MediaStreamTrack({ kind: 'video' }));
+    pc.addTrack(new MediaStreamTrack({ kind: 'video' }));
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    const res = await dup.wire.req('sfu.publish', {
+      sdp: pc.localDescription!.sdp,
+      tracks: [
+        { mid: '0', kind: 'audio', source: 'mic' },
+        { mid: '1', kind: 'video', source: 'camera' },
+        { mid: '2', kind: 'video', source: 'camera' },
+      ],
+    });
+    pc.close();
+    expect(res.ok).toBe(false);
+    expect(res.error.code).toBe(409);
+    expect(res.error.msg).toMatch(/duplicate/);
   }, 20000);
 });

@@ -10,10 +10,10 @@ export const PolicySchema = z.object({
   max_peers: z.number().int().min(2).default(20),
   video: z
     .object({
-      enabled: z.boolean().default(false),
+      enabled: z.boolean().default(true),
       max_publishers: z.number().int().min(0).default(9),
     })
-    .default({ enabled: false, max_publishers: 9 }),
+    .default({ enabled: true, max_publishers: 9 }),
 });
 
 export type RoomPolicy = z.output<typeof PolicySchema>;

@@ -265,7 +265,8 @@ export class Signaling {
     if (!s.roomId) throw new TalkError(409, 'not in room');
     if (this.modes.current(s.roomId) === 'p2p') throw new TalkError(409, 'room is in p2p mode');
     if (!this.opts.media) throw new TalkError(501, 'sfu not enabled');
-    return this.opts.media.publish(s.roomId, s.uid, d.sdp, d.tracks);
+    const video = this.rooms.get(s.roomId)?.policy.video;
+    return this.opts.media.publish(s.roomId, s.uid, d.sdp, d.tracks, video);
   }
 
   private async restartIce(s: Session, data: unknown) {

@@ -53,6 +53,8 @@ describe('RoomManager', () => {
     const video = r.join(input('a', { roomId: 'v', videoOn: true, policy: { video: { enabled: true } } }));
     expect(video.room.policy.video.enabled).toBe(true);
     expect(video.peer.video.on).toBe(true);
+    // 默认开启视频：现有客户端 join 不带 video policy，房间需可直接发布视频
+    expect(r.join(input('b', { roomId: 'v3' })).room.policy.video).toEqual({ enabled: true, max_publishers: 9 });
   });
 
   it('transfers host on host leave and closes empty room', () => {
