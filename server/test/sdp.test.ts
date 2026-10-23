@@ -5,7 +5,7 @@ import { buildSdp, parseSdp } from '../src/media/sdp.js';
 
 const FP = `${'A1:'.repeat(31)}A1`;
 
-function offer(videoRtp: string, videoFmtp: string): string {
+function offer(videoRtp: string, videoFmtp: string, videoExt: string[] = []): string {
   return [
     'v=0',
     'o=- 1 1 IN IP4 127.0.0.1',
@@ -30,6 +30,7 @@ function offer(videoRtp: string, videoFmtp: string): string {
     'a=rtcp-fb:102 nack',
     'a=rtcp-fb:102 nack pli',
     'a=ssrc:2222 cname:video',
+    ...videoExt,
     '',
   ].join('\r\n');
 }
@@ -101,5 +102,20 @@ describe('video sdp', () => {
     expect(() => parseSdp(offer('H264/90000', 'packetization-mode=1;profile-level-id=64001f'))).toThrow(
       expect.objectContaining({ code: 400 }),
     );
+  });
+
+  it('filters header extensions mediasoup does not support (toffset)', () => {
+    // libwebrtc 的视频 offer 会主动带 toffset；mediasoup 3.13+ 已移除该 URI，
+    // 放行会导致 transport.produce() 抛 invalid RtpHeaderExtensionUri、整个 sfu.publish 失败
+    const parsed = parseSdp(
+      offer('H264/90000', 'level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f', [
+        'a=extmap:2 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01',
+        'a=extmap:3 urn:ietf:params:rtp-hdrext:toffset',
+      ]),
+    );
+    const exts = parsed.tracks[1]?.rtpParameters?.headerExtensions ?? [];
+    expect(exts.map((e) => e.uri)).toEqual([
+      'http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01',
+    ]);
   });
 });
