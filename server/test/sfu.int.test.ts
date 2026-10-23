@@ -399,4 +399,87 @@ describe('sfu audio', () => {
     expect(res.error.code).toBe(409);
     expect(res.error.msg).toMatch(/duplicate/);
   }, 20000);
+
+  it('retries recv offer after a failed answer once the peer publishes', async () => {
+    const rtcPort = await freePort();
+    media = await MediaNode.create({
+      numWorkers: 1,
+      workerBin: process.env.MEDIASOUP_WORKER_BIN,
+      listenIp: '127.0.0.1',
+      announcedAddress: '127.0.0.1',
+      port: rtcPort,
+      logger,
+      onWorkerDied: () => {},
+    });
+    const config = loadConfig({
+      TALK_ENV: 'dev',
+      TALK_HTTP_HOST: '127.0.0.1',
+      TALK_JWT_SECRET: 's'.repeat(40),
+    });
+    config.http.port = 0;
+    app = createApp({ config, logger, media });
+    const addr = await app.listen();
+    const base = `http://127.0.0.1:${addr.port}`;
+
+    async function helloJoin(wire: Wire, uid: string): Promise<void> {
+      const token = ((await (await fetch(`${base}/dev/token?uid=${uid}`)).json()) as { token: string }).token;
+      expect((await wire.req('session.hello', { client: { platform: 'linux', version: '0' } })).ok).toBe(true);
+      expect((await wire.req('room.join', { room_id: 'sfu-retry', media: { audio: { muted: false } } })).ok).toBe(true);
+    }
+
+    // b 先入房但不挂 sfu.offer handler：a 发布时给 b 的 offer 会应答失败
+    const bToken = ((await (await fetch(`${base}/dev/token?uid=bob`)).json()) as { token: string }).token;
+    const bWire = await connect(base, bToken);
+    await helloJoin(bWire, 'bob');
+    const aToken = ((await (await fetch(`${base}/dev/token?uid=alice`)).json()) as { token: string }).token;
+    const aWire = await connect(base, aToken);
+    const a = new Peer(aWire);
+    peers.push(a);
+    await helloJoin(aWire, 'alice');
+    await a.publish();
+    await new Promise((r) => setTimeout(r, 300));
+
+    // b 现在具备应答能力，再发布 → 服务端应重试此前失败的 recv offer
+    let offers = 0;
+    let lastConsumers: { uid?: string; kind?: string }[] = [];
+    const bRecv = new RTCPeerConnection({
+      iceServers: [] as [],
+      iceAdditionalHostAddresses: ['127.0.0.1'],
+      iceUseTcp: false,
+      codecs: { audio: [useOPUS()] },
+    });
+    bWire.onServerReq(async (method, data) => {
+      if (method !== 'sfu.offer') return {};
+      offers += 1;
+      lastConsumers = ((data as { consumers?: { uid?: string; kind?: string }[] }).consumers ?? []).slice();
+      await bRecv.setRemoteDescription({ type: 'offer', sdp: (data as { sdp: string }).sdp });
+      const answer = await bRecv.createAnswer();
+      await bRecv.setLocalDescription(answer);
+      return { sdp: bRecv.localDescription!.sdp };
+    });
+    const bSend = new RTCPeerConnection({
+      iceServers: [] as [],
+      iceAdditionalHostAddresses: ['127.0.0.1'],
+      iceUseTcp: false,
+      codecs: { audio: [useOPUS()] },
+    });
+    bSend.addTrack(new MediaStreamTrack({ kind: 'audio' }));
+    const bOffer = await bSend.createOffer();
+    await bSend.setLocalDescription(bOffer);
+    const res = await bWire.req('sfu.publish', {
+      sdp: bSend.localDescription!.sdp,
+      tracks: [{ mid: '0', kind: 'audio', source: 'mic' }],
+    });
+    expect(res.ok).toBe(true);
+    await bSend.setRemoteDescription({ type: 'answer', sdp: res.data.sdp });
+
+    await new Promise((r) => setTimeout(r, 1000));
+    expect(offers).toBeGreaterThanOrEqual(1);
+    expect(lastConsumers).toEqual(
+      expect.arrayContaining([expect.objectContaining({ uid: 'alice', kind: 'audio' })]),
+    );
+    bRecv.close();
+    bSend.close();
+    bWire.close();
+  }, 20000);
 });
