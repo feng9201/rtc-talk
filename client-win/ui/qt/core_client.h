@@ -3,8 +3,10 @@
 #ifndef TALK_UI_CORE_CLIENT_H_
 #define TALK_UI_CORE_CLIENT_H_
 
+#include <QImage>
 #include <QJsonObject>
 #include <QObject>
+#include <QString>
 #include <cstdint>
 #include <memory>
 
@@ -26,9 +28,14 @@ class CoreClient : public QObject {
   bool Submit(const QString& method,
               const QJsonObject& data = QJsonObject());
 
+  // 开关远端视频帧回调；on=false 后不再投递 VideoFrame。
+  void SetVideoCallback(bool on);
+
  signals:
   // 在 UI 线程发出；旧句柄的事件不会到达。
   void Event(const QString& name, const QJsonObject& data);
+  // 远端一帧 BGRA（已拷贝，可直接保存）；旧句柄的帧丢弃。
+  void VideoFrame(const QImage& frame, const QString& mid);
 
  private:
   struct Context {
@@ -37,7 +44,12 @@ class CoreClient : public QObject {
   };
 
   static void Dispatch(void* context, const char* name, const char* text);
+  // 在 webrtc 媒体线程回调：先拷帧再投递 UI 线程。
+  static void DispatchVideo(void* context, const char* mid,
+                            const uint8_t* bgra, int width, int height,
+                            int stride, int64_t timestamp_us);
   void Deliver(const QString& name, const QJsonObject& data);
+  void DeliverVideo(const QImage& frame, const QString& mid);
 
   std::unique_ptr<Context> context_;
   talk_handle* core_ = nullptr;

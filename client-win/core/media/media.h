@@ -4,6 +4,7 @@
 #define TALK_MEDIA_MEDIA_H_
 
 #include <atomic>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
@@ -24,6 +25,18 @@ enum class TrackKind {
 inline const char* TrackKindName(TrackKind kind) {
   return kind == TrackKind::kVideo ? "video" : "audio";
 }
+
+// 一帧 BGRA 图像；mid 与 bgra 只在回调期间有效，上层需要自行拷贝。
+struct VideoFrameView {
+  const char* mid = nullptr;
+  const uint8_t* bgra = nullptr;
+  int width = 0;
+  int height = 0;
+  int stride = 0;
+  int64_t timestamp_us = 0;
+};
+
+using VideoFrameSink = std::function<void(const VideoFrameView&)>;
 
 // 所有方法只在媒体任务线程调用，不阻塞控制线程或界面线程。
 class Media {
@@ -58,6 +71,12 @@ class Media {
   // mediasoup transport 只接受一次 DTLS connect，切回 SFU 时需复用。
   virtual void SfuPause(bool paused) = 0;
 
+  // 屏幕共享启停；不支持视频的构建返回错误而不抛异常。
+  virtual Json StartVideo() { return {{"error", "当前构建不支持视频"}}; }
+  virtual Json StopVideo() { return Json::object(); }
+  // 下行视频帧回调；可跨线程，空 sink 表示取消。
+  virtual void SetVideoSink(VideoFrameSink sink) { (void)sink; }
+
   virtual Json GetDevices() = 0;
   virtual Json GetStats() = 0;
 };
@@ -75,7 +94,8 @@ inline bool IsMediaEnabled(const Json& config) {
 }
 
 std::unique_ptr<Media> MakeMedia(const Json& config, const Json& ice_servers,
-                                 MuteGate gate, Media::Event event);
+                                 MuteGate gate, Media::Event event,
+                                 VideoFrameSink video_sink);
 
 }  // namespace talk
 

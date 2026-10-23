@@ -20,7 +20,8 @@ constexpr int kMaxQueuedCommands = 256;
 TalkClient::TalkClient(talk_event_fn callback, void* userdata, Json config)
     : events_(callback, userdata),
       config_(std::move(config)),
-      media_(runtime_.io(), config_, events_),
+      media_(runtime_.io(), config_, events_,
+             [this](const VideoFrameView& view) { DeliverVideoFrame(view); }),
       signaling_(runtime_.io()),
       session_(runtime_.io(), config_, events_, signaling_, media_) {
   media_.SetSignaling(MediaSignaling{
@@ -85,6 +86,40 @@ uint64_t TalkClient::Submit(std::string method, Json data) {
     }
   });
   return id;
+}
+
+void TalkClient::SetVideoFrameCallback(talk_video_frame_fn callback,
+                                     void* userdata) {
+  std::lock_guard<std::mutex> lock(video_mutex_);
+  video_callback_ = callback;
+  video_userdata_ = callback != nullptr ? userdata : nullptr;
+  if (callback != nullptr) {
+    // 重新订阅后允许再记一次首帧。
+    video_first_frame_logged_ = false;
+  }
+  TALK_LOG_INFO("app", "视频帧回调已{}", callback != nullptr ? "注册" : "取消");
+}
+
+void TalkClient::DeliverVideoFrame(const VideoFrameView& view) {
+  // 媒体线程：回调期间 bgra/mid 有效，必须先取副本再放锁，避免与替换回调互等。
+  talk_video_frame_fn callback = nullptr;
+  void* userdata = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(video_mutex_);
+    callback = video_callback_;
+    userdata = video_userdata_;
+  }
+  if (callback == nullptr || view.bgra == nullptr || view.width <= 0 ||
+      view.height <= 0) {
+    return;
+  }
+  if (!video_first_frame_logged_.exchange(true)) {
+    TALK_LOG_INFO("app", "首个远端视频帧 mid={} {}x{} stride={}",
+                  view.mid != nullptr ? view.mid : "", view.width,
+                  view.height, view.stride);
+  }
+  callback(userdata, view.mid != nullptr ? view.mid : "", view.bgra,
+           view.width, view.height, view.stride, view.timestamp_us);
 }
 
 }  // namespace talk

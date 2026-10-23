@@ -81,4 +81,7 @@ target_link_libraries(talk_webrtc INTERFACE
   shell32 shlwapi user32 usp10 uuid version wininet winmm winspool ws2_32
   delayimp kernel32 ole32 crypt32 iphlpapi secur32 dmoguids wmcodecdspuuid
   amstrmid msdmo strmiids bcrypt d3d11 dxgi shcore dwmapi
+  # Media Foundation：桌面采集（WGC/DXGI）与 MF H.264 编解码器。
+  # mferror 只有错误码头文件，没有对应 lib。
+  mfplat mfuuid mf
 )

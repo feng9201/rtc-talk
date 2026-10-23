@@ -5,11 +5,13 @@
 
 #include <atomic>
 #include <cstdint>
+#include <mutex>
 #include <string>
 
 #include "base/event.h"
 #include "base/io_runtime.h"
 #include "base/json.h"
+#include "media/media.h"
 #include "media/media_controller.h"
 #include "session/call_session.h"
 #include "signaling/signaling_client.h"
@@ -29,7 +31,13 @@ class TalkClient {
   // 返回操作 ID；0 表示命令队列已满。
   uint64_t Submit(std::string method, Json data);
 
+  // 任意线程调用；帧回调在 webrtc 媒体线程执行。
+  void SetVideoFrameCallback(talk_video_frame_fn callback, void* userdata);
+
  private:
+  // 由媒体线程调用：加锁取回调副本后转发给 C ABI。
+  void DeliverVideoFrame(const VideoFrameView& view);
+
   IoRuntime runtime_;
   EventSink events_;
   Json config_;
@@ -38,6 +46,11 @@ class TalkClient {
   CallSession session_;
   std::atomic<uint64_t> next_operation_{1};
   std::atomic<int> queued_{0};
+  std::mutex video_mutex_;
+  talk_video_frame_fn video_callback_ = nullptr;
+  void* video_userdata_ = nullptr;
+  // 首帧只记一次日志，用于确认“解码 → 渲染”这最后一跳是否通。
+  std::atomic<bool> video_first_frame_logged_{false};
 };
 
 }  // namespace talk

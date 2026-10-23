@@ -15,12 +15,14 @@ constexpr int kMaxQueuedMediaTasks = 64;
 }  // namespace
 
 MediaTaskQueue::MediaTaskQueue(asio::io_context& io, const Json& config,
-                               MuteGate gate, Media::Event event)
+                               MuteGate gate, Media::Event event,
+                               VideoFrameSink video_sink)
     : io_(io),
       pool_(1),
       config_(config),
       gate_(std::move(gate)),
       event_(std::move(event)),
+      video_sink_(std::move(video_sink)),
       enabled_(IsMediaEnabled(config)) {
   const std::string backend =
       config_.value("audio_backend", std::string("none"));
@@ -82,7 +84,8 @@ void MediaTaskQueue::Post(Job job, Done done, bool create) {
                 }
                 event_(std::move(name), std::move(data));
               });
-            });
+            },
+            video_sink_);
       }
       if (!media_) {
         if (create) {

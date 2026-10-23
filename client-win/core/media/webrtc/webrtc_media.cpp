@@ -6,14 +6,26 @@
 #include <vector>
 
 #include "api/audio_options.h"
+#include "api/make_ref_counted.h"
 #include "media/webrtc/audio_device.h"
 #include "media/webrtc/media_stats.h"
 
 namespace talk {
+namespace {
+
+// 一期固定采集档位：最长边 1280x720、15fps；码率上限在
+// PeerConnection 的 video encoding 里设置。
+constexpr int kVideoMaxWidth = 1280;
+constexpr int kVideoMaxHeight = 720;
+constexpr int kVideoFps = 15;
+
+}  // namespace
 
 WebRtcMedia::WebRtcMedia(const Json& config, const Json& ice_servers,
-                         MuteGate gate, Event event)
-    : config_(config), event_(std::move(event)) {
+                         MuteGate gate, Event event, VideoFrameSink video_sink)
+    : config_(config),
+      event_(std::move(event)),
+      video_sink_(std::move(video_sink)) {
   std::string error;
   environment_ = MediaEnvironment::Create(config_, ice_servers,
                                           std::move(gate), &error);
@@ -30,6 +42,11 @@ WebRtcMedia::WebRtcMedia(const Json& config, const Json& ice_servers,
 }
 
 WebRtcMedia::~WebRtcMedia() {
+  // 先停采集线程（Stop 内部 join），再关 PeerConnection，
+  // 避免采集回调打到已释放的 video track。
+  if (video_source_) {
+    video_source_->Stop();
+  }
   // PeerConnection 必须在创建它的 signaling 线程上关闭。
   if (send_) {
     send_->Close();
@@ -44,11 +61,14 @@ WebRtcMedia::~WebRtcMedia() {
   recv_.reset();
   p2p_.reset();
   audio_track_ = nullptr;
+  video_track_ = nullptr;
+  video_source_ = nullptr;
   environment_.reset();
 }
 
 Json WebRtcMedia::Offer() {
-  if (!environment_ || !SelectDevices(true) || !EnsureAudioTrack()) {
+  if (!environment_ || !SelectDevices(true) || !EnsureAudioTrack() ||
+      !EnsureVideoTrack()) {
     return Failed();
   }
   if (!send_->Create(environment_->factory(), environment_->rtc_config())) {
@@ -60,22 +80,34 @@ Json WebRtcMedia::Offer() {
                      "talk")) {
     return Failed();
   }
+  // join 即发布视频 m-line：服务端会建一个 paused 的视频 producer，
+  // 启停共享只走 setMute，不重建 producer（也就不会连带重建音频）。
+  if (!AddVideoTrack(*send_, webrtc::RtpTransceiverDirection::kSendOnly,
+                     "talk")) {
+    return Failed();
+  }
   if (!send_->CreateAndSetLocal(true)) {
     Fail("创建或设置本地 SDP 失败");
     return Failed();
   }
   // 新 SFU 上行等服务端应答后再按静音状态恢复；不要动 P2P 上行。
-  send_->SetSenderActive(false);
-  std::string mid;
-  if (!send_->FirstMid(&mid)) {
-    mid = "0";
+  send_->SetSenderActive(TrackKind::kAudio, false);
+  send_->SetSenderActive(TrackKind::kVideo, false);
+  std::string audio_mid;
+  if (!send_->MidFor(TrackKind::kAudio, &audio_mid)) {
+    audio_mid = "0";
+  }
+  std::string video_mid;
+  if (!send_->MidFor(TrackKind::kVideo, &video_mid)) {
+    video_mid = "1";
   }
   std::string sdp;
   if (!send_->GetLocalSdp(&sdp)) {
     Fail("SDP 序列化失败");
     return Failed();
   }
-  return {{"sdp", sdp}, {"tracks", TrackDescriptions(mid)}};
+  return {{"sdp", sdp},
+          {"tracks", TrackDescriptions(audio_mid, video_mid)}};
 }
 
 Json WebRtcMedia::Accept(const std::string& sdp) {
@@ -83,6 +115,9 @@ Json WebRtcMedia::Accept(const std::string& sdp) {
     Fail("设置远端 SDP 失败");
     return Failed();
   }
+  // offer 里两个上行 sender 都先关着；应答落地后必须按当前状态补一次激活，
+  // 否则 P2P 切回 SFU（期间不再发 setMute）会一直零上行。
+  ApplySendState();
   return Json::object();
 }
 
@@ -96,6 +131,8 @@ Json WebRtcMedia::Answer(const std::string& sdp) {
     return Failed();
   }
   environment_->audio()->EnsurePlayout();
+  // 首个 OnTrack 就会挂 sink，必须在应用远端 offer 之前设置好。
+  recv_->SetVideoSink(video_sink_);
   if (!recv_->SetRemote(webrtc::SdpType::kOffer, sdp)) {
     Fail("设置远端 SDP 失败");
     return Failed();
@@ -202,8 +239,9 @@ void WebRtcMedia::SetMuted(bool muted) {
   if (audio_track_) {
     OnSignaling([this, muted] { audio_track_->set_enabled(!muted); });
   }
-  bool ok = send_->SetSenderActive(!muted && !sfu_paused_.load());
-  ok = p2p_->SetSenderActive(!muted) && ok;
+  bool ok = send_->SetSenderActive(TrackKind::kAudio,
+                                   !muted && !sfu_paused_.load());
+  ok = p2p_->SetSenderActive(TrackKind::kAudio, !muted) && ok;
   if (!ok && audio_track_) {
     OnSignaling([this] { audio_track_->set_enabled(false); });
     Fail("设置发送状态失败");
@@ -236,13 +274,69 @@ Json WebRtcMedia::SetAudioSource(const std::string& source) {
   return Json::object();
 }
 
+void WebRtcMedia::ApplySendState() {
+  if (!send_) {
+    return;
+  }
+  const bool paused = sfu_paused_.load();
+  send_->SetSenderActive(TrackKind::kAudio, !muted_.load() && !paused);
+  // P2P 连通后把 SFU 上行 sender 关掉，避免继续往 SFU 丢包；
+  // 切回 SFU（sfu_paused=false）时跟随共享状态恢复。
+  send_->SetSenderActive(TrackKind::kVideo, video_sharing_.load() && !paused);
+}
+
 void WebRtcMedia::SfuPause(bool paused) {
   sfu_paused_ = paused;
   if (recv_) {
     recv_->SetReceivePaused(paused);
   }
+  ApplySendState();
+}
+
+Json WebRtcMedia::StartVideo() {
+  if (!environment_) {
+    return Failed();
+  }
+  if (video_sharing_.load()) {
+    // 重复 start 直接返回当前状态，不重复起采集线程。
+    return {{"sharing", true}};
+  }
+  if (!EnsureVideoTrack()) {
+    return Failed();
+  }
+  std::string error;
+  if (!video_source_->Start(&error)) {
+    Fail(error.empty() ? "启动桌面采集失败" : error);
+    return Failed();
+  }
+  if (!send_ || !send_->SetSenderActive(TrackKind::kVideo,
+                                        !sfu_paused_.load())) {
+    video_source_->Stop();
+    Fail("设置视频发送状态失败");
+    return Failed();
+  }
+  video_sharing_ = true;
+  return {{"sharing", true},
+          {"send_state", send_ ? send_->ConnectionStateText() : std::string()}};
+}
+
+Json WebRtcMedia::StopVideo() {
+  // 先停采集（立即停止出帧），再切 sender；顺序反过来会多发几帧。
+  if (video_source_) {
+    video_source_->Stop();
+  }
   if (send_) {
-    send_->SetSenderActive(!muted_.load() && !paused);
+    send_->SetSenderActive(TrackKind::kVideo, false);
+  }
+  video_sharing_ = false;
+  return {{"sharing", false}};
+}
+
+void WebRtcMedia::SetVideoSink(VideoFrameSink sink) {
+  video_sink_ = std::move(sink);
+  // 已建好的接收链立即生效；还没建则在 Answer 时下发。
+  if (recv_) {
+    recv_->SetVideoSink(video_sink_);
   }
 }
 
@@ -257,8 +351,22 @@ Json WebRtcMedia::GetStats() {
   if (!environment_) {
     return Json::object();
   }
-  return MediaStatsCollector::Collect({send_.get(), recv_.get(), p2p_.get()},
-                                      environment_->audio());
+  Json out =
+      MediaStatsCollector::Collect({send_.get(), recv_.get(), p2p_.get()},
+                                   environment_->audio());
+  // 上行链路状态与采集计数：用于区分“没出帧”“没编码器”“链路未建立”。
+  if (send_) {
+    out["send_state"] = send_->ConnectionStateText();
+  }
+  out["video_capture"] = {
+      {"frames", video_source_ ? video_source_->frames() : 0ULL},
+      {"sharing", video_sharing_.load()}};
+  // 上行 sender 实际激活状态与本地静音/暂停标志：无声时先看这里。
+  Json send_state = send_ ? send_->SenderActiveState() : Json::object();
+  send_state["muted"] = muted_.load();
+  send_state["paused"] = sfu_paused_.load();
+  out["send_active"] = std::move(send_state);
+  return out;
 }
 
 bool WebRtcMedia::SelectDevices(bool need_recording) {
@@ -301,15 +409,48 @@ bool WebRtcMedia::AddAudioTrack(PeerConnection& peer,
   return true;
 }
 
-Json WebRtcMedia::TrackDescriptions(const std::string& audio_mid) const {
+bool WebRtcMedia::EnsureVideoTrack() {
+  if (video_track_) {
+    return true;
+  }
+  const bool ready = OnSignaling([this] {
+    // 只建轨不采集：StartVideo 才起采集线程。
+    video_source_ = webrtc::make_ref_counted<DesktopVideoSource>(
+        kVideoMaxWidth, kVideoMaxHeight, kVideoFps);
+    video_track_ = environment_->factory()->CreateVideoTrack(video_source_,
+                                                             "screen");
+    return video_track_ != nullptr;
+  });
+  if (!ready) {
+    Fail("创建视频轨失败");
+  }
+  return ready;
+}
+
+bool WebRtcMedia::AddVideoTrack(PeerConnection& peer,
+                                webrtc::RtpTransceiverDirection direction,
+                                const std::string& stream_id) {
+  if (!video_track_ ||
+      !peer.AddVideoTrack(video_track_, direction, stream_id)) {
+    Fail("添加视频轨失败");
+    return false;
+  }
+  return true;
+}
+
+Json WebRtcMedia::TrackDescriptions(const std::string& audio_mid,
+                                    const std::string& video_mid) const {
   const std::string audio_source =
       config_.value("audio_source", std::string("mic"));
   Json tracks = Json::array();
   tracks.push_back({{"mid", audio_mid},
                     {"kind", TrackKindName(TrackKind::kAudio)},
                     {"source", audio_source == "system" ? "screen" : "mic"}});
-  // TODO(talk): 视频接入后在此追加 camera 轨道，并复用 PeerConnection 的
-  // 按 TrackKind 管理的 sender。
+  // 服务端的 media.setMute{source:"camera"} 只作用于 source != "screen"
+  // 的视频 producer，所以屏幕共享也必须标 camera，否则无法启停。
+  tracks.push_back({{"mid", video_mid},
+                    {"kind", TrackKindName(TrackKind::kVideo)},
+                    {"source", "camera"}});
   return tracks;
 }
 
@@ -324,10 +465,12 @@ Json WebRtcMedia::Failed() const {
 std::unique_ptr<talk::Media> talk::MakeMedia(const Json& config,
                                              const Json& ice_servers,
                                              MuteGate gate,
-                                             Media::Event event) {
+                                             Media::Event event,
+                                             VideoFrameSink video_sink) {
   auto media = std::make_unique<WebRtcMedia>(config, ice_servers,
                                              std::move(gate),
-                                             std::move(event));
+                                             std::move(event),
+                                             std::move(video_sink));
   if (!media->ok()) {
     return nullptr;
   }

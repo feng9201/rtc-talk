@@ -84,6 +84,14 @@ void CallSession::Command(uint64_t id, std::string method, Json data) {
     HandleSetMute(id, method, std::move(data));
     return;
   }
+  if (method == "video.start") {
+    HandleVideoStart(id, method);
+    return;
+  }
+  if (method == "video.stop") {
+    HandleVideoStop(id, method);
+    return;
+  }
   if (method == "session.ping" || method == "session.refreshIce") {
     HandleSessionRequest(id, method, std::move(data));
     return;
@@ -212,6 +220,10 @@ void CallSession::HandleJoin(uint64_t id, const std::string& method,
                         view.value("peers", Json::array()).size());
           media_.ApplyModeView(view);
           events_.Emit("joined", view);
+          // 每次入房都从「未共享」开始，界面按钮文案以此为准。
+          video_sharing_ = false;
+          ++video_epoch_;
+          events_.Emit("video.state", {{"sharing", false}});
           if (media_.enabled()) {
             if (media_.mode() == MediaController::Mode::kP2p) {
               media_.StartP2p();
@@ -282,6 +294,83 @@ void CallSession::HandleSetMute(uint64_t id, const std::string& method,
               Complete(id, method, result);
             });
       });
+}
+
+void CallSession::HandleVideoStart(uint64_t id, const std::string& method) {
+  if (room_id_.empty()) {
+    Complete(id, method, Failure("", 409, "未入房"));
+    return;
+  }
+  if (!media_.enabled()) {
+    Complete(id, method, Failure("", 409, "媒体未启用"));
+    return;
+  }
+  if (media_.mode() == MediaController::Mode::kP2p) {
+    Complete(id, method, Failure("", 409, "P2P 模式暂不支持屏幕共享"));
+    return;
+  }
+  const uint64_t generation = ++video_epoch_;
+  TALK_LOG_INFO("session", "启动屏幕共享 generation={}", generation);
+  media_.StartVideo([this, id, method, generation](MediaResult started) {
+    if (generation != video_epoch_) {
+      Complete(id, method, Failure("", 487, "屏幕共享命令已被更新"));
+      return;
+    }
+    if (!started.ok) {
+      Complete(id, method, Failure("", started.code, started.error));
+      return;
+    }
+    // 本地已在出帧，但服务端 producer 仍处于 paused，需恢复后才会向对端发流。
+    signaling_.Request(
+        "media.setMute", {{"source", "camera"}, {"muted", false}},
+        [this, id, method, generation, started](Json result) {
+          if (generation != video_epoch_) {
+            Complete(id, method, Failure("", 487, "屏幕共享命令已被更新"));
+            return;
+          }
+          if (!result.value("ok", false)) {
+            // 服务端未恢复 producer：回滚本地采集，避免只采不发。
+            TALK_LOG_WARN("session", "服务端未开启视频，回滚本地采集");
+            media_.StopVideo();
+            Complete(id, method, result);
+            return;
+          }
+          video_sharing_ = true;
+          events_.Emit("video.state", {{"sharing", true}});
+          Complete(id, method, Response("", started.data));
+        });
+  });
+}
+
+void CallSession::HandleVideoStop(uint64_t id, const std::string& method) {
+  if (room_id_.empty()) {
+    Complete(id, method, Failure("", 409, "未入房"));
+    return;
+  }
+  const uint64_t generation = ++video_epoch_;
+  TALK_LOG_INFO("session", "停止屏幕共享 generation={}", generation);
+  media_.StopVideo([this, id, method, generation](MediaResult stopped) {
+    if (generation != video_epoch_) {
+      Complete(id, method, Failure("", 487, "屏幕共享命令已被更新"));
+      return;
+    }
+    video_sharing_ = false;
+    if (!stopped.ok) {
+      events_.Emit("video.state", {{"sharing", false}});
+      Complete(id, method, Failure("", stopped.code, stopped.error));
+      return;
+    }
+    events_.Emit("video.state", {{"sharing", false}});
+    // 本地已停采；服务端暂停失败只告警，对端会停在最后一帧。
+    signaling_.Request(
+        "media.setMute", {{"source", "camera"}, {"muted", true}},
+        [this, id, method](Json result) {
+          if (!result.value("ok", false)) {
+            TALK_LOG_WARN("session", "服务端暂停视频失败，对端可能停在最后一帧");
+          }
+          Complete(id, method, Response("", Json::object()));
+        });
+  });
 }
 
 void CallSession::HandleSessionRequest(uint64_t id, const std::string& method,
@@ -447,6 +536,8 @@ void CallSession::HandleOpen(uint64_t epoch, uint64_t operation,
           const std::string previous = media_.p2p_session();
           media_.ApplyModeView(view);
           events_.Emit("joined", view);
+          // 断线期间采集仍在跑，按实际状态回报，避免按钮与画面不一致。
+          events_.Emit("video.state", {{"sharing", video_sharing_}});
           if (media_.enabled()) {
             if (media_.mode() == MediaController::Mode::kP2p &&
                 (!media_.p2p_started() ||
@@ -523,7 +614,9 @@ void CallSession::HandleMediaModeRequest(const std::string& id, Json data) {
       data.value("mode", data.value("media_mode", std::string()));
   TALK_LOG_INFO("session", "切换媒体模式 mode={}", mode);
   if (!media_.enabled()) {
-    media_.ApplyModeView({{"media_mode", mode == "p2p" ? "p2p" : "sfu"}});
+    const std::string applied = mode == "p2p" ? "p2p" : "sfu";
+    media_.ApplyModeView({{"media_mode", applied}});
+    EmitModeChanged(applied);
     signaling_.Send(Response(id, Json::object()));
     return;
   }
@@ -534,16 +627,25 @@ void CallSession::HandleMediaModeRequest(const std::string& id, Json data) {
       return;
     }
     media_.SwitchToP2p(data["p2p"]);
+    EmitModeChanged("p2p");
     signaling_.Send(Response(id, Json::object()));
     return;
   }
   if (mode == "sfu") {
+    // 先通知界面：共享屏幕等只支持 SFU 的能力要立刻跟着放开，
+    // 不必等发布与订阅全部完成。
+    EmitModeChanged("sfu");
     media_.SwitchToSfu(
         [this, id] { signaling_.Send(Response(id, Json::object())); });
     return;
   }
   TALK_LOG_WARN("session", "切换媒体模式失败：mode={} 无效", mode);
   signaling_.Send(Failure(id, 400, "模式无效"));
+}
+
+void CallSession::EmitModeChanged(const std::string& mode) {
+  TALK_LOG_INFO("session", "媒体模式变更 mode={}", mode);
+  events_.Emit("mode.changed", {{"mode", mode}});
 }
 
 void CallSession::HandleSfuOffer(const std::string& id, const Json& data) {
@@ -721,6 +823,9 @@ void CallSession::SchedulePing() {
 void CallSession::ResetMedia() {
   TALK_LOG_DEBUG("session", "重置媒体状态");
   ++mute_epoch_;
+  // 丢弃在途的视频命令结果；媒体实例销毁时采集线程会随之退出。
+  ++video_epoch_;
+  video_sharing_ = false;
   media_.Reset();
 }
 

@@ -7,7 +7,7 @@
 namespace talk {
 
 std::unique_ptr<Media> MakeMedia(const Json&, const Json&, MuteGate,
-                                 Media::Event) {
+                                 Media::Event, VideoFrameSink) {
   throw std::runtime_error("该构建未包含 libwebrtc");
 }
 

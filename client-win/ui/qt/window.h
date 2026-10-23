@@ -20,6 +20,7 @@ class QPlainTextEdit;
 class QPushButton;
 class QSlider;
 class CoreClient;
+class VideoView;
 
 class TalkWindow : public QWidget {
   Q_OBJECT
@@ -54,6 +55,10 @@ class TalkWindow : public QWidget {
   void HandleState(const QJsonObject& data);
   void HandleJoined(const QJsonObject& data);
   void HandleResult(const QJsonObject& data);
+  void HandleVideoState(const QJsonObject& data);
+  // 按链路模式（sfu/p2p）刷新只支持 SFU 的操作按钮。
+  void ApplyMediaMode(const QString& mode);
+  void ApplyVideoButtonState();
   void HandleMediaError(const QString& name, const QJsonObject& data);
 
   CoreClient* core_ = nullptr;
@@ -61,8 +66,13 @@ class TalkWindow : public QWidget {
   QString backend_override_;
   QString self_uid_;
   QString active_source_ = QStringLiteral("mic");
+  // 当前显示的视频 mid：一期只显示第一路，其余丢弃。
+  QString video_mid_;
   QMap<QString, QJsonObject> peers_;
   bool muted_ = true;
+  bool video_sharing_ = false;
+  // 本次入房实际媒体模式：P2P 下屏幕共享不可用。
+  bool p2p_mode_ = false;
 
   QLineEdit* url_ = nullptr;
   QLineEdit* uid_ = nullptr;
@@ -79,9 +89,11 @@ class TalkWindow : public QWidget {
   QPushButton* join_ = nullptr;
   QPushButton* leave_ = nullptr;
   QPushButton* mute_ = nullptr;
+  QPushButton* video_ = nullptr;
   QPushButton* devices_ = nullptr;
   QLabel* state_ = nullptr;
   QLabel* media_ = nullptr;
+  VideoView* video_view_ = nullptr;
   QListWidget* members_ = nullptr;
   QSlider* volume_ = nullptr;
   QPlainTextEdit* log_ = nullptr;

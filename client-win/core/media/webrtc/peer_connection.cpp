@@ -23,6 +23,8 @@ namespace talk {
 namespace {
 
 constexpr int kAudioMaxBitrateBps = 32000;
+// 单层 H.264：与采集上限 1280x720/15fps 配套，留足双人上行余量。
+constexpr int kVideoMaxBitrateBps = 1200000;
 
 class CreateObserver : public webrtc::CreateSessionDescriptionObserver {
  public:
@@ -90,11 +92,14 @@ void PeerConnection::Close() {
     return;
   }
   RunOnSignaling([this] {
+    // 先摘掉视频 sink，避免 PC 关闭后还有帧回调进来。
+    DetachRemoteVideoOnSignaling();
     if (pc_) {
       pc_->Close();
       pc_ = nullptr;
     }
     senders_.clear();
+    sender_active_.clear();
     path_.clear();
   });
 }
@@ -103,22 +108,46 @@ bool PeerConnection::AddAudioTrack(
     webrtc::scoped_refptr<webrtc::AudioTrackInterface> track,
     webrtc::RtpTransceiverDirection direction,
     const std::string& stream_id) {
-  return RunOnSignaling([this, track = std::move(track), direction,
+  return AddTrack(TrackKind::kAudio, std::move(track), direction, stream_id);
+}
+
+bool PeerConnection::AddVideoTrack(
+    webrtc::scoped_refptr<webrtc::VideoTrackInterface> track,
+    webrtc::RtpTransceiverDirection direction,
+    const std::string& stream_id) {
+  return AddTrack(TrackKind::kVideo, std::move(track), direction, stream_id);
+}
+
+bool PeerConnection::AddTrack(
+    TrackKind kind,
+    webrtc::scoped_refptr<webrtc::MediaStreamTrackInterface> track,
+    webrtc::RtpTransceiverDirection direction,
+    const std::string& stream_id) {
+  return RunOnSignaling([this, kind, track = std::move(track), direction,
                          stream_id] {
     if (!pc_) {
       return false;
     }
-    if (senders_.find(TrackKind::kAudio) != senders_.end()) {
+    if (senders_.find(kind) != senders_.end()) {
       return true;
     }
     webrtc::RtpTransceiverInit init;
     init.direction = direction;
     init.stream_ids = {stream_id};
+    if (kind == TrackKind::kVideo) {
+      // 一期只有单层 H.264，直接给出码率上限；active 仍由
+      // SetSenderActive 控制，两处会共用同一个 encoding 参数。
+      webrtc::RtpEncodingParameters encoding;
+      encoding.max_bitrate_bps = kVideoMaxBitrateBps;
+      init.send_encodings.push_back(encoding);
+    }
     auto result = pc_->AddTransceiver(track, init);
     if (!result.ok()) {
       return false;
     }
-    senders_[TrackKind::kAudio] = result.value()->sender();
+    senders_[kind] = result.value()->sender();
+    // 新 sender 默认激活，后续由 SetSenderActive 按静音/共享状态调整。
+    sender_active_[kind] = true;
     return true;
   });
 }
@@ -192,40 +221,103 @@ bool PeerConnection::GetLocalSdp(std::string* sdp) {
   });
 }
 
-bool PeerConnection::FirstMid(std::string* mid) {
-  return RunOnSignaling([this, mid] {
-    if (!pc_) {
+bool PeerConnection::MidFor(TrackKind kind, std::string* mid) {
+  return RunOnSignaling([this, kind, mid] {
+    if (!pc_ || mid == nullptr) {
       return false;
     }
-    const auto transceivers = pc_->GetTransceivers();
-    if (transceivers.empty() || !transceivers.front()->mid().has_value()) {
+    const webrtc::MediaType type = kind == TrackKind::kVideo
+                                       ? webrtc::MediaType::VIDEO
+                                       : webrtc::MediaType::AUDIO;
+    for (const auto& transceiver : pc_->GetTransceivers()) {
+      if (transceiver && transceiver->media_type() == type &&
+          transceiver->mid().has_value()) {
+        *mid = *transceiver->mid();
+        return true;
+      }
+    }
+    return false;
+  });
+}
+
+bool PeerConnection::SetSenderActive(TrackKind kind, bool active) {
+  return RunOnSignaling([this, kind, active] {
+    const auto item = senders_.find(kind);
+    if (item == senders_.end() || !item->second) {
+      // 该类型的轨道还没发布，不算失败。
+      return true;
+    }
+    auto parameters = item->second->GetParameters();
+    for (auto& encoding : parameters.encodings) {
+      encoding.active = active;
+      if (kind == TrackKind::kAudio) {
+        encoding.max_bitrate_bps = kAudioMaxBitrateBps;
+      }
+    }
+    if (!item->second->SetParameters(parameters).ok()) {
+      // 设置失败时不能保留旧值，否则统计会把“没生效”显示成已激活。
+      sender_active_[kind] = false;
       return false;
     }
-    *mid = *transceivers.front()->mid();
+    sender_active_[kind] = active;
     return true;
   });
 }
 
-bool PeerConnection::SetSenderActive(bool active) {
-  return RunOnSignaling([this, active] {
-    bool ok = true;
-    for (const auto& item : senders_) {
-      if (!item.second) {
-        continue;
-      }
-      auto parameters = item.second->GetParameters();
-      for (auto& encoding : parameters.encodings) {
-        encoding.active = active;
-        if (item.first == TrackKind::kAudio) {
-          encoding.max_bitrate_bps = kAudioMaxBitrateBps;
-        }
-      }
-      if (!item.second->SetParameters(parameters).ok()) {
-        ok = false;
-      }
+Json PeerConnection::SenderActiveState() {
+  return RunOnSignaling([this] {
+    Json out = Json::object();
+    for (const auto& [kind, active] : sender_active_) {
+      out[TrackKindName(kind)] = active;
     }
-    return ok;
+    return out;
   });
+}
+
+void PeerConnection::SetVideoSink(VideoFrameSink sink) {
+  if (signaling_ == nullptr) {
+    return;
+  }
+  RunOnSignaling([this, sink = std::move(sink)]() mutable {
+    if (!video_sink_handle_) {
+      video_sink_handle_ = std::make_shared<VideoSinkHandle>();
+    }
+    video_sink_handle_->Set(std::move(sink));
+  });
+}
+
+void PeerConnection::AttachRemoteVideoOnSignaling(
+    webrtc::scoped_refptr<webrtc::VideoTrackInterface> track,
+    const std::string& mid) {
+  if (!track) {
+    return;
+  }
+  if (!video_sink_handle_) {
+    video_sink_handle_ = std::make_shared<VideoSinkHandle>();
+  }
+  // 一期只显示第一路远端画面：后续 mid 直接忽略，避免多路抢回调。
+  if (remote_video_sink_) {
+    if (remote_video_mid_ != mid) {
+      RTC_LOG(LS_INFO) << "忽略额外的远端视频轨 mid=" << mid
+                       << " 已在显示 mid=" << remote_video_mid_;
+    }
+    return;
+  }
+  remote_video_mid_ = mid;
+  remote_video_track_ = track;
+  remote_video_sink_ =
+      std::make_unique<RemoteVideoSink>(mid, video_sink_handle_);
+  track->AddOrUpdateSink(remote_video_sink_.get(), webrtc::VideoSinkWants());
+  RTC_LOG(LS_INFO) << "挂载远端视频轨 mid=" << mid;
+}
+
+void PeerConnection::DetachRemoteVideoOnSignaling() {
+  if (remote_video_sink_ && remote_video_track_) {
+    remote_video_track_->RemoveSink(remote_video_sink_.get());
+  }
+  remote_video_sink_.reset();
+  remote_video_track_ = nullptr;
+  remote_video_mid_.clear();
 }
 
 void PeerConnection::SetReceivePaused(bool paused) {
@@ -297,6 +389,13 @@ Json PeerConnection::Stats() {
   double audio_energy = 0;
   uint64_t samples = 0;
   uint64_t concealed = 0;
+  uint64_t video_received_bytes = 0;
+  uint64_t video_sent_bytes = 0;
+  uint64_t video_frames_received = 0;
+  uint64_t video_frames_sent = 0;
+  double video_fps = 0;
+  int video_width = 0;
+  int video_height = 0;
   for (const auto* stats :
        report->GetStatsOfType<webrtc::RTCInboundRtpStreamStats>()) {
     if (stats->kind.value_or("") == "audio") {
@@ -310,6 +409,14 @@ Json PeerConnection::Stats() {
       audio_energy += stats->total_audio_energy.value_or(0);
       samples += stats->total_samples_received.value_or(0);
       concealed += stats->concealed_samples.value_or(0);
+    } else if (stats->kind.value_or("") == "video") {
+      video_received_bytes += stats->bytes_received.value_or(0);
+      video_frames_received += stats->frames_received.value_or(0);
+      video_fps = std::max(video_fps, stats->frames_per_second.value_or(0));
+      if (stats->frame_width.has_value() && *stats->frame_width > 0) {
+        video_width = static_cast<int>(*stats->frame_width);
+        video_height = static_cast<int>(stats->frame_height.value_or(0));
+      }
     }
   }
   for (const auto* stats :
@@ -317,8 +424,21 @@ Json PeerConnection::Stats() {
     if (stats->kind.value_or("") == "audio") {
       sent += stats->packets_sent.value_or(0);
       sent_bytes += stats->bytes_sent.value_or(0);
+    } else if (stats->kind.value_or("") == "video") {
+      video_sent_bytes += stats->bytes_sent.value_or(0);
+      video_frames_sent += stats->frames_sent.value_or(0);
+      video_fps = std::max(video_fps, stats->frames_per_second.value_or(0));
+      if (video_width == 0 && stats->frame_width.has_value() &&
+          *stats->frame_width > 0) {
+        video_width = static_cast<int>(*stats->frame_width);
+        video_height = static_cast<int>(stats->frame_height.value_or(0));
+      }
     }
   }
+  const std::string video_size =
+      video_width > 0 && video_height > 0
+          ? std::to_string(video_width) + "x" + std::to_string(video_height)
+          : std::string();
   std::string dtls_state;
   std::string ice_state;
   uint64_t transport_received_bytes = 0;
@@ -405,6 +525,12 @@ Json PeerConnection::Stats() {
           {"audio_energy", audio_energy},
           {"samples_received", samples},
           {"concealed_samples", concealed},
+          {"video_received_bytes", video_received_bytes},
+          {"video_sent_bytes", video_sent_bytes},
+          {"video_frames_received", video_frames_received},
+          {"video_frames_sent", video_frames_sent},
+          {"video_fps", video_fps},
+          {"video_size", video_size},
           {"dtls_state", dtls_state},
           {"ice_state", ice_state},
           {"transport_received_bytes", transport_received_bytes},
@@ -417,6 +543,31 @@ Json PeerConnection::Stats() {
 
 std::string PeerConnection::Path() {
   return RunOnSignaling([this] { return path_; });
+}
+
+std::string PeerConnection::ConnectionStateText() {
+  return RunOnSignaling([this] {
+    if (!pc_) {
+      return std::string("closed");
+    }
+    using State = webrtc::PeerConnectionInterface::PeerConnectionState;
+    switch (pc_->peer_connection_state()) {
+      case State::kNew:
+        return std::string("new");
+      case State::kConnecting:
+        return std::string("connecting");
+      case State::kConnected:
+        return std::string("connected");
+      case State::kDisconnected:
+        return std::string("disconnected");
+      case State::kFailed:
+        return std::string("failed");
+      case State::kClosed:
+        return std::string("closed");
+      default:
+        return std::string("unknown");
+    }
+  });
 }
 
 void PeerConnection::OnSignalingChange(
@@ -518,6 +669,12 @@ void PeerConnection::OnTrack(
       audio->GetSource()->SetVolume(gain_.load());
     }
     // P2P 期间 SFU 下行只暂停播放，保持 ICE/DTLS 不断，切回时直接复用。
+    track->set_enabled(!receive_paused_.load());
+  } else if (track && track->kind() == "video") {
+    auto* video = static_cast<webrtc::VideoTrackInterface*>(track.get());
+    AttachRemoteVideoOnSignaling(
+        webrtc::scoped_refptr<webrtc::VideoTrackInterface>(video),
+        transceiver->mid().value_or(""));
     track->set_enabled(!receive_paused_.load());
   }
   if (event_) {

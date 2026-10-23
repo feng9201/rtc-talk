@@ -33,8 +33,8 @@ class MediaController {
     kP2p,
   };
 
-  MediaController(asio::io_context& io, const Json& config,
-                  EventSink& events);
+  MediaController(asio::io_context& io, const Json& config, EventSink& events,
+                  VideoFrameSink video_sink);
   ~MediaController();
 
   MediaController(const MediaController&) = delete;
@@ -54,6 +54,7 @@ class MediaController {
 
   bool enabled() const { return queue_.enabled(); }
   Mode mode() const { return mode_; }
+  bool muted() const { return muted_.load(); }
   const std::string& p2p_session() const { return p2p_session_; }
   bool p2p_started() const { return p2p_started_; }
   const Json& consumers() const { return consumers_; }
@@ -89,6 +90,9 @@ class MediaController {
   // 设备、音量与静音；done 可为空。
   void SetSfuPaused(bool paused, std::function<void()> done = {});
   void SetMuted(bool muted, std::function<void(MediaResult)> done = {});
+  // 屏幕共享启停；done 可为空，且只在控制线程回调。
+  void StartVideo(std::function<void(MediaResult)> done);
+  void StopVideo(std::function<void(MediaResult)> done = {});
   void GetDevices(std::function<void(MediaResult)> done);
   void GetStats(std::function<void(MediaResult)> done);
   void SetVolume(double gain, std::function<void(MediaResult)> done);
@@ -109,6 +113,8 @@ class MediaController {
   void ScheduleStatsLog();
   void LogStats();
   void LogPeerStats(const std::string& name, const Json& stats);
+  // 桌面采集与上行帧数；用来区分“没出帧”和“没发出去”。
+  void LogVideoCapture(const Json& data);
   void LogDeviceStats(const Json& data);
 
   asio::io_context& io_;
@@ -134,10 +140,20 @@ class MediaController {
     uint64_t received = 0;
     uint64_t sent = 0;
     uint64_t samples = 0;
+    uint64_t video_frames = 0;
   };
   bool stats_logging_ = false;
   std::map<std::string, StatsBaseline> stats_baselines_;
   std::set<std::string> stats_no_recv_warned_;
+  // 采集帧计数基线，以及“共享中却零出帧”只报一次的标记。
+  uint64_t video_capture_baseline_ = 0;
+  bool video_capture_warned_ = false;
+  // 本地静音目标；用来判定“开了麦却没声音”是否异常。
+  std::atomic<bool> muted_{true};
+  // 音频采集帧基线与连续零采集周期数；同一轮只报一次 WARN。
+  uint64_t audio_capture_baseline_ = 0;
+  uint32_t audio_idle_cycles_ = 0;
+  bool audio_idle_warned_ = false;
 };
 
 }  // namespace talk

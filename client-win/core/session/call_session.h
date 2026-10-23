@@ -44,6 +44,8 @@ class CallSession {
   void HandleJoin(uint64_t id, const std::string& method, Json data);
   void HandleLeave(uint64_t id, const std::string& method);
   void HandleSetMute(uint64_t id, const std::string& method, Json data);
+  void HandleVideoStart(uint64_t id, const std::string& method);
+  void HandleVideoStop(uint64_t id, const std::string& method);
   void HandleSessionRequest(uint64_t id, const std::string& method,
                             Json data);
   void StartConnect(uint64_t operation, bool recovery);
@@ -55,6 +57,8 @@ class CallSession {
                            Json data);
   void HandleNotification(const std::string& method, Json data);
   void HandleMediaModeRequest(const std::string& id, Json data);
+  // 链路模式变更同步给上层：界面靠它刷新共享屏幕等能力开关。
+  void EmitModeChanged(const std::string& mode);
   void HandleSfuOffer(const std::string& id, const Json& data);
   void HandleLost();
   void SchedulePing();
@@ -76,6 +80,7 @@ class CallSession {
   std::string room_id_;
   uint64_t epoch_ = 0;
   uint64_t mute_epoch_ = 0;
+  uint64_t video_epoch_ = 0;
   int retry_count_ = 0;
   int heartbeat_seconds_ = 15;
   int resume_seconds_ = 60;
@@ -85,6 +90,7 @@ class CallSession {
   bool retry_ = false;
   bool joining_ = false;
   bool disconnecting_ = false;
+  bool video_sharing_ = false;
 };
 
 }  // namespace talk

@@ -17,6 +17,7 @@
 #include "api/environment/environment_factory.h"
 #include "media/webrtc/audio_device.h"
 #include "media/webrtc/capture_gate.h"
+#include "media/webrtc/video/webrtc_h264_factory.h"
 #include "rtc_base/logging.h"
 
 namespace talk {
@@ -130,6 +131,11 @@ bool MediaEnvironment::Initialize(const Json& config, const Json& ice_servers,
       webrtc::CreateAudioDecoderFactory<webrtc::AudioDecoderOpus>();
   deps.audio_frame_processor = std::make_unique<CaptureGate>(
       std::move(gate), audio_->capture_frames());
+  // SDK 以 rtc_use_h264=false 构建，不注入这两处工厂就没有 H.264 编解码器。
+  // 工厂构造不触碰 MF（懒初始化）：MF 不可用时环境仍能创建，错误在
+  // InitEncode/Configure 时以 media.error 暴露，不影响音频。
+  deps.video_encoder_factory = CreateMfH264EncoderFactory();
+  deps.video_decoder_factory = CreateMfH264DecoderFactory();
 
   webrtc::EnableMedia(deps);
   factory_ = webrtc::CreateModularPeerConnectionFactory(std::move(deps));

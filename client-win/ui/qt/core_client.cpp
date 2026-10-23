@@ -44,6 +44,15 @@ bool CoreClient::Submit(const QString& method, const QJsonObject& data) {
   return talk_command(core_, name.constData(), text.constData()) != 0;
 }
 
+void CoreClient::SetVideoCallback(bool on) {
+  if (core_ == nullptr) {
+    return;
+  }
+  talk_set_video_frame_callback(core_,
+                                on ? &CoreClient::DispatchVideo : nullptr,
+                                on ? context_.get() : nullptr);
+}
+
 void CoreClient::Dispatch(void* context, const char* name, const char* text) {
   // 回调线程只允许拷贝上下文，跨线程使用 Qt 队列投递。
   const Context state = *static_cast<Context*>(context);
@@ -62,4 +71,31 @@ void CoreClient::Dispatch(void* context, const char* name, const char* text) {
 
 void CoreClient::Deliver(const QString& name, const QJsonObject& data) {
   emit Event(name, data);
+}
+
+void CoreClient::DispatchVideo(void* context, const char* mid,
+                               const uint8_t* bgra, int width, int height,
+                               int stride, int64_t timestamp_us) {
+  Q_UNUSED(timestamp_us);
+  if (context == nullptr || bgra == nullptr || width <= 0 || height <= 0 ||
+      stride < width * 4) {
+    return;
+  }
+  // 媒体线程：先把裸指针拷成独立 QImage，再切到 UI 线程。
+  const Context state = *static_cast<Context*>(context);
+  const QImage view(bgra, width, height, stride, QImage::Format_ARGB32);
+  const QImage frame = view.copy();
+  const QString mid_text = QString::fromUtf8(mid != nullptr ? mid : "");
+  QMetaObject::invokeMethod(
+      state.self,
+      [state, frame, mid_text] {
+        if (state.generation == state.self->generation_) {
+          state.self->DeliverVideo(frame, mid_text);
+        }
+      },
+      Qt::QueuedConnection);
+}
+
+void CoreClient::DeliverVideo(const QImage& frame, const QString& mid) {
+  emit VideoFrame(frame, mid);
 }

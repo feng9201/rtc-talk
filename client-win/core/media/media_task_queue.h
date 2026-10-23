@@ -30,7 +30,7 @@ class MediaTaskQueue {
   using Done = std::function<void(MediaResult)>;
 
   MediaTaskQueue(asio::io_context& io, const Json& config, MuteGate gate,
-                 Media::Event event);
+                 Media::Event event, VideoFrameSink video_sink);
   ~MediaTaskQueue();
 
   MediaTaskQueue(const MediaTaskQueue&) = delete;
@@ -60,6 +60,7 @@ class MediaTaskQueue {
   Json ice_servers_ = Json::array();
   MuteGate gate_;
   Media::Event event_;
+  VideoFrameSink video_sink_;
   std::unique_ptr<Media> media_;
   uint64_t generation_ = 0;
   int queued_ = 0;

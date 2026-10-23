@@ -4,7 +4,9 @@
 
 #include <chrono>
 #include <cmath>
+#include <sstream>
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 #include "base/log.h"
@@ -20,16 +22,74 @@ constexpr auto kSfuSwitchTimeout = 2s;
 // 音频接收诊断日志的采样周期。
 constexpr auto kStatsLogInterval = 5s;
 
+// 视频 m-line 摘要的最大长度，避免日志被 SDP 撑爆。
+constexpr size_t kSdpSummaryLimit = 900;
+
+// 挑出排查视频上行必需的行：编码、fmtp 参数、方向、mid 与 ssrc 数量。
+// 刻意不输出 a=fingerprint / a=candidate，避免泄露与噪声。
+std::string SdpVideoSummary(const std::string& sdp) {
+  std::istringstream in(sdp);
+  std::string line;
+  std::string out;
+  bool video = false;
+  bool appended_m = false;
+  size_t ssrc = 0;
+  const auto append = [&out](const std::string& piece) {
+    if (out.size() >= kSdpSummaryLimit) {
+      return;
+    }
+    if (!out.empty()) {
+      out += " | ";
+    }
+    out += piece;
+  };
+  while (std::getline(in, line)) {
+    if (!line.empty() && line.back() == '\r') {
+      line.pop_back();
+    }
+    if (line.rfind("m=", 0) == 0) {
+      if (video) {
+        append("ssrc=" + std::to_string(ssrc));
+      }
+      video = line.rfind("m=video", 0) == 0;
+      ssrc = 0;
+      appended_m = false;
+      continue;
+    }
+    if (!video) {
+      continue;
+    }
+    if (!appended_m) {
+      // m= 行本身只保留类型与端口，PT 列表在 rtpmap 里已给出。
+      append("m=video");
+      appended_m = true;
+    }
+    if (line.rfind("a=mid:", 0) == 0 ||
+        line.rfind("a=rtpmap:", 0) == 0 || line.rfind("a=fmtp:", 0) == 0 ||
+        line.rfind("a=sendonly", 0) == 0 || line.rfind("a=inactive", 0) == 0 ||
+        line.rfind("a=recvonly", 0) == 0) {
+      append(line);
+    } else if (line.rfind("a=ssrc", 0) == 0) {
+      ++ssrc;
+    }
+  }
+  if (video) {
+    append("ssrc=" + std::to_string(ssrc));
+  }
+  return out;
+}
+
 }  // namespace
 
 MediaController::MediaController(asio::io_context& io, const Json& config,
-                                 EventSink& events)
+                                 EventSink& events, VideoFrameSink video_sink)
     : io_(io),
       events_(events),
       queue_(io, config, std::make_shared<std::atomic<bool>>(true),
              [this](std::string name, Json data) {
                HandleMediaEvent(std::move(name), std::move(data));
-             }),
+             },
+             std::move(video_sink)),
       mode_timer_(io),
       stats_timer_(io) {}
 
@@ -60,6 +120,12 @@ void MediaController::Reset() {
   StopStatsLogging();
   stats_baselines_.clear();
   stats_no_recv_warned_.clear();
+  video_capture_baseline_ = 0;
+  video_capture_warned_ = false;
+  muted_ = true;
+  audio_capture_baseline_ = 0;
+  audio_idle_cycles_ = 0;
+  audio_idle_warned_ = false;
   queue_.Reset();
 }
 
@@ -103,6 +169,7 @@ void MediaController::Publish() {
       [](Media& media) { return media.Offer(); },
       [this, epoch](MediaResult offer) {
         if (epoch != epoch_) {
+          TALK_LOG_WARN("media", "offer 结果已作废 epoch={}", epoch);
           return;
         }
         if (!offer.ok) {
@@ -118,11 +185,13 @@ void MediaController::Publish() {
           return;
         }
         TALK_LOG_INFO("media", "SFU offer 已生成 sdp={}", sdp.size());
+        TALK_LOG_INFO("media", "SFU offer 视频行 {}", SdpVideoSummary(sdp));
         if (!signaling_.request) {
           return;
         }
         signaling_.request("sfu.publish", offer.data, [this, epoch](Json a) {
           if (epoch != epoch_) {
+            TALK_LOG_WARN("media", "publish 应答已作废 epoch={}", epoch);
             return;
           }
           if (!a.value("ok", false)) {
@@ -139,9 +208,13 @@ void MediaController::Publish() {
           const Json data = a.value("data", Json::object());
           const std::string answer = data.value("sdp", std::string());
           TALK_LOG_INFO("media", "SFU 发布成功 answer={}", answer.size());
+          TALK_LOG_INFO("media", "SFU answer 视频行 {}",
+                        SdpVideoSummary(answer));
           Post([answer](Media& media) { return media.Accept(answer); },
                [this, epoch](MediaResult applied) {
                  if (epoch != epoch_) {
+                   TALK_LOG_WARN("media", "apply answer 已作废 epoch={}",
+                                 epoch);
                    return;
                  }
                  if (!applied.ok) {
@@ -149,6 +222,11 @@ void MediaController::Publish() {
                    return;
                  }
                  TALK_LOG_INFO("media", "SFU 发布完成");
+                 // 发布前收到的 setMute 可能因媒体实例尚未创建被丢弃，
+                 // 这里按控制器的静音目标再补一次。
+                 if (!muted_.load()) {
+                   SetMuted(false);
+                 }
                  events_.Emit("published", {{"ok", true}});
                });
         });
@@ -402,11 +480,47 @@ void MediaController::SetSfuPaused(bool paused, std::function<void()> done) {
 void MediaController::SetMuted(bool muted,
                                std::function<void(MediaResult)> done) {
   TALK_LOG_INFO("media", "设置静音 muted={}", muted);
+  muted_ = muted;
+  // 每次开麦重新给一轮判定机会，避免上一段静音期的零采集把告警吃掉。
+  audio_idle_cycles_ = 0;
+  audio_idle_warned_ = false;
   Post([muted](Media& media) {
          media.SetMuted(muted);
          return Json::object();
        },
        std::move(done), false);
+}
+
+void MediaController::StartVideo(std::function<void(MediaResult)> done) {
+  TALK_LOG_INFO("media", "启动屏幕共享");
+  Post([](Media& media) { return media.StartVideo(); },
+       [done = std::move(done)](MediaResult result) mutable {
+         if (result.ok && result.data.is_object()) {
+           TALK_LOG_INFO("media", "屏幕共享已启动 sharing={} send_state={}",
+                         result.data.value("sharing", false),
+                         result.data.value("send_state", std::string()));
+         } else {
+           TALK_LOG_ERROR("media", "屏幕共享启动失败 ok={} error={}",
+                          result.ok, result.error);
+         }
+         if (done) {
+           done(std::move(result));
+         }
+       });
+}
+
+void MediaController::StopVideo(std::function<void(MediaResult)> done) {
+  TALK_LOG_INFO("media", "停止屏幕共享");
+  // 不建新实例：媒体未创建时无需停采，直接回报成功。
+  Post([](Media& media) { return media.StopVideo(); },
+       [done = std::move(done)](MediaResult result) mutable {
+         TALK_LOG_INFO("media", "屏幕共享已停止 ok={} error={}", result.ok,
+                       result.error);
+         if (done) {
+           done(std::move(result));
+         }
+       },
+       false);
 }
 
 void MediaController::GetDevices(std::function<void(MediaResult)> done) {
@@ -605,12 +719,18 @@ void MediaController::LogStats() {
         if (epoch != epoch_ || !result.ok || !result.data.is_object()) {
           return;
         }
-        for (const char* name : {"recv", "p2p", "send"}) {
-          if (result.data.contains(name) && result.data[name].is_object()) {
-            LogPeerStats(name, result.data[name]);
+        try {
+          for (const char* name : {"recv", "p2p", "send"}) {
+            if (result.data.contains(name) && result.data[name].is_object()) {
+              LogPeerStats(name, result.data[name]);
+            }
           }
+          LogVideoCapture(result.data);
+          LogDeviceStats(result.data);
+        } catch (const std::exception& error) {
+          // 统计只是诊断输出，字段类型不对不能把会话线程带崩。
+          TALK_LOG_WARN("media", "统计日志异常：{}", error.what());
         }
-        LogDeviceStats(result.data);
       },
       false);
 }
@@ -635,7 +755,29 @@ void MediaController::LogPeerStats(const std::string& name, const Json& stats) {
                   selected_pair, stats.value("rtt_ms", -1.0));
   }
   StatsBaseline& baseline = stats_baselines_[name];
+  {
+    // 视频统计对 send/recv 都有意义，放在 send 提前 return 之前打印。
+    const uint64_t frames = stats.value("video_frames_sent", 0ULL) +
+                            stats.value("video_frames_received", 0ULL);
+    const uint64_t delta =
+        frames >= baseline.video_frames ? frames - baseline.video_frames : 0;
+    baseline.video_frames = frames;
+    TALK_LOG_INFO(
+        "media",
+        "视频传输 pc={} 周期帧={} 发帧={} 收帧={} 发字节={} 收字节={} "
+        "fps={:.1f} 尺寸={}",
+        name, delta, stats.value("video_frames_sent", 0ULL),
+        stats.value("video_frames_received", 0ULL),
+        stats.value("video_sent_bytes", 0ULL),
+        stats.value("video_received_bytes", 0ULL),
+        stats.value("video_fps", 0.0),
+        stats.value("video_size", std::string("-")));
+  }
   if (name == "send") {
+    // P2P 期间 SFU send PC 尚未发布，上行统计恒为 0，打印只会误导。
+    if (mode_ != Mode::kSfu) {
+      return;
+    }
     const uint64_t sent = stats.value("sent", 0ULL);
     const uint64_t delta = sent >= baseline.sent ? sent - baseline.sent : 0;
     baseline.sent = sent;
@@ -667,24 +809,117 @@ void MediaController::LogPeerStats(const std::string& name, const Json& stats) {
       stats.value("concealed_samples", 0ULL));
 }
 
-void MediaController::LogDeviceStats(const Json& data) {
-  if (!data.contains("device") || !data["device"].is_object()) {
+void MediaController::LogVideoCapture(const Json& data) {
+  if (!data.contains("video_capture") || !data["video_capture"].is_object()) {
     return;
   }
+  const Json& capture = data["video_capture"];
+  const uint64_t frames = capture.value("frames", 0ULL);
+  const bool sharing = capture.value("sharing", false);
+  const uint64_t delta =
+      frames >= video_capture_baseline_ ? frames - video_capture_baseline_
+                                        : 0;
+  video_capture_baseline_ = frames;
+  // 没有 "send" 段说明当前没有 SFU 上行 PC；有段但未发布时值也恒为 0。
+  // 日志参数不做预拼接：局部 std::string 交给日志宏曾有打印为空的前科。
+  const uint64_t sent_frames =
+      data.contains("send") && data["send"].is_object()
+          ? data["send"].value("video_frames_sent", 0ULL)
+          : 0ULL;
+  const std::string send_state_text =
+      data.value("send_state", std::string());
+  TALK_LOG_INFO(
+      "media", "视频上行 共享中={} 采集帧={} 周期帧={} 已发帧={} pc状态={}",
+      sharing, frames, delta, sent_frames,
+      mode_ == Mode::kP2p ? "p2p（无 SFU 连接）" : send_state_text.c_str());
+  // 采集线程一帧都没出：通常是桌面复制服务未启动或权限问题。
+  if (sharing && delta == 0 && !video_capture_warned_) {
+    video_capture_warned_ = true;
+    TALK_LOG_WARN("media", "共享中但桌面采集本周期未出帧");
+  }
+}
+
+void MediaController::LogDeviceStats(const Json& data) {
   uint64_t capture_frames = 0;
   if (data.contains("capture") && data["capture"].is_object()) {
     capture_frames = data["capture"].value("frames", 0ULL);
   }
-  const Json& device = data["device"];
+  const Json device = data.contains("device") && data["device"].is_object()
+                          ? data["device"]
+                          : Json::object();
+  const bool recording = device.value("recording", false);
+  if (!device.empty()) {
+    TALK_LOG_INFO(
+        "media",
+        "音频设备 采集帧={} 采集中={} 播放中={} 延迟={}ms 播放错误={} "
+        "采集口={} 播放口={}",
+        capture_frames, recording, device.value("playing", false),
+        device.value("playout_delay_ms", 0),
+        device.value("playout_error", false),
+        device.value("recording_device", std::string()),
+        device.value("playout_device", std::string()));
+  }
+  // 采集源与上行 sender 状态：无声时先区分“设备没采”还是“sender 没开”。
+  const Json send_active =
+      data.contains("send_active") && data["send_active"].is_object()
+          ? data["send_active"]
+          : Json::object();
+  const bool sender_audio = send_active.value("audio", false);
+  const bool sender_video = send_active.value("video", false);
+  // 只有 SFU 才有 send PC；P2P 期间 sender 指标不适用，打印成 n/a。
+  const bool sfu = mode_ == Mode::kSfu;
+  const Json lb = data.contains("switchable") && data["switchable"].is_object()
+                      ? data["switchable"].value("loopback", Json::object())
+                      : Json::object();
+  // 字段类型以实际写入为准：last_error 是 HRESULT 数值，不能当字符串读。
+  const long long loopback_error =
+      lb.contains("last_error") && lb["last_error"].is_number()
+          ? lb["last_error"].get<long long>()
+          : 0;
   TALK_LOG_INFO(
       "media",
-      "音频设备 采集帧={} 采集中={} 播放中={} 延迟={}ms 播放错误={} "
-      "采集口={} 播放口={}",
-      capture_frames, device.value("recording", false),
-      device.value("playing", false), device.value("playout_delay_ms", 0),
-      device.value("playout_error", false),
-      device.value("recording_device", std::string()),
-      device.value("playout_device", std::string()));
+      "音频上行 采集源={} 静音={} SFU暂停={} 音频sender={} 视频sender={} "
+      "录音初始化={} loopback运行={} loopback帧={} loopback静音包={} "
+      "loopback错误={}",
+      data.value("audio_source", std::string("mic")),
+      send_active.value("muted", muted_.load()),
+      send_active.value("paused", false),
+      sfu ? (sender_audio ? "true" : "false") : "n/a",
+      sfu ? (sender_video ? "true" : "false") : "n/a",
+      device.value("recording_initialized", false),
+      lb.value("running", false), lb.value("frames", 0ULL),
+      lb.value("silent_packets", 0ULL), loopback_error);
+  const uint64_t capture_delta = capture_frames >= audio_capture_baseline_
+                                     ? capture_frames - audio_capture_baseline_
+                                     : 0;
+  audio_capture_baseline_ = capture_frames;
+  // P2P 期间没有 SFU 的 send PC，统计里根本没有 "send" 段，累计发包恒为 0；
+  // 这是正常路径，不能当成“已开麦却零上行”报警。
+  if (!sfu) {
+    audio_idle_cycles_ = 0;
+    audio_idle_warned_ = false;
+    return;
+  }
+  const uint64_t sent = data.contains("send") && data["send"].is_object()
+                            ? data["send"].value("sent", 0ULL)
+                            : 0ULL;
+  // sender 未激活：先看静音/暂停标志，再看命令是否失败（失败时状态已置 false）。
+  const bool sender_off = !sender_audio;
+  if (!muted_.load() && (capture_delta == 0 || sender_off || sent == 0)) {
+    ++audio_idle_cycles_;
+  } else {
+    audio_idle_cycles_ = 0;
+    audio_idle_warned_ = false;
+  }
+  if (audio_idle_cycles_ >= 3 && !audio_idle_warned_) {
+    audio_idle_warned_ = true;
+    TALK_LOG_WARN(
+        "media",
+        "已开麦但音频上行异常：采集中={} 周期采集帧={} 音频sender={} "
+        "累计发包={} mode={}",
+        recording, capture_delta, sender_audio, sent,
+        mode_ == Mode::kP2p ? "p2p" : "sfu");
+  }
 }
 
 void MediaController::EmitMediaError(const std::string& message,

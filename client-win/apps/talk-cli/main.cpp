@@ -33,7 +33,12 @@ struct Options {
   bool token_stdin = false;
   bool list_devices = false;
   bool version = false;
+  bool video = false;
   int duration = 10;
+  // 不自动开麦：用来还原 Qt 界面的真实命令序列（界面只在用户点「开麦」时发 setMute）。
+  bool no_auto_unmute = false;
+  // 运行时开麦时刻：0 表示不主动发 media.setMute。
+  int unmute_at = 0;
   // 运行时切换采集源：<第 N 秒, mic|system>，可多次。
   std::vector<std::pair<int, std::string>> source_switches;
   talk::LogOptions log;
@@ -49,6 +54,8 @@ const char* const kUsage =
     "[--audio none|fake|wasapi] [--audio-source mic|system] "
     "[--media-mode auto|sfu|p2p] "
     "[--config 文件] [--duration 秒] [--switch-source-at 秒:mic|system] "
+    "[--unmute-at 秒] [--no-auto-unmute] "
+    "[--video] "
     "[--log-file 路径] [--log-level trace|debug|info|warn|error] "
     "[--log-console]；单跑 --list-devices 枚举音频设备";
 
@@ -73,6 +80,14 @@ Options ParseOptions(int argc, char** argv) {
       options.log_console_set = true;
       continue;
     }
+    if (arg == "--video") {
+      options.video = true;
+      continue;
+    }
+    if (arg == "--no-auto-unmute") {
+      options.no_auto_unmute = true;
+      continue;
+    }
     if (i + 1 == argc) {
       throw std::runtime_error("参数缺少值");
     }
@@ -93,6 +108,8 @@ Options ParseOptions(int argc, char** argv) {
       options.config_file = value;
     } else if (arg == "--duration") {
       options.duration = std::stoi(value);
+    } else if (arg == "--unmute-at") {
+      options.unmute_at = std::stoi(value);
     } else if (arg == "--switch-source-at") {
       const size_t sep = value.find(':');
       if (sep == std::string::npos) {
@@ -165,6 +182,9 @@ void Validate(const Options& options) {
       throw std::runtime_error("audio_source 必须是 mic/system");
     }
   }
+  if (options.unmute_at < 0 || options.unmute_at > options.duration) {
+    throw std::runtime_error("unmute-at 秒必须在 0..duration 之间");
+  }
   for (const auto& [sec, source] : options.source_switches) {
     if (sec < 1 || sec > options.duration) {
       throw std::runtime_error("switch-source-at 秒必须在 duration 范围内");
@@ -194,11 +214,22 @@ class App {
     talk_options options{sizeof(talk_options), TALK_ABI_VERSION, &App::OnEvent,
                          this, text.c_str()};
     core_ = talk_create(&options);
+    if (core_ != nullptr) {
+      talk_set_video_frame_callback(core_, &App::OnVideoFrame, this);
+    }
     return core_ != nullptr;
   }
 
+  void SetVideo(bool video) { video_ = video; }
+  bool video() const { return video_; }
+
   void SetAudio(bool audio) { audio_ = audio; }
   bool audio() const { return audio_; }
+
+  // 关闭自动开麦后，只有 --unmute-at 到点才发 media.setMute。
+  void SetNoAutoUnmute(bool no_auto_unmute) {
+    no_auto_unmute_ = no_auto_unmute;
+  }
 
   void Command(const char* method, const Json& data = Json::object()) {
     if (core_ == nullptr ||
@@ -238,19 +269,44 @@ class App {
     self.condition_.notify_all();
   }
 
+  // 媒体线程每帧回调：按秒节流打印，避免刷屏影响 15fps 链路。
+  static void OnVideoFrame(void* context, const char* mid, const uint8_t* bgra,
+                           int width, int height, int stride,
+                           int64_t timestamp_us) {
+    auto& self = *static_cast<App*>(context);
+    if (bgra == nullptr || width <= 0 || height <= 0) {
+      return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (self.last_frame_.time_since_epoch().count() != 0 &&
+        now - self.last_frame_ < 1s) {
+      return;
+    }
+    self.last_frame_ = now;
+    const int frames = self.video_frames_.fetch_add(1) + 1;
+    std::cout << "远端视频 mid=" << (mid != nullptr ? mid : "") << " "
+              << width << "x" << height << " stride=" << stride
+              << " 累计帧=" << frames << std::endl;
+  }
+
   void HandleEvent(const std::string& name, const Json& data) {
     if (name == "ready" && !data.value("recovering", false)) {
       Command("room.join", {{"room_id", room_}});
     }
     if (name == "joined") {
       joined_ = true;
-      if (!audio_) {
+      if (!audio_ && !no_auto_unmute_) {
         Command("media.setMute", {{"muted", false}});
       }
     }
     if (name == "published") {
       published_ = true;
-      Command("media.setMute", {{"muted", false}});
+      if (!no_auto_unmute_) {
+        Command("media.setMute", {{"muted", false}});
+      }
+      if (video_) {
+        Command("video.start");
+      }
     }
     if (name == "left") {
       left_ = true;
@@ -276,6 +332,10 @@ class App {
   talk_handle* core_ = nullptr;
   std::string room_;
   bool audio_ = false;
+  bool video_ = false;
+  bool no_auto_unmute_ = false;
+  std::atomic<int> video_frames_{0};
+  std::chrono::steady_clock::time_point last_frame_{};
   std::atomic<bool> joined_{false};
   std::atomic<bool> published_{false};
   std::atomic<bool> failed_{false};
@@ -310,6 +370,8 @@ int RunTalk(const Options& options) {
   Json config = options.config;
   App app(options.room);
   app.SetAudio(config.value("audio_backend", std::string("none")) != "none");
+  app.SetNoAutoUnmute(options.no_auto_unmute);
+  app.SetVideo(options.video);
   if (!app.Start(config)) {
     throw std::runtime_error("创建 core 失败");
   }
@@ -328,6 +390,10 @@ int RunTalk(const Options& options) {
         std::cout << "切换采集源 -> " << source << std::endl;
         app.Command("audio.setSource", {{"source", source}});
       }
+    }
+    if (options.unmute_at > 0 && i + 1 == options.unmute_at) {
+      std::cout << "开麦" << std::endl;
+      app.Command("media.setMute", {{"muted", false}});
     }
     if (app.audio() && (i % 5 == 0 || i == options.duration - 1) &&
         !app.stats_pending()) {

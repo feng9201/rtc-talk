@@ -23,6 +23,7 @@
 #include <QVBoxLayout>
 
 #include "core_client.h"
+#include "video_view.h"
 
 namespace {
 
@@ -68,7 +69,7 @@ TalkWindow::~TalkWindow() {
 
 void TalkWindow::BuildUi() {
   setWindowTitle(QStringLiteral("RTC Talk · Windows"));
-  resize(800, 600);
+  resize(1180, 760);
   setStyleSheet(
       "QPushButton,QLineEdit,QComboBox{min-height:34px;font-size:16px;}"
       "QLabel,QCheckBox{font-size:16px;}");
@@ -134,23 +135,35 @@ void TalkWindow::BuildUi() {
   join_ = new QPushButton(QStringLiteral("加入房间"));
   leave_ = new QPushButton(QStringLiteral("离开"));
   mute_ = new QPushButton(QStringLiteral("开麦"));
+  video_ = new QPushButton(QStringLiteral("共享屏幕"));
+  video_->setToolTip(QStringLiteral("把本机桌面共享给对端（仅 SFU 模式）"));
   auto* buttons = new QHBoxLayout;
-  for (auto* button : {connect_, disconnect_, join_, leave_, mute_}) {
+  for (auto* button : {connect_, disconnect_, join_, leave_, mute_, video_}) {
     buttons->addWidget(button);
   }
   layout->addLayout(buttons);
 
   state_ = new QLabel(QStringLiteral("未连接"));
   media_ = new QLabel(QStringLiteral("媒体：未建立"));
+  layout->addWidget(state_);
+  layout->addWidget(media_);
+
+  // 中部左右分栏：左侧远端画面自适应伸展，右侧成员与日志固定宽度。
+  video_view_ = new VideoView;
   members_ = new QListWidget;
   log_ = new QPlainTextEdit;
   log_->setReadOnly(true);
   log_->setMaximumBlockCount(100);
-  log_->setMaximumHeight(110);
-  layout->addWidget(state_);
-  layout->addWidget(media_);
-  layout->addWidget(members_);
-  layout->addWidget(log_);
+  auto* side = new QVBoxLayout;
+  side->addWidget(members_, 1);
+  side->addWidget(log_, 1);
+  auto* side_panel = new QWidget;
+  side_panel->setFixedWidth(320);
+  side_panel->setLayout(side);
+  auto* center = new QHBoxLayout;
+  center->addWidget(video_view_, 1);
+  center->addWidget(side_panel);
+  layout->addLayout(center, 1);
 
   http_ = new QNetworkAccessManager(this);
 }
@@ -193,6 +206,11 @@ void TalkWindow::ConnectSignals() {
   connect(mute_, &QPushButton::clicked, this, [this] {
     mute_->setEnabled(false);
     SendCommand("media.setMute", {{"muted", !muted_}});
+  });
+  connect(video_, &QPushButton::clicked, this, [this] {
+    // 结果由 video.state / result 事件回填，期间禁用以防连点。
+    video_->setEnabled(false);
+    SendCommand(video_sharing_ ? "video.stop" : "video.start");
   });
   connect(devices_, &QPushButton::clicked, this,
           &TalkWindow::RefreshDevices);
@@ -275,11 +293,21 @@ bool TalkWindow::EnsureCore() {
   if (core_ == nullptr) {
     core_ = new CoreClient(this);
     connect(core_, &CoreClient::Event, this, &TalkWindow::HandleEvent);
+    connect(core_, &CoreClient::VideoFrame, this,
+            [this](const QImage& frame, const QString& mid) {
+              // 一期只显示第一路：多路时仅记录一次，避免互抢画面。
+              if (!video_mid_.isEmpty() && video_mid_ != mid) {
+                return;
+              }
+              video_mid_ = mid;
+              video_view_->PushFrame(frame);
+            });
   }
   if (!core_->Start(CoreConfig())) {
     AppendLog(QStringLiteral("创建核心库失败"));
     return false;
   }
+  core_->SetVideoCallback(true);
   return true;
 }
 
@@ -400,6 +428,7 @@ void TalkWindow::ResetButtons() {
   join_->setEnabled(false);
   leave_->setEnabled(false);
   mute_->setEnabled(false);
+  video_->setEnabled(false);
   devices_->setEnabled(true);
   backend_->setEnabled(true);
   mode_->setEnabled(true);
@@ -409,6 +438,9 @@ void TalkWindow::ResetButtons() {
   UpdateSourceControls();
   muted_ = true;
   mute_->setText(QStringLiteral("开麦"));
+  video_sharing_ = false;
+  video_->setText(QStringLiteral("共享屏幕"));
+  p2p_mode_ = false;
 }
 
 void TalkWindow::RefreshMembers() {
@@ -485,6 +517,14 @@ void TalkWindow::HandleEvent(const QString& name, const QJsonObject& data) {
                   .arg(state, data["path"].toString()));
     return;
   }
+  if (name == "mode.changed") {
+    const QString mode = data["mode"].toString(QStringLiteral("sfu"));
+    ApplyMediaMode(mode);
+    AppendLog(mode == QStringLiteral("p2p")
+                  ? QStringLiteral("媒体链路已切换为 P2P 直连，屏幕共享不可用")
+                  : QStringLiteral("媒体链路已切换为 SFU，可以共享屏幕"));
+    return;
+  }
   if (name == "left" || name == "room.closed") {
     peers_.clear();
     RefreshMembers();
@@ -493,6 +533,15 @@ void TalkWindow::HandleEvent(const QString& name, const QJsonObject& data) {
     mute_->setEnabled(false);
     muted_ = true;
     mute_->setText(QStringLiteral("开麦"));
+    // 离房后采集已由核心停止，本地只需清画面并注销回调。
+    video_sharing_ = false;
+    video_->setText(QStringLiteral("共享屏幕"));
+    ApplyVideoButtonState();
+    video_mid_.clear();
+    video_view_->Clear();
+    if (core_ != nullptr) {
+      core_->SetVideoCallback(false);
+    }
     return;
   }
   if (name == "room.peerJoined") {
@@ -529,6 +578,17 @@ void TalkWindow::HandleEvent(const QString& name, const QJsonObject& data) {
                         .arg(data["state"].toInt()));
     return;
   }
+  if (name == "video.state") {
+    HandleVideoState(data);
+    return;
+  }
+  if (name == "media.track") {
+    if (data["kind"].toString() == "video") {
+      AppendLog(QStringLiteral("远端视频轨道 mid=%1")
+                    .arg(data["mid"].toString()));
+    }
+    return;
+  }
   if (name == "result") {
     HandleResult(data);
     return;
@@ -546,6 +606,11 @@ void TalkWindow::HandleState(const QJsonObject& data) {
     peers_.clear();
     RefreshMembers();
     media_->setText(QStringLiteral("媒体：未建立"));
+    video_mid_.clear();
+    video_view_->Clear();
+    if (core_ != nullptr) {
+      core_->SetVideoCallback(false);
+    }
   } else if (state == "reconnecting") {
     mute_->setEnabled(false);
     join_->setEnabled(false);
@@ -574,6 +639,55 @@ void TalkWindow::HandleJoined(const QJsonObject& data) {
   if (backend_->currentData().toString() == "none") {
     mute_->setEnabled(true);
   }
+  // 重新入房后恢复帧回调；P2P 一期不做视频，按钮保留但置灰。
+  if (core_ != nullptr) {
+    core_->SetVideoCallback(true);
+  }
+  ApplyMediaMode(data["media_mode"].toString(QStringLiteral("sfu")));
+}
+
+// 按链路模式刷新共享屏幕开关：服务端会在房间人数变化时下发
+// room.mediaMode，模式只能在收到 mode.changed 时更新，不能只看入房那一刻。
+void TalkWindow::ApplyMediaMode(const QString& mode) {
+  p2p_mode_ = mode == QStringLiteral("p2p");
+  ApplyVideoButtonState();
+}
+
+// 共享按钮的使能条件只在这里定义：离房或后端为 none 时不可点；
+// P2P 不支持共享，但正在共享时必须保留“停止共享”入口，否则停不下来。
+void TalkWindow::ApplyVideoButtonState() {
+  const bool backend_ok =
+      backend_->currentData().toString() != QStringLiteral("none");
+  video_->setEnabled(leave_->isEnabled() && backend_ok &&
+                     (!p2p_mode_ || video_sharing_));
+  if (p2p_mode_) {
+    video_->setToolTip(
+        video_sharing_
+            ? QStringLiteral("P2P 模式不支持屏幕共享，点击停止当前共享")
+            : QStringLiteral("P2P 模式暂不支持屏幕共享"));
+  } else {
+    video_->setToolTip(
+        QStringLiteral("把本机桌面共享给对端（仅 SFU 模式）"));
+  }
+}
+
+void TalkWindow::HandleVideoState(const QJsonObject& data) {
+  const bool sharing = data["sharing"].toBool();
+  const bool changed = sharing != video_sharing_;
+  video_sharing_ = sharing;
+  video_->setText(video_sharing_ ? QStringLiteral("停止共享")
+                                 : QStringLiteral("共享屏幕"));
+  ApplyVideoButtonState();
+  // 入房时也会收到 sharing=false，不能把发布/连接状态覆盖掉。
+  if (video_sharing_) {
+    media_->setText(QStringLiteral("媒体：正在共享屏幕"));
+  } else if (media_->text().contains(QStringLiteral("共享"))) {
+    media_->setText(QStringLiteral("媒体：共享已停止"));
+  }
+  if (changed) {
+    AppendLog(video_sharing_ ? QStringLiteral("屏幕共享已开启")
+                             : QStringLiteral("屏幕共享已停止"));
+  }
 }
 
 void TalkWindow::HandleResult(const QJsonObject& data) {
@@ -590,6 +704,10 @@ void TalkWindow::HandleResult(const QJsonObject& data) {
   if (method == "media.setMute") {
     mute_->setText(muted_ ? QStringLiteral("开麦") : QStringLiteral("静音"));
     mute_->setEnabled(leave_->isEnabled());
+  }
+  if (!ok && (method == "video.start" || method == "video.stop")) {
+    // 失败时恢复可点，文案与实际状态一致。
+    ApplyVideoButtonState();
   }
   if (method == "audio.devices" && ok) {
     const QJsonObject list = data["data"].toObject();

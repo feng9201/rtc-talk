@@ -11,13 +11,14 @@
 #include "media/media.h"
 #include "media/webrtc/media_environment.h"
 #include "media/webrtc/peer_connection.h"
+#include "media/webrtc/video/desktop_video_source.h"
 
 namespace talk {
 
 class WebRtcMedia : public Media {
  public:
   WebRtcMedia(const Json& config, const Json& ice_servers, MuteGate gate,
-              Event event);
+              Event event, VideoFrameSink video_sink);
   ~WebRtcMedia() override;
 
   WebRtcMedia(const WebRtcMedia&) = delete;
@@ -41,16 +42,28 @@ class WebRtcMedia : public Media {
   Json SetAudioSource(const std::string& source) override;
   void SfuPause(bool paused) override;
 
+  // 屏幕共享：join 时就发布 video m-line，启停只切采集与 sender。
+  Json StartVideo() override;
+  Json StopVideo() override;
+  void SetVideoSink(VideoFrameSink sink) override;
+
   Json GetDevices() override;
   Json GetStats() override;
 
  private:
   bool SelectDevices(bool need_recording);
   bool EnsureAudioTrack();
+  bool EnsureVideoTrack();
   bool AddAudioTrack(PeerConnection& peer,
                      webrtc::RtpTransceiverDirection direction,
                      const std::string& stream_id);
-  Json TrackDescriptions(const std::string& audio_mid) const;
+  bool AddVideoTrack(PeerConnection& peer,
+                     webrtc::RtpTransceiverDirection direction,
+                     const std::string& stream_id);
+  // 按当前静音/暂停/共享状态重设 SFU 上行 sender，SDP 落地后必须补一次。
+  void ApplySendState();
+  Json TrackDescriptions(const std::string& audio_mid,
+                         const std::string& video_mid) const;
   void Fail(std::string message);
   Json Failed() const;
 
@@ -66,8 +79,12 @@ class WebRtcMedia : public Media {
   std::unique_ptr<PeerConnection> recv_;
   std::unique_ptr<PeerConnection> p2p_;
   webrtc::scoped_refptr<webrtc::AudioTrackInterface> audio_track_;
+  webrtc::scoped_refptr<DesktopVideoSource> video_source_;
+  webrtc::scoped_refptr<webrtc::VideoTrackInterface> video_track_;
+  VideoFrameSink video_sink_;
   std::atomic<bool> muted_{true};
   std::atomic<bool> sfu_paused_{false};
+  std::atomic<bool> video_sharing_{false};
   std::atomic<double> gain_{0.5};
   std::string error_;
 };

@@ -49,8 +49,17 @@ if(TALK_WITH_WEBRTC)
     core/media/webrtc/sine_audio_device.cpp
     core/media/webrtc/switchable_audio_device.cpp
     core/media/webrtc/webrtc_media.cpp
+    core/media/webrtc/video/desktop_video_source.cpp
+    core/media/webrtc/video/h264_bitstream.cpp
+    core/media/webrtc/video/mf_h264_codec.cpp
+    core/media/webrtc/video/video_frame_sink.cpp
+    core/media/webrtc/video/webrtc_h264_factory.cpp
   )
   target_link_libraries(talk_media PRIVATE talk_protocol talk_webrtc)
+  # libyuv 头文件内部以 "libyuv/xxx.h" 引用，需要其 include 根目录。
+  target_include_directories(talk_media PRIVATE
+    "${WEBRTC_SDK_DIR}/include/third_party/libyuv/include"
+  )
   target_compile_definitions(talk_media PRIVATE
     TALK_WITH_WEBRTC
     JSON_NOEXCEPTION
@@ -142,6 +151,8 @@ if(TALK_WITH_QT)
     ui/qt/app_settings.h
     ui/qt/core_client.cpp
     ui/qt/core_client.h
+    ui/qt/video_view.cpp
+    ui/qt/video_view.h
     ui/qt/window.cpp
     ui/qt/window.h
   )
@@ -209,4 +220,23 @@ if(TALK_BUILD_TESTS)
     MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
   )
   add_test(NAME signaling_test COMMAND signaling_test)
+
+  # 视频编解码回环：直接调用 talk_media 的 MF 封装，不经过 WebRTC。
+  if(TALK_HAS_MEDIA)
+    add_executable(video_codec_test tests/video_codec_test.cpp)
+    target_include_directories(video_codec_test PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/core"
+    )
+    # 与 talk_core 一致：链接 talk_webrtc 以获得 webrtc.lib 及其编译宏，
+    # 否则 Debug 下 _ITERATOR_DEBUG_LEVEL 与 talk_media 不匹配。
+    # 测试本身不抛异常（只用 printf + 返回值），_HAS_EXCEPTIONS=0 可接受。
+    target_link_libraries(video_codec_test PRIVATE talk_media talk_webrtc)
+    target_compile_options(video_codec_test PRIVATE
+      $<$<CXX_COMPILER_ID:MSVC>:/utf-8 /std:c++20 /EHsc /GR /W3>
+    )
+    set_target_properties(video_codec_test PROPERTIES
+      MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+    )
+    add_test(NAME video_codec_test COMMAND video_codec_test)
+  endif()
 endif()
