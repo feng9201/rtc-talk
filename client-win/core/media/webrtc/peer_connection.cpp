@@ -99,7 +99,6 @@ void PeerConnection::Close() {
       pc_ = nullptr;
     }
     senders_.clear();
-    sender_active_.clear();
     path_.clear();
   });
 }
@@ -108,35 +107,39 @@ bool PeerConnection::AddAudioTrack(
     webrtc::scoped_refptr<webrtc::AudioTrackInterface> track,
     webrtc::RtpTransceiverDirection direction,
     const std::string& stream_id) {
-  return AddTrack(TrackKind::kAudio, std::move(track), direction, stream_id);
+  const std::string key = track ? track->id() : std::string();
+  return AddTrack(TrackKind::kAudio, std::move(track), direction, stream_id,
+                  key);
 }
 
 bool PeerConnection::AddVideoTrack(
     webrtc::scoped_refptr<webrtc::VideoTrackInterface> track,
     webrtc::RtpTransceiverDirection direction,
     const std::string& stream_id) {
-  return AddTrack(TrackKind::kVideo, std::move(track), direction, stream_id);
+  const std::string key = track ? track->id() : std::string();
+  return AddTrack(TrackKind::kVideo, std::move(track), direction, stream_id,
+                  key);
 }
 
 bool PeerConnection::AddTrack(
     TrackKind kind,
     webrtc::scoped_refptr<webrtc::MediaStreamTrackInterface> track,
     webrtc::RtpTransceiverDirection direction,
-    const std::string& stream_id) {
+    const std::string& stream_id, const std::string& key) {
   return RunOnSignaling([this, kind, track = std::move(track), direction,
-                         stream_id] {
+                         stream_id, key] {
     if (!pc_) {
       return false;
     }
-    if (senders_.find(kind) != senders_.end()) {
+    // 同一 track 重复添加不重复开 transceiver（按 track id 查重）。
+    if (!key.empty() && senders_.find(key) != senders_.end()) {
       return true;
     }
     webrtc::RtpTransceiverInit init;
     init.direction = direction;
     init.stream_ids = {stream_id};
     if (kind == TrackKind::kVideo) {
-      // 一期只有单层 H.264，直接给出码率上限；active 仍由
-      // SetSenderActive 控制，两处会共用同一个 encoding 参数。
+      // 单层 H.264，直接给出码率上限；active 仍由 SetSenderActive 控制。
       webrtc::RtpEncodingParameters encoding;
       encoding.max_bitrate_bps = kVideoMaxBitrateBps;
       init.send_encodings.push_back(encoding);
@@ -145,9 +148,7 @@ bool PeerConnection::AddTrack(
     if (!result.ok()) {
       return false;
     }
-    senders_[kind] = result.value()->sender();
-    // 新 sender 默认激活，后续由 SetSenderActive 按静音/共享状态调整。
-    sender_active_[kind] = true;
+    senders_[key] = result.value()->sender();
     return true;
   });
 }
@@ -222,16 +223,24 @@ bool PeerConnection::GetLocalSdp(std::string* sdp) {
 }
 
 bool PeerConnection::MidFor(TrackKind kind, std::string* mid) {
-  return RunOnSignaling([this, kind, mid] {
-    if (!pc_ || mid == nullptr) {
+  return MidFor(kind, 0, mid);
+}
+
+bool PeerConnection::MidFor(TrackKind kind, int index, std::string* mid) {
+  return RunOnSignaling([this, kind, index, mid] {
+    if (!pc_ || mid == nullptr || index < 0) {
       return false;
     }
     const webrtc::MediaType type = kind == TrackKind::kVideo
                                        ? webrtc::MediaType::VIDEO
                                        : webrtc::MediaType::AUDIO;
+    int seen = 0;
     for (const auto& transceiver : pc_->GetTransceivers()) {
-      if (transceiver && transceiver->media_type() == type &&
-          transceiver->mid().has_value()) {
+      if (!transceiver || transceiver->media_type() != type ||
+          !transceiver->mid().has_value()) {
+        continue;
+      }
+      if (seen++ == index) {
         *mid = *transceiver->mid();
         return true;
       }
@@ -241,34 +250,91 @@ bool PeerConnection::MidFor(TrackKind kind, std::string* mid) {
 }
 
 bool PeerConnection::SetSenderActive(TrackKind kind, bool active) {
-  return RunOnSignaling([this, kind, active] {
-    const auto item = senders_.find(kind);
-    if (item == senders_.end() || !item->second) {
-      // 该类型的轨道还没发布，不算失败。
-      return true;
+  // 同类型可能有多个 sender（摄像头 + 屏幕），逐个切换。
+  for (int index = 0;; ++index) {
+    std::string mid;
+    if (!MidFor(kind, index, &mid)) {
+      break;
     }
-    auto parameters = item->second->GetParameters();
+    if (!SetSenderActiveByMid(mid, active)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool PeerConnection::SetSenderActive(TrackKind kind, int index, bool active) {
+  std::string mid;
+  if (!MidFor(kind, index, &mid)) {
+    // 该路轨道还没发布，不算失败。
+    return true;
+  }
+  return SetSenderActiveByMid(mid, active);
+}
+
+bool PeerConnection::SetSenderActiveByMid(const std::string& mid,
+                                          bool active) {
+  return RunOnSignaling(
+      [this, mid, active] { return SetSenderActiveOnSignaling(mid, active); });
+}
+
+bool PeerConnection::SetSenderActiveOnSignaling(const std::string& mid,
+                                                bool active) {
+  if (!pc_) {
+    return false;
+  }
+  for (const auto& transceiver : pc_->GetTransceivers()) {
+    if (!transceiver || !transceiver->mid().has_value() ||
+        *transceiver->mid() != mid) {
+      continue;
+    }
+    auto sender = transceiver->sender();
+    if (!sender) {
+      return false;
+    }
+    auto parameters = sender->GetParameters();
     for (auto& encoding : parameters.encodings) {
       encoding.active = active;
-      if (kind == TrackKind::kAudio) {
+      if (transceiver->media_type() == webrtc::MediaType::AUDIO) {
         encoding.max_bitrate_bps = kAudioMaxBitrateBps;
       }
     }
-    if (!item->second->SetParameters(parameters).ok()) {
-      // 设置失败时不能保留旧值，否则统计会把“没生效”显示成已激活。
-      sender_active_[kind] = false;
+    if (!sender->SetParameters(parameters).ok()) {
       return false;
     }
-    sender_active_[kind] = active;
     return true;
-  });
+  }
+  // 该 mid 还没发布，不算失败。
+  return true;
 }
 
 Json PeerConnection::SenderActiveState() {
   return RunOnSignaling([this] {
     Json out = Json::object();
-    for (const auto& [kind, active] : sender_active_) {
-      out[TrackKindName(kind)] = active;
+    if (!pc_) {
+      return out;
+    }
+    int audio_count = 0;
+    int video_count = 0;
+    for (const auto& transceiver : pc_->GetTransceivers()) {
+      auto sender = transceiver ? transceiver->sender() : nullptr;
+      if (!sender) {
+        continue;
+      }
+      const auto parameters = sender->GetParameters();
+      const bool active =
+          !parameters.encodings.empty() && parameters.encodings[0].active;
+      std::string name;
+      if (transceiver->media_type() == webrtc::MediaType::VIDEO) {
+        name = video_count == 0 ? "video"
+                                : "video" + std::to_string(video_count + 1);
+        ++video_count;
+      } else {
+        name = audio_count == 0 ? "audio"
+                                : "audio" + std::to_string(audio_count + 1);
+        ++audio_count;
+      }
+      out[name] = active;
     }
     return out;
   });
@@ -295,29 +361,35 @@ void PeerConnection::AttachRemoteVideoOnSignaling(
   if (!video_sink_handle_) {
     video_sink_handle_ = std::make_shared<VideoSinkHandle>();
   }
-  // 一期只显示第一路远端画面：后续 mid 直接忽略，避免多路抢回调。
-  if (remote_video_sink_) {
-    if (remote_video_mid_ != mid) {
-      RTC_LOG(LS_INFO) << "忽略额外的远端视频轨 mid=" << mid
-                       << " 已在显示 mid=" << remote_video_mid_;
-    }
+  // 同一 mid 重新协商时旧 track 可能已换，先摘掉再挂。
+  DetachRemoteVideoOnSignaling(mid);
+  auto sink = std::make_unique<RemoteVideoSink>(mid, video_sink_handle_);
+  track->AddOrUpdateSink(sink.get(), webrtc::VideoSinkWants());
+  remote_videos_[mid] = RemoteVideo{track, std::move(sink)};
+  RTC_LOG(LS_INFO) << "挂载远端视频轨 mid=" << mid
+                   << " 当前路数=" << remote_videos_.size();
+}
+
+void PeerConnection::DetachRemoteVideoOnSignaling(const std::string& mid) {
+  const auto it = remote_videos_.find(mid);
+  if (it == remote_videos_.end()) {
     return;
   }
-  remote_video_mid_ = mid;
-  remote_video_track_ = track;
-  remote_video_sink_ =
-      std::make_unique<RemoteVideoSink>(mid, video_sink_handle_);
-  track->AddOrUpdateSink(remote_video_sink_.get(), webrtc::VideoSinkWants());
-  RTC_LOG(LS_INFO) << "挂载远端视频轨 mid=" << mid;
+  if (it->second.track && it->second.sink) {
+    it->second.track->RemoveSink(it->second.sink.get());
+  }
+  RTC_LOG(LS_INFO) << "摘除远端视频轨 mid=" << mid
+                   << " 剩余路数=" << (remote_videos_.size() - 1);
+  remote_videos_.erase(it);
 }
 
 void PeerConnection::DetachRemoteVideoOnSignaling() {
-  if (remote_video_sink_ && remote_video_track_) {
-    remote_video_track_->RemoveSink(remote_video_sink_.get());
+  for (auto& entry : remote_videos_) {
+    if (entry.second.track && entry.second.sink) {
+      entry.second.track->RemoveSink(entry.second.sink.get());
+    }
   }
-  remote_video_sink_.reset();
-  remote_video_track_ = nullptr;
-  remote_video_mid_.clear();
+  remote_videos_.clear();
 }
 
 void PeerConnection::SetReceivePaused(bool paused) {

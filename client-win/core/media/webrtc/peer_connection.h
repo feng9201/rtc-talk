@@ -47,10 +47,14 @@ class PeerConnection : public webrtc::PeerConnectionObserver {
   bool AddIceCandidate(const std::string& candidate, const std::string& mid,
                        int index);
   bool GetLocalSdp(std::string* sdp);
-  // 按轨道类型取 mid；未发布该类型时返回 false。
+  // 按轨道类型取 mid；未发布该类型时返回 false。两路视频需要带 index。
   bool MidFor(TrackKind kind, std::string* mid);
-  // 只切换指定类型的 sender，避免静音音频时连带停掉视频。
+  bool MidFor(TrackKind kind, int index, std::string* mid);
+  // 只切换指定类型的 sender；index 区分同类型多路（0 为第一路）。
   bool SetSenderActive(TrackKind kind, bool active);
+  bool SetSenderActive(TrackKind kind, int index, bool active);
+  // 按 SDP 协商出的 mid 切换，摄像头/屏幕两路互不影响。
+  bool SetSenderActiveByMid(const std::string& mid, bool active);
   // 上行 sender 最近一次生效的激活状态；统计日志用它区分“没发”与“不让发”。
   Json SenderActiveState();
   // 下行视频帧回调；可随时替换，空 sink 表示停止回调。
@@ -88,12 +92,16 @@ class PeerConnection : public webrtc::PeerConnectionObserver {
       TrackKind kind,
       webrtc::scoped_refptr<webrtc::MediaStreamTrackInterface> track,
       webrtc::RtpTransceiverDirection direction,
-      const std::string& stream_id);
-  // 挂载第一路远端视频轨；其余 mid 只记一次日志。
+      const std::string& stream_id, const std::string& key);
+  // 在 signaling 线程内切换 sender；调用方已在 signaling 线程时只走这个。
+  bool SetSenderActiveOnSignaling(const std::string& mid, bool active);
+  // 挂载一路远端视频轨；按 mid 区分，多路并存（多人会议每人一路）。
   void AttachRemoteVideoOnSignaling(
       webrtc::scoped_refptr<webrtc::VideoTrackInterface> track,
       const std::string& mid);
   void DetachRemoteVideoOnSignaling();
+  // 只摘掉指定 mid，重新协商同一路时先清旧 sink。
+  void DetachRemoteVideoOnSignaling(const std::string& mid);
 
   template <class F>
   auto RunOnSignaling(F&& f) {
@@ -104,14 +112,16 @@ class PeerConnection : public webrtc::PeerConnectionObserver {
   Media::Event event_;
   webrtc::Thread* signaling_ = nullptr;
   webrtc::scoped_refptr<webrtc::PeerConnectionInterface> pc_;
-  std::map<TrackKind, webrtc::scoped_refptr<webrtc::RtpSenderInterface>>
+  // 上行 sender 以 track id 为键；mid 在 SDP 生成后才可用，激活时按 mid 查。
+  std::map<std::string, webrtc::scoped_refptr<webrtc::RtpSenderInterface>>
       senders_;
-  // 与 senders_ 同步，只在 signaling 线程读写。
-  std::map<TrackKind, bool> sender_active_;
   std::shared_ptr<VideoSinkHandle> video_sink_handle_;
-  std::unique_ptr<RemoteVideoSink> remote_video_sink_;
-  webrtc::scoped_refptr<webrtc::VideoTrackInterface> remote_video_track_;
-  std::string remote_video_mid_;
+  // 多路远端视频：每路一个 sink，回调统一带各自 mid；只在 signaling 线程读写。
+  struct RemoteVideo {
+    webrtc::scoped_refptr<webrtc::VideoTrackInterface> track;
+    std::unique_ptr<RemoteVideoSink> sink;
+  };
+  std::map<std::string, RemoteVideo> remote_videos_;
   std::atomic<double> gain_{0.5};
   std::atomic<bool> receive_paused_{false};
   std::string path_;

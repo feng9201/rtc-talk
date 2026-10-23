@@ -26,6 +26,9 @@ WebRtcMedia::WebRtcMedia(const Json& config, const Json& ice_servers,
     : config_(config),
       event_(std::move(event)),
       video_sink_(std::move(video_sink)) {
+  if (config_.contains("camera_index") && config_["camera_index"].is_number()) {
+    camera_index_ = config_["camera_index"].get<int>();
+  }
   std::string error;
   environment_ = MediaEnvironment::Create(config_, ice_servers,
                                           std::move(gate), &error);
@@ -47,6 +50,9 @@ WebRtcMedia::~WebRtcMedia() {
   if (video_source_) {
     video_source_->Stop();
   }
+  if (camera_source_) {
+    camera_source_->Stop();
+  }
   // PeerConnection 必须在创建它的 signaling 线程上关闭。
   if (send_) {
     send_->Close();
@@ -61,14 +67,16 @@ WebRtcMedia::~WebRtcMedia() {
   recv_.reset();
   p2p_.reset();
   audio_track_ = nullptr;
+  camera_track_ = nullptr;
   video_track_ = nullptr;
+  camera_source_ = nullptr;
   video_source_ = nullptr;
   environment_.reset();
 }
 
 Json WebRtcMedia::Offer() {
   if (!environment_ || !SelectDevices(true) || !EnsureAudioTrack() ||
-      !EnsureVideoTrack()) {
+      !EnsureVideoTracks()) {
     return Failed();
   }
   if (!send_->Create(environment_->factory(), environment_->rtc_config())) {
@@ -80,10 +88,13 @@ Json WebRtcMedia::Offer() {
                      "talk")) {
     return Failed();
   }
-  // join 即发布视频 m-line：服务端会建一个 paused 的视频 producer，
-  // 启停共享只走 setMute，不重建 producer（也就不会连带重建音频）。
-  if (!AddVideoTrack(*send_, webrtc::RtpTransceiverDirection::kSendOnly,
-                     "talk")) {
+  // join 即发布两路视频 m-line（camera 为第 0 路、screen 为第 1 路）：
+  // 服务端会建两个 paused 的 producer，启停只走 setMute / sender active，
+  // 不重建 producer（也就不会连带重建音频）。
+  if (!AddVideoTrack(*send_, camera_track_,
+                     webrtc::RtpTransceiverDirection::kSendOnly, "talk") ||
+      !AddVideoTrack(*send_, video_track_,
+                     webrtc::RtpTransceiverDirection::kSendOnly, "talk")) {
     return Failed();
   }
   if (!send_->CreateAndSetLocal(true)) {
@@ -97,9 +108,13 @@ Json WebRtcMedia::Offer() {
   if (!send_->MidFor(TrackKind::kAudio, &audio_mid)) {
     audio_mid = "0";
   }
-  std::string video_mid;
-  if (!send_->MidFor(TrackKind::kVideo, &video_mid)) {
-    video_mid = "1";
+  std::string camera_mid;
+  if (!send_->MidFor(TrackKind::kVideo, 0, &camera_mid)) {
+    camera_mid = "1";
+  }
+  std::string screen_mid;
+  if (!send_->MidFor(TrackKind::kVideo, 1, &screen_mid)) {
+    screen_mid = "2";
   }
   std::string sdp;
   if (!send_->GetLocalSdp(&sdp)) {
@@ -107,7 +122,7 @@ Json WebRtcMedia::Offer() {
     return Failed();
   }
   return {{"sdp", sdp},
-          {"tracks", TrackDescriptions(audio_mid, video_mid)}};
+          {"tracks", TrackDescriptions(audio_mid, camera_mid, screen_mid)}};
 }
 
 Json WebRtcMedia::Accept(const std::string& sdp) {
@@ -281,8 +296,11 @@ void WebRtcMedia::ApplySendState() {
   const bool paused = sfu_paused_.load();
   send_->SetSenderActive(TrackKind::kAudio, !muted_.load() && !paused);
   // P2P 连通后把 SFU 上行 sender 关掉，避免继续往 SFU 丢包；
-  // 切回 SFU（sfu_paused=false）时跟随共享状态恢复。
-  send_->SetSenderActive(TrackKind::kVideo, video_sharing_.load() && !paused);
+  // 切回 SFU（sfu_paused=false）时跟随两路共享状态恢复。
+  send_->SetSenderActive(TrackKind::kVideo, 0,
+                         camera_sharing_.load() && !paused);
+  send_->SetSenderActive(TrackKind::kVideo, 1,
+                         video_sharing_.load() && !paused);
 }
 
 void WebRtcMedia::SfuPause(bool paused) {
@@ -293,43 +311,75 @@ void WebRtcMedia::SfuPause(bool paused) {
   ApplySendState();
 }
 
-Json WebRtcMedia::StartVideo() {
+Json WebRtcMedia::StartVideo(const std::string& source) {
   if (!environment_) {
     return Failed();
   }
-  if (video_sharing_.load()) {
-    // 重复 start 直接返回当前状态，不重复起采集线程。
-    return {{"sharing", true}};
+  const bool is_camera = source == "camera";
+  if (!is_camera && source != "screen") {
+    Fail("未知视频源：" + source);
+    return Failed();
   }
-  if (!EnsureVideoTrack()) {
+  std::atomic<bool>& sharing =
+      is_camera ? camera_sharing_ : video_sharing_;
+  if (sharing.load()) {
+    // 重复 start 直接返回当前状态，不重复起采集线程。
+    return {{"sharing", true}, {"source", source}};
+  }
+  if (!EnsureVideoTracks()) {
     return Failed();
   }
   std::string error;
-  if (!video_source_->Start(&error)) {
-    Fail(error.empty() ? "启动桌面采集失败" : error);
+  const bool started = is_camera ? camera_source_->Start(&error)
+                                 : video_source_->Start(&error);
+  if (!started) {
+    Fail(error.empty() ? (is_camera ? "启动摄像头失败" : "启动桌面采集失败")
+                       : error);
     return Failed();
   }
-  if (!send_ || !send_->SetSenderActive(TrackKind::kVideo,
+  if (!send_ || !send_->SetSenderActive(TrackKind::kVideo, is_camera ? 0 : 1,
                                         !sfu_paused_.load())) {
-    video_source_->Stop();
+    if (is_camera) {
+      camera_source_->Stop();
+    } else {
+      video_source_->Stop();
+    }
     Fail("设置视频发送状态失败");
     return Failed();
   }
-  video_sharing_ = true;
-  return {{"sharing", true},
-          {"send_state", send_ ? send_->ConnectionStateText() : std::string()}};
+  sharing = true;
+  Json out = {{"sharing", true},
+              {"source", source},
+              {"send_state",
+               send_ ? send_->ConnectionStateText() : std::string()}};
+  if (is_camera) {
+    out["device"] = camera_source_->device_name();
+  }
+  return out;
 }
 
-Json WebRtcMedia::StopVideo() {
+Json WebRtcMedia::StopVideo(const std::string& source) {
+  const bool is_camera = source == "camera";
+  if (!is_camera && source != "screen") {
+    Fail("未知视频源：" + source);
+    return Failed();
+  }
   // 先停采集（立即停止出帧），再切 sender；顺序反过来会多发几帧。
-  if (video_source_) {
-    video_source_->Stop();
+  if (is_camera) {
+    if (camera_source_) {
+      camera_source_->Stop();
+    }
+    camera_sharing_ = false;
+  } else {
+    if (video_source_) {
+      video_source_->Stop();
+    }
+    video_sharing_ = false;
   }
   if (send_) {
-    send_->SetSenderActive(TrackKind::kVideo, false);
+    send_->SetSenderActive(TrackKind::kVideo, is_camera ? 0 : 1, false);
   }
-  video_sharing_ = false;
-  return {{"sharing", false}};
+  return {{"sharing", false}, {"source", source}};
 }
 
 void WebRtcMedia::SetVideoSink(VideoFrameSink sink) {
@@ -360,7 +410,11 @@ Json WebRtcMedia::GetStats() {
   }
   out["video_capture"] = {
       {"frames", video_source_ ? video_source_->frames() : 0ULL},
-      {"sharing", video_sharing_.load()}};
+      {"sharing", video_sharing_.load()},
+      {"camera_frames", camera_source_ ? camera_source_->frames() : 0ULL},
+      {"camera_sharing", camera_sharing_.load()},
+      {"camera_device", camera_source_ ? camera_source_->device_name()
+                                        : std::string()}};
   // 上行 sender 实际激活状态与本地静音/暂停标志：无声时先看这里。
   Json send_state = send_ ? send_->SenderActiveState() : Json::object();
   send_state["muted"] = muted_.load();
@@ -409,17 +463,25 @@ bool WebRtcMedia::AddAudioTrack(PeerConnection& peer,
   return true;
 }
 
-bool WebRtcMedia::EnsureVideoTrack() {
-  if (video_track_) {
+bool WebRtcMedia::EnsureVideoTracks() {
+  if (video_track_ && camera_track_) {
     return true;
   }
   const bool ready = OnSignaling([this] {
     // 只建轨不采集：StartVideo 才起采集线程。
-    video_source_ = webrtc::make_ref_counted<DesktopVideoSource>(
-        kVideoMaxWidth, kVideoMaxHeight, kVideoFps);
-    video_track_ = environment_->factory()->CreateVideoTrack(video_source_,
-                                                             "screen");
-    return video_track_ != nullptr;
+    if (!camera_source_) {
+      camera_source_ = webrtc::make_ref_counted<CameraVideoSource>(
+          kVideoMaxWidth, kVideoMaxHeight, kVideoFps, camera_index_);
+      camera_track_ = environment_->factory()->CreateVideoTrack(camera_source_,
+                                                               "camera");
+    }
+    if (!video_source_) {
+      video_source_ = webrtc::make_ref_counted<DesktopVideoSource>(
+          kVideoMaxWidth, kVideoMaxHeight, kVideoFps);
+      video_track_ = environment_->factory()->CreateVideoTrack(video_source_,
+                                                              "screen");
+    }
+    return camera_track_ != nullptr && video_track_ != nullptr;
   });
   if (!ready) {
     Fail("创建视频轨失败");
@@ -427,11 +489,12 @@ bool WebRtcMedia::EnsureVideoTrack() {
   return ready;
 }
 
-bool WebRtcMedia::AddVideoTrack(PeerConnection& peer,
-                                webrtc::RtpTransceiverDirection direction,
-                                const std::string& stream_id) {
-  if (!video_track_ ||
-      !peer.AddVideoTrack(video_track_, direction, stream_id)) {
+bool WebRtcMedia::AddVideoTrack(
+    PeerConnection& peer,
+    webrtc::scoped_refptr<webrtc::VideoTrackInterface> track,
+    webrtc::RtpTransceiverDirection direction,
+    const std::string& stream_id) {
+  if (!track || !peer.AddVideoTrack(track, direction, stream_id)) {
     Fail("添加视频轨失败");
     return false;
   }
@@ -439,18 +502,22 @@ bool WebRtcMedia::AddVideoTrack(PeerConnection& peer,
 }
 
 Json WebRtcMedia::TrackDescriptions(const std::string& audio_mid,
-                                    const std::string& video_mid) const {
+                                    const std::string& camera_mid,
+                                    const std::string& screen_mid) const {
   const std::string audio_source =
       config_.value("audio_source", std::string("mic"));
   Json tracks = Json::array();
   tracks.push_back({{"mid", audio_mid},
                     {"kind", TrackKindName(TrackKind::kAudio)},
                     {"source", audio_source == "system" ? "screen" : "mic"}});
-  // 服务端的 media.setMute{source:"camera"} 只作用于 source != "screen"
-  // 的视频 producer，所以屏幕共享也必须标 camera，否则无法启停。
-  tracks.push_back({{"mid", video_mid},
+  // 摄像头路走服务端 media.setMute{source:"camera"} 控制 producer；
+  // 屏幕路标 screen，服务端 publish 时直接 resume，启停只切本地 sender。
+  tracks.push_back({{"mid", camera_mid},
                     {"kind", TrackKindName(TrackKind::kVideo)},
                     {"source", "camera"}});
+  tracks.push_back({{"mid", screen_mid},
+                    {"kind", TrackKindName(TrackKind::kVideo)},
+                    {"source", "screen"}});
   return tracks;
 }
 

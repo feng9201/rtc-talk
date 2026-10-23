@@ -71,9 +71,16 @@ class Media {
   // mediasoup transport 只接受一次 DTLS connect，切回 SFU 时需复用。
   virtual void SfuPause(bool paused) = 0;
 
-  // 屏幕共享启停；不支持视频的构建返回错误而不抛异常。
-  virtual Json StartVideo() { return {{"error", "当前构建不支持视频"}}; }
-  virtual Json StopVideo() { return Json::object(); }
+  // 视频启停：source 为 "camera"（摄像头）或 "screen"（屏幕共享）。
+  // 不支持视频的构建返回错误而不抛异常。
+  virtual Json StartVideo(const std::string& source = "screen") {
+    (void)source;
+    return {{"error", "当前构建不支持视频"}};
+  }
+  virtual Json StopVideo(const std::string& source = "screen") {
+    (void)source;
+    return Json::object();
+  }
   // 下行视频帧回调；可跨线程，空 sink 表示取消。
   virtual void SetVideoSink(VideoFrameSink sink) { (void)sink; }
 

@@ -90,9 +90,11 @@ class MediaController {
   // 设备、音量与静音；done 可为空。
   void SetSfuPaused(bool paused, std::function<void()> done = {});
   void SetMuted(bool muted, std::function<void(MediaResult)> done = {});
-  // 屏幕共享启停；done 可为空，且只在控制线程回调。
-  void StartVideo(std::function<void(MediaResult)> done);
-  void StopVideo(std::function<void(MediaResult)> done = {});
+  // 视频启停：source 为 camera/screen；done 可为空，且只在控制线程回调。
+  void StartVideo(const std::string& source,
+                  std::function<void(MediaResult)> done);
+  void StopVideo(const std::string& source,
+                 std::function<void(MediaResult)> done = {});
   void GetDevices(std::function<void(MediaResult)> done);
   void GetStats(std::function<void(MediaResult)> done);
   void SetVolume(double gain, std::function<void(MediaResult)> done);

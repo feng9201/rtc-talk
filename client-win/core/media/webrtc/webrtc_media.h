@@ -11,6 +11,7 @@
 #include "media/media.h"
 #include "media/webrtc/media_environment.h"
 #include "media/webrtc/peer_connection.h"
+#include "media/webrtc/video/camera_video_source.h"
 #include "media/webrtc/video/desktop_video_source.h"
 
 namespace talk {
@@ -42,9 +43,10 @@ class WebRtcMedia : public Media {
   Json SetAudioSource(const std::string& source) override;
   void SfuPause(bool paused) override;
 
-  // 屏幕共享：join 时就发布 video m-line，启停只切采集与 sender。
-  Json StartVideo() override;
-  Json StopVideo() override;
+  // 一人两路：摄像头 + 屏幕共享。join 时就发布两条 video m-line，
+  // 启停只切采集与对应 sender。
+  Json StartVideo(const std::string& source) override;
+  Json StopVideo(const std::string& source) override;
   void SetVideoSink(VideoFrameSink sink) override;
 
   Json GetDevices() override;
@@ -53,17 +55,20 @@ class WebRtcMedia : public Media {
  private:
   bool SelectDevices(bool need_recording);
   bool EnsureAudioTrack();
-  bool EnsureVideoTrack();
+  // 两路视频轨（camera / screen）同时建，mid 顺序与 Offer 一致。
+  bool EnsureVideoTracks();
   bool AddAudioTrack(PeerConnection& peer,
                      webrtc::RtpTransceiverDirection direction,
                      const std::string& stream_id);
   bool AddVideoTrack(PeerConnection& peer,
+                     webrtc::scoped_refptr<webrtc::VideoTrackInterface> track,
                      webrtc::RtpTransceiverDirection direction,
                      const std::string& stream_id);
   // 按当前静音/暂停/共享状态重设 SFU 上行 sender，SDP 落地后必须补一次。
   void ApplySendState();
   Json TrackDescriptions(const std::string& audio_mid,
-                         const std::string& video_mid) const;
+                         const std::string& camera_mid,
+                         const std::string& screen_mid) const;
   void Fail(std::string message);
   Json Failed() const;
 
@@ -79,13 +84,17 @@ class WebRtcMedia : public Media {
   std::unique_ptr<PeerConnection> recv_;
   std::unique_ptr<PeerConnection> p2p_;
   webrtc::scoped_refptr<webrtc::AudioTrackInterface> audio_track_;
+  webrtc::scoped_refptr<CameraVideoSource> camera_source_;
   webrtc::scoped_refptr<DesktopVideoSource> video_source_;
+  webrtc::scoped_refptr<webrtc::VideoTrackInterface> camera_track_;
   webrtc::scoped_refptr<webrtc::VideoTrackInterface> video_track_;
   VideoFrameSink video_sink_;
   std::atomic<bool> muted_{true};
   std::atomic<bool> sfu_paused_{false};
+  std::atomic<bool> camera_sharing_{false};
   std::atomic<bool> video_sharing_{false};
   std::atomic<double> gain_{0.5};
+  int camera_index_ = -1;
   std::string error_;
 };
 

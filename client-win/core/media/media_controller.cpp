@@ -186,6 +186,10 @@ void MediaController::Publish() {
         }
         TALK_LOG_INFO("media", "SFU offer 已生成 sdp={}", sdp.size());
         TALK_LOG_INFO("media", "SFU offer 视频行 {}", SdpVideoSummary(sdp));
+        TALK_LOG_INFO("media", "SFU publish tracks={}",
+                      offer.data.contains("tracks")
+                          ? offer.data["tracks"].dump()
+                          : std::string("<missing>"));
         if (!signaling_.request) {
           return;
         }
@@ -207,6 +211,10 @@ void MediaController::Publish() {
           }
           const Json data = a.value("data", Json::object());
           const std::string answer = data.value("sdp", std::string());
+          // 只打 producer 摘要：mid/paused 能直接看出服务端是否把两路视频分开。
+          TALK_LOG_INFO("media", "SFU 发布 producer 数={} 摘要={}",
+                        data.value("producers", Json::array()).size(),
+                        data.value("producers", Json::array()).dump());
           TALK_LOG_INFO("media", "SFU 发布成功 answer={}", answer.size());
           TALK_LOG_INFO("media", "SFU answer 视频行 {}",
                         SdpVideoSummary(answer));
@@ -264,7 +272,15 @@ void MediaController::ApplySfuOffer(const std::string& sdp,
                  !item["mid"].is_string()) {
                continue;
              }
-             consumers_[item["mid"].get<std::string>()] = item;
+             const std::string mid = item["mid"].get<std::string>();
+             consumers_[mid] = item;
+             // 界面按 mid 建画面，需要 uid/source 才能标出对端与采集源。
+             if (item.value("kind", std::string()) == "video") {
+               events_.Emit("video.track",
+                            {{"mid", mid},
+                             {"uid", item.value("uid", std::string())},
+                             {"source", item.value("source", std::string())}});
+             }
            }
          }
          // 订阅已建立：开始周期统计，确认远端 RTP 是否到达。
@@ -491,17 +507,18 @@ void MediaController::SetMuted(bool muted,
        std::move(done), false);
 }
 
-void MediaController::StartVideo(std::function<void(MediaResult)> done) {
-  TALK_LOG_INFO("media", "启动屏幕共享");
-  Post([](Media& media) { return media.StartVideo(); },
-       [done = std::move(done)](MediaResult result) mutable {
+void MediaController::StartVideo(const std::string& source,
+                                 std::function<void(MediaResult)> done) {
+  TALK_LOG_INFO("media", "启动视频 source={}", source);
+  Post([source](Media& media) { return media.StartVideo(source); },
+       [done = std::move(done), source](MediaResult result) mutable {
          if (result.ok && result.data.is_object()) {
-           TALK_LOG_INFO("media", "屏幕共享已启动 sharing={} send_state={}",
-                         result.data.value("sharing", false),
+           TALK_LOG_INFO("media", "视频已启动 source={} sharing={} send_state={}",
+                         source, result.data.value("sharing", false),
                          result.data.value("send_state", std::string()));
          } else {
-           TALK_LOG_ERROR("media", "屏幕共享启动失败 ok={} error={}",
-                          result.ok, result.error);
+           TALK_LOG_ERROR("media", "视频启动失败 source={} ok={} error={}",
+                          source, result.ok, result.error);
          }
          if (done) {
            done(std::move(result));
@@ -509,13 +526,14 @@ void MediaController::StartVideo(std::function<void(MediaResult)> done) {
        });
 }
 
-void MediaController::StopVideo(std::function<void(MediaResult)> done) {
-  TALK_LOG_INFO("media", "停止屏幕共享");
+void MediaController::StopVideo(const std::string& source,
+                                std::function<void(MediaResult)> done) {
+  TALK_LOG_INFO("media", "停止视频 source={}", source);
   // 不建新实例：媒体未创建时无需停采，直接回报成功。
-  Post([](Media& media) { return media.StopVideo(); },
-       [done = std::move(done)](MediaResult result) mutable {
-         TALK_LOG_INFO("media", "屏幕共享已停止 ok={} error={}", result.ok,
-                       result.error);
+  Post([source](Media& media) { return media.StopVideo(source); },
+       [done = std::move(done), source](MediaResult result) mutable {
+         TALK_LOG_INFO("media", "视频已停止 source={} ok={} error={}", source,
+                       result.ok, result.error);
          if (done) {
            done(std::move(result));
          }
