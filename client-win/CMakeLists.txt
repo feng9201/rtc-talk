@@ -49,7 +49,9 @@ if(TALK_WITH_WEBRTC)
     core/media/webrtc/sine_audio_device.cpp
     core/media/webrtc/switchable_audio_device.cpp
     core/media/webrtc/webrtc_media.cpp
+    core/media/webrtc/video/camera_video_source.cpp
     core/media/webrtc/video/desktop_video_source.cpp
+    core/media/webrtc/video/mf_capture.cpp
     core/media/webrtc/video/h264_bitstream.cpp
     core/media/webrtc/video/mf_h264_codec.cpp
     core/media/webrtc/video/video_frame_sink.cpp
@@ -238,5 +240,19 @@ if(TALK_BUILD_TESTS)
       MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
     )
     add_test(NAME video_codec_test COMMAND video_codec_test)
+
+    # 摄像头采集冒烟：枚举真实设备并计数送帧，不依赖服务端。
+    add_executable(camera_probe tests/camera_probe.cpp)
+    target_include_directories(camera_probe PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/core"
+    )
+    target_link_libraries(camera_probe PRIVATE talk_media talk_webrtc)
+    target_compile_options(camera_probe PRIVATE
+      $<$<CXX_COMPILER_ID:MSVC>:/utf-8 /std:c++20 /EHsc /GR /W3>
+    )
+    set_target_properties(camera_probe PROPERTIES
+      MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+    )
+    add_test(NAME camera_probe COMMAND camera_probe)
   endif()
 endif()
