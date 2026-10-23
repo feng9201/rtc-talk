@@ -168,10 +168,12 @@ async function main(): Promise<number> {
 
   if (values.audio) {
     const loopback = new URL(base).hostname === '127.0.0.1' || new URL(base).hostname === 'localhost';
+    // 先给所有 bot 注册 sfu.offer handler 再依次发布：
+    // 否则前面 bot 的发布会给还没注册 handler 的 bot 发 offer，被回 501
+    for (const b of bots) b.audio = new AudioSender(b.client, loopback);
     for (const b of bots) {
       await b.client.request('media.setMute', { source: 'mic', muted: false });
-      b.audio = new AudioSender(b.client, loopback);
-      await b.audio.publish();
+      await b.audio!.publish();
     }
     await Promise.race([
       Promise.all(bots.map((b) => b.audio!.subscribed)),

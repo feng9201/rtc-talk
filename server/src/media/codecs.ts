@@ -53,5 +53,8 @@ export const VIDEO_EXTENSIONS = new Set<string>([
   'http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time',
   'http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01',
   'urn:3gpp:video-orientation',
-  'urn:ietf:params:rtp-hdrext:toffset',
+  // 不列 toffset：mediasoup 3.13+ 的 RtpHeaderExtensionUri 枚举已移除该 URI，
+  // 传给它会让 transport.produce() 抛 `invalid RtpHeaderExtensionUri`，
+  // 整个 sfu.publish 失败（音视频全断）。libwebrtc 会主动带 toffset，
+  // 由这里白名单过滤掉即可。
 ]);

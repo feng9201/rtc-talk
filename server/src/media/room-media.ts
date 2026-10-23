@@ -2,7 +2,7 @@ import type { types as ms } from 'mediasoup';
 import { TalkError } from '../gateway/protocol.js';
 import type { Logger } from '../logger.js';
 import { AUDIO_EXTENSIONS, VIDEO_EXTENSIONS } from './codecs.js';
-import { buildSdp, parseSdp, type SdpSection } from './sdp.js';
+import { buildSdp, parseSdp, type ParsedTrack, type SdpSection } from './sdp.js';
 
 export interface RecvConsumerInfo {
   mid: string;
@@ -93,8 +93,11 @@ export class PeerMedia {
   async publish(
     sdp: string,
     tracks?: { mid: string; kind: 'audio' | 'video'; source?: 'mic' | 'camera' | 'screen' }[],
+    videoPolicy?: { enabled: boolean; max_publishers: number },
+    countRoomVideo?: (excludeMids: Set<string>) => number,
   ): Promise<{ sdp: string; producers: { mid: string; producer_id: string; paused: boolean }[] }> {
     const parsed = parseSdp(sdp);
+    this.checkVideoPolicy(parsed.tracks, tracks, videoPolicy, countRoomVideo);
     if (!this.send) {
       this.send = await this.router.createWebRtcTransport({
         webRtcServer: this.webRtcServer,
@@ -161,6 +164,37 @@ export class PeerMedia {
       sessionVersion: ++this.sdpVersion,
     });
     return { sdp: answer, producers: produced };
+  }
+
+  /** 房间视频策略：enabled=false 拒绝视频轨；max_publishers 按房间内视频 producer 数计；同一 uid 每种 source 最多 1 路。 */
+  private checkVideoPolicy(
+    parsedTracks: ParsedTrack[],
+    tracks?: { mid: string; kind: 'audio' | 'video'; source?: 'mic' | 'camera' | 'screen' }[],
+    videoPolicy?: { enabled: boolean; max_publishers: number },
+    countRoomVideo?: (excludeMids: Set<string>) => number,
+  ): void {
+    if (!videoPolicy) return;
+    const offerMids = new Set(parsedTracks.map((t) => t.mid));
+    const newVideo = parsedTracks.filter((t) => t.kind === 'video' && !t.closed);
+    if (newVideo.length === 0) return;
+    if (!videoPolicy.enabled) throw new TalkError(409, 'video disabled by room policy');
+    const sources = new Set<string>();
+    for (const track of newVideo) {
+      const declared = tracks?.find((t) => t.mid === track.mid)?.source;
+      const source = declared === 'screen' ? 'screen' : 'camera';
+      if (sources.has(source)) throw new TalkError(409, `duplicate ${source} video track`);
+      sources.add(source);
+    }
+    // 本次 offer 未覆盖的本端存量视频轨，source 不能与新轨重复
+    for (const p of this.producers.values()) {
+      if (p.closed || p.kind !== 'video') continue;
+      if (offerMids.has(String(p.appData.mid))) continue;
+      const source = p.appData.source === 'screen' ? 'screen' : 'camera';
+      if (sources.has(source)) throw new TalkError(409, `duplicate ${source} video track`);
+    }
+    if (countRoomVideo && countRoomVideo(offerMids) + newVideo.length > videoPolicy.max_publishers) {
+      throw new TalkError(409, 'video publisher limit reached');
+    }
   }
 
   /** 其他成员发布后调用。短时间多次调用会合并成一次 sfu.offer。 */

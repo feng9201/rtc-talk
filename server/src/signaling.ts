@@ -265,7 +265,11 @@ export class Signaling {
     if (!s.roomId) throw new TalkError(409, 'not in room');
     if (this.modes.current(s.roomId) === 'p2p') throw new TalkError(409, 'room is in p2p mode');
     if (!this.opts.media) throw new TalkError(501, 'sfu not enabled');
-    return this.opts.media.publish(s.roomId, s.uid, d.sdp, d.tracks);
+    // 客户端发布时接收侧必然已就绪：重试此前未应答的 recv offer
+    // （如客户端 sfu.offer handler 注册晚于他人发布，被回 501 后只能等这里恢复）
+    this.opts.media.onPeerOnline(s.roomId, s.uid);
+    const video = this.rooms.get(s.roomId)?.policy.video;
+    return this.opts.media.publish(s.roomId, s.uid, d.sdp, d.tracks, video);
   }
 
   private async restartIce(s: Session, data: unknown) {
