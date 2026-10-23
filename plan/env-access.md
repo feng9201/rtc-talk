@@ -1,7 +1,7 @@
 # 环境、账号与进度速查
 
 > 给接手人或换机器时用。口令只写在测试机用途上，**不要**把测试机密码同步到正式环境。
-> 更新：2026-10-19（S1 完成后）
+> 更新：2026-10-23（toffset / 视频策略 / offer 竞态修复已发布 `bf1c985`）
 
 ## 1. 当前进度
 
@@ -9,25 +9,31 @@
 |---|---|---|
 | **S0 环境** | ✅ 完成 | 开发容器、coturn、测试机初始化、打包/发布/回滚、TURN 验证、`/healthz` 公网可达 |
 | **S1 信令骨架** | ✅ 完成 | WS 信令、JWT、房间进出与成员通知、断线恢复、顶号；38 个用例；bot 公网验收通过 |
-| **S2 SFU 语音 MVP** | ⏭ 下一步 | worker 池已有，待接 Router / WebRtcServer、SDP 适配、produce/consume、开关麦；bot 真正互通 Opus |
-| S3 P2P 与模式切换 | 未开始 | — |
+| **S2 SFU 语音 MVP** | ✅ 完成 | Router + WebRtcServer、标准 SDP 发布/订阅、开关麦 pause/resume；werift bot 互通 Opus |
+| **S3 P2P 与模式切换** | ✅ 服务端完成 · 客户端 C5 代码完成 | 服务端 `36a5d09`：`call.*`、`p2p.*` 转发、`room.mediaMode` 先建后断、TURN 临时凭证；RK 客户端 `8c7e12b`：P2P Peer、模式切换、呼叫与 UI；公网信令联调（无媒体）通过，板端合成音频 P2P 待测 |
+| **视频 MVP + 10-23 修复** | ✅ 已发布 `bf1c985` | 单层 H.264（`62df51b`）；toffset 白名单过滤（`5e2d161`，固化测试机热补丁）；房间视频策略生效（`79d5223`：`enabled` 默认 true、`max_publishers` 按 producer 计数、同 uid 同 source 去重，违反 409）；`sfu.publish` 重试未应答的 recv offer（`0f62af9`）；bot 先注册 offer handler 再发布（`bf1c985`）。59 用例通过，3×3 bot 公网音频冒烟通过 |
 | S4 对讲形态（PTT/host） | 未开始 | — |
 | S5 稳定性 | 未开始 | — |
 
-**已发布到测试机**：`abea707`（S1 代码）；文档提交 `85f010a`。  
+**已发布到测试机**：`bf1c985`（S3 + H.264 视频 + 10-23 全部修复）；客户端 C5 提交 `8c7e12b`（`feat/rk3576-client`）。  
 **健康检查**：`http://47.117.159.193:8080/healthz`  
 **信令**：`ws://47.117.159.193:8080/talk/v1/ws`（子协议 `talk.v1.json`）  
 **开发 token**：`GET http://47.117.159.193:8080/dev/token?uid=xxx&rooms=room1`（仅 `TALK_ENV=dev`）
 
-### 下一步（S2）要做的事
+### 下一步（S3 收尾 / S4）要做的事
 
-1. 房间绑定 mediasoup Router + WebRtcServer（单端口 `TALK_RTC_PORT=44444`）。
-2. 实现协议第 6 节：`sfu.publish`、服务端 `sfu.offer`（全量订阅）、ICE/DTLS、`media.setMute` 真正 pause/resume Producer。
-3. SDP 适配（服务端用 mediasoup-client 的 ortc / RemoteSdp 思路，客户端只说标准 SDP）。
-4. 扩展 `tools/bot`：用 `@roamhq/wrtc` 或 `werift` 发 Opus，验证 4 bot 互通、0 丢包。
-5. 发布到测试机，公网验收；`talk-cli` 接入留到客户端侧并行。
+1. RK 客户端 C5 板端验证：两人自动 P2P、第三人切 SFU、呼叫接听、路径判定（`scripts/s3-smoke.py`）。
+2. 跨 NAT/强制中继场景与 P2P→SFU 断音时长实测。
+3. `talk-cli`（Windows）仍待本机环境和 `webrtc_sdk_hevc`，真人听音放到那时。
+4. 视频 P1（背景与方案见 wiki.md §8/§10）：producer pause/resume 状态广播（目前接收端只能靠 5 秒无帧超时回收画面）；同 mid producer 复用（ICE restart 重发布会连带重建全部订阅端 consumer，全员闪断）。
 
 详细阶段表见 [rtc-server-dev-plan.md §4.6](./rtc-server-dev-plan.md)。
+
+公网音频验收：
+
+```bash
+npm run bot -- --url http://47.117.159.193:8080 --count 4 --duration 3 --audio
+```
 
 ---
 
@@ -140,7 +146,7 @@ npm run bot -- --url http://47.117.159.193:8080 --room s1-accept --count 4 --dur
 | 事项 | 何时需要 |
 |---|---|
 | 3~4 名测试同事 + Windows/耳机/4G | S2 后真人联调 |
-| RK3576 板子 SSH、音频 codec、是否硬件回采 | RK 上板 / P3 前 |
+| RK3576 板子 SSH、音频 codec、是否硬件回采 | 板子已可访问（见 §8）；真实声卡映射/硬件 AEC 待现场验证 |
 | Windows 开发机与 `webrtc_sdk_hevc` 访问方式 | 编 `talk-cli` / S2 前尽量给 |
 
 ---
@@ -153,4 +159,31 @@ npm run bot -- --url http://47.117.159.193:8080 --room s1-accept --count 4 --dur
 | [talk-protocol.md](./talk-protocol.md) | 信令协议 v1 |
 | [rtc-server-dev-plan.md](./rtc-server-dev-plan.md) | 服务端开发计划与 S0/S1 执行记录 |
 | [rk3576-libwebrtc-build-plan.md](./rk3576-libwebrtc-build-plan.md) | RK3576 libwebrtc 编译 |
+| [RK3576_客户端_开发计划_b524300f.md](./RK3576_客户端_开发计划_b524300f.md) | RK3576 对讲客户端开发计划与实施进度（§9） |
+| [diagnosis-sfu-publish-409.md](./diagnosis-sfu-publish-409.md) | 并发入房 409 诊断报告与修复验证（§8） |
 | 本文 | 进度、下一步、机器账号、公钥、仓库 |
+
+---
+
+## 8. RK3576 对讲客户端（独立开发线）
+
+> 与服务端 S 阶段并行的纯 C++/Qt5 客户端。计划与验收边界见 `RK3576_客户端_开发计划_b524300f.md` §9。
+
+| 项 | 值 |
+|---|---|
+| 工作树 | `/home/wdz/projects/rtc-talk-rk3576`（git worktree） |
+| 分支 | `feat/rk3576-client`，已推送 origin（`git@github.com:feng9201/rtc-talk.git`） |
+| 里程碑提交 | `ad3d92d`（C0–C2：talk-core 信令+M146 音频域+Qt 界面+构建/打包/联调脚本）；`8c7e12b`（C5：呼叫、P2P 与 SFU/P2P 切换）；`257afa4`（P2P 路径显示） |
+| 交叉工具链 | `/opt/rockchip/rk3576/host`（GCC 12.4、CMake、Qt5 tools、webrtc-checkout、5.4GB 只读 sysroot） |
+| 开发板 | `root@172.16.123.11`，Buildroot，aarch64，Weston/Wayland，源码未 strip；板端口令沿用既有测试口令，未在此重复 |
+| 板上运行 | `client/scripts/run-qt.sh` 设 Wayland/XDG/字体目录；`diagnose-board.sh` 只读采集音频/显示/输入；诊断走 stdout，不在板写日志 |
+
+**当前进度**（详见计划 §9）：
+
+- C0/C1/C2 核心：host 与 arm64 双架构构建、初版包装载、协议 TDD、板端原生 M146 双 PC 经**公网 S2** ICE/DTLS-SRTP 打通、双/三客户端错峰 440Hz 合成音频往返无削波/丢包 —— 已通过（合成音频，非真人）。
+- C5（2026-10-20）：P2P Peer、`room.mediaMode` 先建后断、第三人切 SFU 后重新发布、`call.*` 与 Qt 呼叫/接听/挂断、TURN 提前刷新；host `ctest` 3/3、arm64 交叉编译通过，公网 S3 信令联调（`s3-smoke.py --audio none`）P2P 模式/先切后断/呼叫 20 项检查全过；**板端合成音频 P2P 与路径判定待开发板恢复后补测**（2026-10-20 晚 `172.16.123.11` SSH 不可达）。
+- 已修复：同瞬间并发入房 `sfu.publish 409`（服务端 `44e9f6d`；2026-10-20 连续 8 轮 `stagger=0` 双/三端通过，每房间 1 个 Router 且创建/关闭配对）。
+- 未收口：C3 真实声卡与 AEC；C5 板端媒体验证；C6–C7 依赖 S4/S5。
+- **职责边界**：界面验收（实体屏幕显示/分辨率/触摸响应）**由开发者自行处理**，不纳入本客户端工作线验收范围；本线仅保证离屏渲染、中文字体与 Wayland 启动环境就绪（`run-qt.sh`）。
+- 联调：`client/scripts/s2-smoke.py`（SFU）、`client/scripts/s3-smoke.py`（两人 P2P、第三人切 SFU、呼叫）；dev-token 运行时获取，凭据只存内存/stdin，不落日志/发布包。
+  - 板端：先用 `client/scripts/package.sh` 生成 `build/rk3576/package` 并传到板子，再执行 `s3-smoke.py --server http://47.117.159.193:8080 --ssh root@<板子> --cli <板上 talk-cli> --dev-token`；无媒体信令联调可用 `--audio none` 在本机跑。
