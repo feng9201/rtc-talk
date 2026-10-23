@@ -34,11 +34,16 @@ struct Options {
   bool list_devices = false;
   bool version = false;
   bool video = false;
+  // video.start 的采集源：screen（屏幕共享）或 camera（摄像头）。
+  std::string video_source = "screen";
   int duration = 10;
   // 不自动开麦：用来还原 Qt 界面的真实命令序列（界面只在用户点「开麦」时发 setMute）。
   bool no_auto_unmute = false;
   // 运行时开麦时刻：0 表示不主动发 media.setMute。
   int unmute_at = 0;
+  // 摄像头启停时刻：0 表示不操作，用来验证反复开关的完整链路。
+  int video_stop_at = 0;
+  int video_restart_at = 0;
   // 运行时切换采集源：<第 N 秒, mic|system>，可多次。
   std::vector<std::pair<int, std::string>> source_switches;
   talk::LogOptions log;
@@ -55,7 +60,8 @@ const char* const kUsage =
     "[--media-mode auto|sfu|p2p] "
     "[--config 文件] [--duration 秒] [--switch-source-at 秒:mic|system] "
     "[--unmute-at 秒] [--no-auto-unmute] "
-    "[--video] "
+    "[--video] [--video-source screen|camera] "
+    "[--video-stop-at 秒] [--video-restart-at 秒] "
     "[--log-file 路径] [--log-level trace|debug|info|warn|error] "
     "[--log-console]；单跑 --list-devices 枚举音频设备";
 
@@ -102,6 +108,8 @@ Options ParseOptions(int argc, char** argv) {
       options.config["audio_backend"] = value;
     } else if (arg == "--audio-source") {
       options.config["audio_source"] = value;
+    } else if (arg == "--video-source") {
+      options.video_source = value;
     } else if (arg == "--media-mode") {
       options.config["media_mode"] = value;
     } else if (arg == "--config") {
@@ -110,6 +118,10 @@ Options ParseOptions(int argc, char** argv) {
       options.duration = std::stoi(value);
     } else if (arg == "--unmute-at") {
       options.unmute_at = std::stoi(value);
+    } else if (arg == "--video-stop-at") {
+      options.video_stop_at = std::stoi(value);
+    } else if (arg == "--video-restart-at") {
+      options.video_restart_at = std::stoi(value);
     } else if (arg == "--switch-source-at") {
       const size_t sep = value.find(':');
       if (sep == std::string::npos) {
@@ -185,6 +197,18 @@ void Validate(const Options& options) {
   if (options.unmute_at < 0 || options.unmute_at > options.duration) {
     throw std::runtime_error("unmute-at 秒必须在 0..duration 之间");
   }
+  if (options.video_source != "screen" && options.video_source != "camera") {
+    throw std::runtime_error("video-source 必须是 screen/camera");
+  }
+  for (const int at : {options.video_stop_at, options.video_restart_at}) {
+    if (at < 0 || at > options.duration) {
+      throw std::runtime_error("video-stop-at/restart-at 秒必须在 0..duration 之间");
+    }
+  }
+  if (options.video_restart_at > 0 &&
+      options.video_restart_at <= options.video_stop_at) {
+    throw std::runtime_error("video-restart-at 必须大于 video-stop-at");
+  }
   for (const auto& [sec, source] : options.source_switches) {
     if (sec < 1 || sec > options.duration) {
       throw std::runtime_error("switch-source-at 秒必须在 duration 范围内");
@@ -222,6 +246,8 @@ class App {
 
   void SetVideo(bool video) { video_ = video; }
   bool video() const { return video_; }
+
+  void SetVideoSource(std::string source) { video_source_ = std::move(source); }
 
   void SetAudio(bool audio) { audio_ = audio; }
   bool audio() const { return audio_; }
@@ -305,7 +331,7 @@ class App {
         Command("media.setMute", {{"muted", false}});
       }
       if (video_) {
-        Command("video.start");
+        Command("video.start", {{"source", video_source_}});
       }
     }
     if (name == "left") {
@@ -333,6 +359,7 @@ class App {
   std::string room_;
   bool audio_ = false;
   bool video_ = false;
+  std::string video_source_ = "screen";
   bool no_auto_unmute_ = false;
   std::atomic<int> video_frames_{0};
   std::chrono::steady_clock::time_point last_frame_{};
@@ -372,6 +399,7 @@ int RunTalk(const Options& options) {
   app.SetAudio(config.value("audio_backend", std::string("none")) != "none");
   app.SetNoAutoUnmute(options.no_auto_unmute);
   app.SetVideo(options.video);
+  app.SetVideoSource(options.video_source);
   if (!app.Start(config)) {
     throw std::runtime_error("创建 core 失败");
   }
@@ -394,6 +422,14 @@ int RunTalk(const Options& options) {
     if (options.unmute_at > 0 && i + 1 == options.unmute_at) {
       std::cout << "开麦" << std::endl;
       app.Command("media.setMute", {{"muted", false}});
+    }
+    if (options.video_stop_at > 0 && i + 1 == options.video_stop_at) {
+      std::cout << "关闭视频 source=" << options.video_source << std::endl;
+      app.Command("video.stop", {{"source", options.video_source}});
+    }
+    if (options.video_restart_at > 0 && i + 1 == options.video_restart_at) {
+      std::cout << "重新开启视频 source=" << options.video_source << std::endl;
+      app.Command("video.start", {{"source", options.video_source}});
     }
     if (app.audio() && (i % 5 == 0 || i == options.duration - 1) &&
         !app.stats_pending()) {
