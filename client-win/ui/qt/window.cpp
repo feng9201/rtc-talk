@@ -4,7 +4,9 @@
 
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDateTime>
 #include <QFormLayout>
+#include <QGridLayout>
 #include <QHBoxLayout>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -18,6 +20,7 @@
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QSlider>
+#include <QStackedLayout>
 #include <QTimer>
 #include <QUrlQuery>
 #include <QVBoxLayout>
@@ -135,10 +138,13 @@ void TalkWindow::BuildUi() {
   join_ = new QPushButton(QStringLiteral("加入房间"));
   leave_ = new QPushButton(QStringLiteral("离开"));
   mute_ = new QPushButton(QStringLiteral("开麦"));
+  camera_ = new QPushButton(QStringLiteral("开摄像头"));
+  camera_->setToolTip(QStringLiteral("把本机摄像头共享给对端（仅 SFU 模式）"));
   video_ = new QPushButton(QStringLiteral("共享屏幕"));
   video_->setToolTip(QStringLiteral("把本机桌面共享给对端（仅 SFU 模式）"));
   auto* buttons = new QHBoxLayout;
-  for (auto* button : {connect_, disconnect_, join_, leave_, mute_, video_}) {
+  for (auto* button :
+       {connect_, disconnect_, join_, leave_, mute_, camera_, video_}) {
     buttons->addWidget(button);
   }
   layout->addLayout(buttons);
@@ -149,7 +155,23 @@ void TalkWindow::BuildUi() {
   layout->addWidget(media_);
 
   // 中部左右分栏：左侧远端画面自适应伸展，右侧成员与日志固定宽度。
-  video_view_ = new VideoView;
+  // 画面区用堆叠布局：没有视频时显示提示，有画面时切到宫格。
+  video_area_ = new QWidget;
+  video_area_->setMinimumSize(480, 270);
+  video_stack_ = new QStackedLayout(video_area_);
+  video_stack_->setContentsMargins(0, 0, 0, 0);
+  video_placeholder_ = new QLabel(QStringLiteral("等待远端视频"));
+  video_placeholder_->setAlignment(Qt::AlignCenter);
+  video_placeholder_->setStyleSheet(
+      QStringLiteral("background:#000;color:#9e9e9e;"));
+  video_grid_widget_ = new QWidget;
+  video_grid_widget_->setStyleSheet(QStringLiteral("background:#000;"));
+  video_grid_ = new QGridLayout(video_grid_widget_);
+  video_grid_->setContentsMargins(0, 0, 0, 0);
+  video_grid_->setSpacing(4);
+  video_stack_->addWidget(video_placeholder_);
+  video_stack_->addWidget(video_grid_widget_);
+  video_stack_->setCurrentWidget(video_placeholder_);
   members_ = new QListWidget;
   log_ = new QPlainTextEdit;
   log_->setReadOnly(true);
@@ -161,9 +183,16 @@ void TalkWindow::BuildUi() {
   side_panel->setFixedWidth(320);
   side_panel->setLayout(side);
   auto* center = new QHBoxLayout;
-  center->addWidget(video_view_, 1);
+  center->addWidget(video_area_, 1);
   center->addWidget(side_panel);
   layout->addLayout(center, 1);
+
+  // 对端停止共享或离房后不会再有该 mid 的帧，靠定时回收画面。
+  video_prune_timer_ = new QTimer(this);
+  video_prune_timer_->setInterval(1000);
+  connect(video_prune_timer_, &QTimer::timeout, this,
+          [this] { PruneVideoViews(); });
+  video_prune_timer_->start();
 
   http_ = new QNetworkAccessManager(this);
 }
@@ -207,10 +236,17 @@ void TalkWindow::ConnectSignals() {
     mute_->setEnabled(false);
     SendCommand("media.setMute", {{"muted", !muted_}});
   });
+  connect(camera_, &QPushButton::clicked, this, [this] {
+    // 结果由 video.state / result 事件回填，期间禁用以防连点。
+    camera_->setEnabled(false);
+    SendCommand(camera_on_ ? "video.stop" : "video.start",
+                {{"source", "camera"}});
+  });
   connect(video_, &QPushButton::clicked, this, [this] {
     // 结果由 video.state / result 事件回填，期间禁用以防连点。
     video_->setEnabled(false);
-    SendCommand(video_sharing_ ? "video.stop" : "video.start");
+    SendCommand(video_sharing_ ? "video.stop" : "video.start",
+                {{"source", "screen"}});
   });
   connect(devices_, &QPushButton::clicked, this,
           &TalkWindow::RefreshDevices);
@@ -295,12 +331,9 @@ bool TalkWindow::EnsureCore() {
     connect(core_, &CoreClient::Event, this, &TalkWindow::HandleEvent);
     connect(core_, &CoreClient::VideoFrame, this,
             [this](const QImage& frame, const QString& mid) {
-              // 一期只显示第一路：多路时仅记录一次，避免互抢画面。
-              if (!video_mid_.isEmpty() && video_mid_ != mid) {
-                return;
-              }
-              video_mid_ = mid;
-              video_view_->PushFrame(frame);
+              // 多路并存：每个 mid 一个画面，角标显示 uid/采集源。
+              EnsureVideoView(mid)->PushFrame(frame);
+              video_last_frame_ms_[mid] = QDateTime::currentMSecsSinceEpoch();
             });
   }
   if (!core_->Start(CoreConfig())) {
@@ -428,6 +461,7 @@ void TalkWindow::ResetButtons() {
   join_->setEnabled(false);
   leave_->setEnabled(false);
   mute_->setEnabled(false);
+  camera_->setEnabled(false);
   video_->setEnabled(false);
   devices_->setEnabled(true);
   backend_->setEnabled(true);
@@ -438,6 +472,8 @@ void TalkWindow::ResetButtons() {
   UpdateSourceControls();
   muted_ = true;
   mute_->setText(QStringLiteral("开麦"));
+  camera_on_ = false;
+  camera_->setText(QStringLiteral("开摄像头"));
   video_sharing_ = false;
   video_->setText(QStringLiteral("共享屏幕"));
   p2p_mode_ = false;
@@ -517,12 +553,24 @@ void TalkWindow::HandleEvent(const QString& name, const QJsonObject& data) {
                   .arg(state, data["path"].toString()));
     return;
   }
+  if (name == "video.track") {
+    // 服务端 consumer 元信息：用来给每路画面标出对端 uid 与采集源。
+    const QString mid = data["mid"].toString();
+    if (!mid.isEmpty()) {
+      video_tracks_[mid] = data;
+      UpdateVideoLabel(mid);
+      AppendLog(QStringLiteral("远端视频轨 mid=%1 uid=%2 source=%3")
+                    .arg(mid, data["uid"].toString(),
+                         data["source"].toString()));
+    }
+    return;
+  }
   if (name == "mode.changed") {
     const QString mode = data["mode"].toString(QStringLiteral("sfu"));
     ApplyMediaMode(mode);
     AppendLog(mode == QStringLiteral("p2p")
-                  ? QStringLiteral("媒体链路已切换为 P2P 直连，屏幕共享不可用")
-                  : QStringLiteral("媒体链路已切换为 SFU，可以共享屏幕"));
+                  ? QStringLiteral("媒体链路已切换为 P2P 直连，两路视频不可用")
+                  : QStringLiteral("媒体链路已切换为 SFU，可以开摄像头/共享屏幕"));
     return;
   }
   if (name == "left" || name == "room.closed") {
@@ -534,11 +582,12 @@ void TalkWindow::HandleEvent(const QString& name, const QJsonObject& data) {
     muted_ = true;
     mute_->setText(QStringLiteral("开麦"));
     // 离房后采集已由核心停止，本地只需清画面并注销回调。
+    camera_on_ = false;
+    camera_->setText(QStringLiteral("开摄像头"));
     video_sharing_ = false;
     video_->setText(QStringLiteral("共享屏幕"));
     ApplyVideoButtonState();
-    video_mid_.clear();
-    video_view_->Clear();
+    ClearVideoViews();
     if (core_ != nullptr) {
       core_->SetVideoCallback(false);
     }
@@ -606,8 +655,7 @@ void TalkWindow::HandleState(const QJsonObject& data) {
     peers_.clear();
     RefreshMembers();
     media_->setText(QStringLiteral("媒体：未建立"));
-    video_mid_.clear();
-    video_view_->Clear();
+    ClearVideoViews();
     if (core_ != nullptr) {
       core_->SetVideoCallback(false);
     }
@@ -653,19 +701,25 @@ void TalkWindow::ApplyMediaMode(const QString& mode) {
   ApplyVideoButtonState();
 }
 
-// 共享按钮的使能条件只在这里定义：离房或后端为 none 时不可点；
-// P2P 不支持共享，但正在共享时必须保留“停止共享”入口，否则停不下来。
+// 两路视频按钮的使能条件只在这里定义：离房或后端为 none 时不可点；
+// P2P 不支持视频，但正在采集时必须保留“停止”入口，否则停不下来。
 void TalkWindow::ApplyVideoButtonState() {
   const bool backend_ok =
       backend_->currentData().toString() != QStringLiteral("none");
-  video_->setEnabled(leave_->isEnabled() && backend_ok &&
-                     (!p2p_mode_ || video_sharing_));
+  const bool room_ok = leave_->isEnabled() && backend_ok;
+  camera_->setEnabled(room_ok && (!p2p_mode_ || camera_on_));
+  video_->setEnabled(room_ok && (!p2p_mode_ || video_sharing_));
   if (p2p_mode_) {
+    camera_->setToolTip(
+        camera_on_ ? QStringLiteral("P2P 模式不支持摄像头，点击停止当前采集")
+                   : QStringLiteral("P2P 模式暂不支持摄像头"));
     video_->setToolTip(
         video_sharing_
             ? QStringLiteral("P2P 模式不支持屏幕共享，点击停止当前共享")
             : QStringLiteral("P2P 模式暂不支持屏幕共享"));
   } else {
+    camera_->setToolTip(
+        QStringLiteral("把本机摄像头共享给对端（仅 SFU 模式）"));
     video_->setToolTip(
         QStringLiteral("把本机桌面共享给对端（仅 SFU 模式）"));
   }
@@ -673,6 +727,26 @@ void TalkWindow::ApplyVideoButtonState() {
 
 void TalkWindow::HandleVideoState(const QJsonObject& data) {
   const bool sharing = data["sharing"].toBool();
+  const QString source = data["source"].toString(QStringLiteral("screen"));
+  if (source == QStringLiteral("camera")) {
+    const bool changed = sharing != camera_on_;
+    camera_on_ = sharing;
+    camera_->setText(camera_on_ ? QStringLiteral("关闭摄像头")
+                                : QStringLiteral("开摄像头"));
+    ApplyVideoButtonState();
+    // 入房时也会收到 sharing=false，不能把发布/连接状态覆盖掉。
+    if (camera_on_) {
+      media_->setText(QStringLiteral("媒体：摄像头已开启"));
+    } else if (media_->text().contains(QStringLiteral("摄像头"))) {
+      media_->setText(QStringLiteral("媒体：摄像头已关闭"));
+    }
+    if (changed) {
+      AppendLog(camera_on_ ? QStringLiteral("摄像头已开启")
+                           : QStringLiteral("摄像头已关闭"));
+    }
+    return;
+  }
+
   const bool changed = sharing != video_sharing_;
   video_sharing_ = sharing;
   video_->setText(video_sharing_ ? QStringLiteral("停止共享")
@@ -760,6 +834,105 @@ void TalkWindow::HandleResult(const QJsonObject& data) {
     AppendLog(QString::fromUtf8(QJsonDocument(data["data"].toObject())
                                     .toJson(QJsonDocument::Compact)));
   }
+}
+
+VideoView* TalkWindow::EnsureVideoView(const QString& mid) {
+  const auto it = video_views_.find(mid);
+  if (it != video_views_.end()) {
+    return it.value();
+  }
+  auto* view = new VideoView(video_grid_widget_);
+  // 宫格内单路最小 240x135，四路 2x2 时整块仍保持在 480x270 以上。
+  view->setMinimumSize(240, 135);
+  video_views_.insert(mid, view);
+  video_last_frame_ms_.insert(mid, QDateTime::currentMSecsSinceEpoch());
+  UpdateVideoLabel(mid);
+  RelayoutVideoGrid();
+  AppendLog(QStringLiteral("远端视频路数 %1（新增 mid=%2）")
+                .arg(video_views_.size())
+                .arg(mid));
+  return view;
+}
+
+void TalkWindow::UpdateVideoLabel(const QString& mid) {
+  const auto it = video_views_.find(mid);
+  if (it == video_views_.end()) {
+    return;
+  }
+  const QJsonObject track = video_tracks_.value(mid);
+  const QString uid = track["uid"].toString();
+  const QString source = track["source"].toString();
+  QString label = uid.isEmpty() ? mid : uid;
+  if (source == "screen") {
+    label += QStringLiteral(" · 屏幕");
+  } else if (source == "camera") {
+    label += QStringLiteral(" · 摄像头");
+  }
+  it.value()->SetLabel(label);
+}
+
+void TalkWindow::RelayoutVideoGrid() {
+  // 只摘下布局项、不销毁画面，按新路数重新排位。
+  while (QLayoutItem* item = video_grid_->takeAt(0)) {
+    delete item;
+  }
+  for (int col = 0; col < 4; ++col) {
+    video_grid_->setColumnStretch(col, 0);
+  }
+  for (int row = 0; row < 16; ++row) {
+    video_grid_->setRowStretch(row, 0);
+  }
+  const int count = video_views_.size();
+  // 四路以内 2x2，再多到九路 3x3；后续要扩人数只需继续加列。
+  const int columns = count <= 1 ? 1 : (count <= 4 ? 2 : (count <= 9 ? 3 : 4));
+  int index = 0;
+  for (VideoView* view : video_views_) {
+    video_grid_->addWidget(view, index / columns, index % columns);
+    ++index;
+  }
+  for (int col = 0; col < columns; ++col) {
+    video_grid_->setColumnStretch(col, 1);
+  }
+  for (int row = 0; row * columns < count; ++row) {
+    video_grid_->setRowStretch(row, 1);
+  }
+  video_stack_->setCurrentWidget(count > 0 ? video_grid_widget_
+                                           : video_placeholder_);
+}
+
+void TalkWindow::PruneVideoViews() {
+  // 服务端关 producer 后不会有“轨道移除”回调，只能靠无帧超时清画面。
+  constexpr qint64 kIdleTimeoutMs = 5000;
+  const qint64 now = QDateTime::currentMSecsSinceEpoch();
+  bool changed = false;
+  for (auto it = video_views_.begin(); it != video_views_.end();) {
+    const qint64 last = video_last_frame_ms_.value(it.key(), 0);
+    if (now - last <= kIdleTimeoutMs) {
+      ++it;
+      continue;
+    }
+    AppendLog(QStringLiteral("远端视频 mid=%1 超过 %2 秒无帧，移除画面")
+                  .arg(it.key())
+                  .arg(kIdleTimeoutMs / 1000));
+    it.value()->deleteLater();
+    video_last_frame_ms_.remove(it.key());
+    video_tracks_.remove(it.key());
+    it = video_views_.erase(it);
+    changed = true;
+  }
+  if (changed) {
+    RelayoutVideoGrid();
+  }
+}
+
+void TalkWindow::ClearVideoViews() {
+  for (VideoView* view : video_views_) {
+    view->deleteLater();
+  }
+  video_views_.clear();
+  video_last_frame_ms_.clear();
+  video_tracks_.clear();
+  RelayoutVideoGrid();
 }
 
 void TalkWindow::HandleMediaError(const QString& name,

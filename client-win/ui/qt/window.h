@@ -12,6 +12,7 @@
 
 class QCheckBox;
 class QComboBox;
+class QGridLayout;
 class QLabel;
 class QLineEdit;
 class QListWidget;
@@ -19,6 +20,8 @@ class QNetworkAccessManager;
 class QPlainTextEdit;
 class QPushButton;
 class QSlider;
+class QStackedLayout;
+class QTimer;
 class CoreClient;
 class VideoView;
 
@@ -56,6 +59,12 @@ class TalkWindow : public QWidget {
   void HandleJoined(const QJsonObject& data);
   void HandleResult(const QJsonObject& data);
   void HandleVideoState(const QJsonObject& data);
+  // 多路远端视频：按 mid 建画面、按路数宫格排布，超时无帧自动回收。
+  VideoView* EnsureVideoView(const QString& mid);
+  void UpdateVideoLabel(const QString& mid);
+  void RelayoutVideoGrid();
+  void PruneVideoViews();
+  void ClearVideoViews();
   // 按链路模式（sfu/p2p）刷新只支持 SFU 的操作按钮。
   void ApplyMediaMode(const QString& mode);
   void ApplyVideoButtonState();
@@ -66,12 +75,15 @@ class TalkWindow : public QWidget {
   QString backend_override_;
   QString self_uid_;
   QString active_source_ = QStringLiteral("mic");
-  // 当前显示的视频 mid：一期只显示第一路，其余丢弃。
-  QString video_mid_;
   QMap<QString, QJsonObject> peers_;
+  // mid -> 画面、最近一帧时间戳（毫秒）、消费端元信息（uid/source 角标）。
+  QMap<QString, VideoView*> video_views_;
+  QMap<QString, qint64> video_last_frame_ms_;
+  QMap<QString, QJsonObject> video_tracks_;
   bool muted_ = true;
+  bool camera_on_ = false;
   bool video_sharing_ = false;
-  // 本次入房实际媒体模式：P2P 下屏幕共享不可用。
+  // 本次入房实际媒体模式：P2P 下两路视频都不可用。
   bool p2p_mode_ = false;
 
   QLineEdit* url_ = nullptr;
@@ -89,11 +101,17 @@ class TalkWindow : public QWidget {
   QPushButton* join_ = nullptr;
   QPushButton* leave_ = nullptr;
   QPushButton* mute_ = nullptr;
+  QPushButton* camera_ = nullptr;
   QPushButton* video_ = nullptr;
   QPushButton* devices_ = nullptr;
   QLabel* state_ = nullptr;
   QLabel* media_ = nullptr;
-  VideoView* video_view_ = nullptr;
+  QWidget* video_area_ = nullptr;
+  QWidget* video_grid_widget_ = nullptr;
+  QGridLayout* video_grid_ = nullptr;
+  QStackedLayout* video_stack_ = nullptr;
+  QLabel* video_placeholder_ = nullptr;
+  QTimer* video_prune_timer_ = nullptr;
   QListWidget* members_ = nullptr;
   QSlider* volume_ = nullptr;
   QPlainTextEdit* log_ = nullptr;

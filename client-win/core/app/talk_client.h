@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cstdint>
 #include <mutex>
+#include <set>
 #include <string>
 
 #include "base/event.h"
@@ -49,8 +50,9 @@ class TalkClient {
   std::mutex video_mutex_;
   talk_video_frame_fn video_callback_ = nullptr;
   void* video_userdata_ = nullptr;
-  // 首帧只记一次日志，用于确认“解码 → 渲染”这最后一跳是否通。
-  std::atomic<bool> video_first_frame_logged_{false};
+  // 每路 mid 各记一次首帧：多路时能看出是哪几路真的解码出了画面。
+  std::mutex video_first_frame_mutex_;
+  std::set<std::string> video_first_frame_mids_;
 };
 
 }  // namespace talk

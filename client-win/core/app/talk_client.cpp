@@ -94,8 +94,9 @@ void TalkClient::SetVideoFrameCallback(talk_video_frame_fn callback,
   video_callback_ = callback;
   video_userdata_ = callback != nullptr ? userdata : nullptr;
   if (callback != nullptr) {
-    // 重新订阅后允许再记一次首帧。
-    video_first_frame_logged_ = false;
+    // 重新订阅后允许各路再记一次首帧。
+    std::lock_guard<std::mutex> lock(video_first_frame_mutex_);
+    video_first_frame_mids_.clear();
   }
   TALK_LOG_INFO("app", "视频帧回调已{}", callback != nullptr ? "注册" : "取消");
 }
@@ -113,13 +114,19 @@ void TalkClient::DeliverVideoFrame(const VideoFrameView& view) {
       view.height <= 0) {
     return;
   }
-  if (!video_first_frame_logged_.exchange(true)) {
-    TALK_LOG_INFO("app", "首个远端视频帧 mid={} {}x{} stride={}",
-                  view.mid != nullptr ? view.mid : "", view.width,
-                  view.height, view.stride);
+  // 多路视频每路各记一次首帧，用来确认每个 mid 都真的解码出了画面。
+  const std::string mid = view.mid != nullptr ? view.mid : "";
+  bool first_frame = false;
+  {
+    std::lock_guard<std::mutex> lock(video_first_frame_mutex_);
+    first_frame = video_first_frame_mids_.insert(mid).second;
   }
-  callback(userdata, view.mid != nullptr ? view.mid : "", view.bgra,
-           view.width, view.height, view.stride, view.timestamp_us);
+  if (first_frame) {
+    TALK_LOG_INFO("app", "首个远端视频帧 mid={} {}x{} stride={}", mid,
+                  view.width, view.height, view.stride);
+  }
+  callback(userdata, mid.c_str(), view.bgra, view.width, view.height,
+           view.stride, view.timestamp_us);
 }
 
 }  // namespace talk

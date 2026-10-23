@@ -37,6 +37,14 @@ void VideoView::Clear() {
   update();
 }
 
+void VideoView::SetLabel(const QString& label) {
+  if (label_ == label) {
+    return;
+  }
+  label_ = label;
+  update();
+}
+
 void VideoView::ApplyPending() {
   if (pending_.isNull()) {
     return;
@@ -63,4 +71,13 @@ void VideoView::paintEvent(QPaintEvent* event) {
                    target);
   painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
   painter.drawImage(area, frame_);
+  if (!label_.isEmpty()) {
+    // 多路宫格下靠角标区分对端；半透明底避免亮画面看不清。
+    const QRect badge(8, 8, fontMetrics().horizontalAdvance(label_) + 12, 22);
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(QColor(0, 0, 0, 140));
+    painter.drawRoundedRect(badge, 4, 4);
+    painter.setPen(Qt::white);
+    painter.drawText(badge, Qt::AlignCenter, label_);
+  }
 }

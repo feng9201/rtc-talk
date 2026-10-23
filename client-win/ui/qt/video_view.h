@@ -20,6 +20,9 @@ class VideoView : public QWidget {
   // 清空画面（离开房间或断线）。
   void Clear();
 
+  // 左上角角标（对端 uid / 采集源）；空串表示不画。
+  void SetLabel(const QString& label);
+
  protected:
   void paintEvent(QPaintEvent* event) override;
 
@@ -29,6 +32,7 @@ class VideoView : public QWidget {
 
   QImage frame_;
   QImage pending_;
+  QString label_;
   QTimer* timer_ = nullptr;
 };
 
