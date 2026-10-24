@@ -83,8 +83,6 @@ class TalkWindow : public QWidget {
   bool muted_ = true;
   bool camera_on_ = false;
   bool video_sharing_ = false;
-  // 本次入房实际媒体模式：P2P 下两路视频都不可用。
-  bool p2p_mode_ = false;
 
   QLineEdit* url_ = nullptr;
   QLineEdit* uid_ = nullptr;

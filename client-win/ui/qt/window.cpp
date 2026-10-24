@@ -139,9 +139,9 @@ void TalkWindow::BuildUi() {
   leave_ = new QPushButton(QStringLiteral("离开"));
   mute_ = new QPushButton(QStringLiteral("开麦"));
   camera_ = new QPushButton(QStringLiteral("开摄像头"));
-  camera_->setToolTip(QStringLiteral("把本机摄像头共享给对端（仅 SFU 模式）"));
+  camera_->setToolTip(QStringLiteral("把本机摄像头共享给对端（P2P 与 SFU 均支持）"));
   video_ = new QPushButton(QStringLiteral("共享屏幕"));
-  video_->setToolTip(QStringLiteral("把本机桌面共享给对端（仅 SFU 模式）"));
+  video_->setToolTip(QStringLiteral("把本机桌面共享给对端（P2P 与 SFU 均支持）"));
   auto* buttons = new QHBoxLayout;
   for (auto* button :
        {connect_, disconnect_, join_, leave_, mute_, camera_, video_}) {
@@ -476,7 +476,6 @@ void TalkWindow::ResetButtons() {
   camera_->setText(QStringLiteral("开摄像头"));
   video_sharing_ = false;
   video_->setText(QStringLiteral("共享屏幕"));
-  p2p_mode_ = false;
 }
 
 void TalkWindow::RefreshMembers() {
@@ -569,8 +568,8 @@ void TalkWindow::HandleEvent(const QString& name, const QJsonObject& data) {
     const QString mode = data["mode"].toString(QStringLiteral("sfu"));
     ApplyMediaMode(mode);
     AppendLog(mode == QStringLiteral("p2p")
-                  ? QStringLiteral("媒体链路已切换为 P2P 直连，两路视频不可用")
-                  : QStringLiteral("媒体链路已切换为 SFU，可以开摄像头/共享屏幕"));
+                  ? QStringLiteral("媒体链路已切换为 P2P 直连，视频走点对点直传")
+                  : QStringLiteral("媒体链路已切换为 SFU，视频经服务器转发"));
     return;
   }
   if (name == "left" || name == "room.closed") {
@@ -687,42 +686,33 @@ void TalkWindow::HandleJoined(const QJsonObject& data) {
   if (backend_->currentData().toString() == "none") {
     mute_->setEnabled(true);
   }
-  // 重新入房后恢复帧回调；P2P 一期不做视频，按钮保留但置灰。
+  // 重新入房后恢复帧回调。
   if (core_ != nullptr) {
     core_->SetVideoCallback(true);
   }
   ApplyMediaMode(data["media_mode"].toString(QStringLiteral("sfu")));
 }
 
-// 按链路模式刷新共享屏幕开关：服务端会在房间人数变化时下发
-// room.mediaMode，模式只能在收到 mode.changed 时更新，不能只看入房那一刻。
+// 服务端会在房间人数变化时下发 room.mediaMode（2 人 P2P / 3 人以上 SFU），
+// 两种链路都支持摄像头与屏幕共享，这里只需按最新状态刷新按钮。
 void TalkWindow::ApplyMediaMode(const QString& mode) {
-  p2p_mode_ = mode == QStringLiteral("p2p");
+  // 目前两种模式对视频的控制一致，保留 mode 入参便于后续按链路加差异限制。
+  Q_UNUSED(mode);
   ApplyVideoButtonState();
 }
 
-// 两路视频按钮的使能条件只在这里定义：离房或后端为 none 时不可点；
-// P2P 不支持视频，但正在采集时必须保留“停止”入口，否则停不下来。
+// 两路视频按钮的使能条件只在这里定义：离房或后端为 none 时不可点。
+// P2P 与 SFU 都支持视频，按钮不再按模式置灰。
 void TalkWindow::ApplyVideoButtonState() {
   const bool backend_ok =
       backend_->currentData().toString() != QStringLiteral("none");
   const bool room_ok = leave_->isEnabled() && backend_ok;
-  camera_->setEnabled(room_ok && (!p2p_mode_ || camera_on_));
-  video_->setEnabled(room_ok && (!p2p_mode_ || video_sharing_));
-  if (p2p_mode_) {
-    camera_->setToolTip(
-        camera_on_ ? QStringLiteral("P2P 模式不支持摄像头，点击停止当前采集")
-                   : QStringLiteral("P2P 模式暂不支持摄像头"));
-    video_->setToolTip(
-        video_sharing_
-            ? QStringLiteral("P2P 模式不支持屏幕共享，点击停止当前共享")
-            : QStringLiteral("P2P 模式暂不支持屏幕共享"));
-  } else {
-    camera_->setToolTip(
-        QStringLiteral("把本机摄像头共享给对端（仅 SFU 模式）"));
-    video_->setToolTip(
-        QStringLiteral("把本机桌面共享给对端（仅 SFU 模式）"));
-  }
+  camera_->setEnabled(room_ok);
+  video_->setEnabled(room_ok);
+  camera_->setToolTip(
+      QStringLiteral("把本机摄像头共享给对端（P2P 与 SFU 均支持）"));
+  video_->setToolTip(
+      QStringLiteral("把本机桌面共享给对端（P2P 与 SFU 均支持）"));
 }
 
 void TalkWindow::HandleVideoState(const QJsonObject& data) {
