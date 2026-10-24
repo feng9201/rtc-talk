@@ -50,7 +50,9 @@ export function parseSdp(sdp: string): ParsedSdp {
 
   for (const m of sdpObject.media ?? []) {
     const kind = m.type === 'video' ? 'video' : m.type === 'audio' ? 'audio' : undefined;
-    const mid = m.mid ?? String(tracks.length);
+    // sdp-transform 会把纯数字 mid 解析成 number；统一转 string，与客户端
+    // tracks[].mid、协议中的 mid 一致，否则严格比较错配（两路视频被判成同 source）
+    const mid = String(m.mid ?? tracks.length);
     const direction = m.direction ?? 'sendrecv';
     if (!kind) {
       tracks.push({ mid, kind: 'audio', direction: 'inactive', closed: true });
