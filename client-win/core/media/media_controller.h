@@ -137,6 +137,8 @@ class MediaController {
   uint64_t switch_seq_ = 0;
   std::function<void()> on_sfu_ready_;
   Json consumers_ = Json::object();
+  // P2P 视频 mid → 采集源：界面靠它给直连画面打对端/摄像头/屏幕标。
+  std::map<std::string, std::string> p2p_video_sources_;
 
   struct StatsBaseline {
     uint64_t received = 0;

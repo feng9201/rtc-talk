@@ -315,10 +315,6 @@ void CallSession::HandleVideoStart(uint64_t id, const std::string& method,
     Complete(id, method, Failure("", 409, "媒体未启用"));
     return;
   }
-  if (media_.mode() == MediaController::Mode::kP2p) {
-    Complete(id, method, Failure("", 409, "P2P 模式暂不支持视频"));
-    return;
-  }
   uint64_t& epoch = is_camera ? camera_epoch_ : video_epoch_;
   const uint64_t generation = ++epoch;
   TALK_LOG_INFO("session", "启动视频 source={} generation={}", source,
@@ -353,6 +349,11 @@ void CallSession::HandleVideoStart(uint64_t id, const std::string& method,
     };
     if (!is_camera) {
       // 屏幕路 producer 在 publish 时就是 resume，启停只靠本地 sender。
+      finish({{"ok", true}});
+      return;
+    }
+    if (media_.mode() == MediaController::Mode::kP2p) {
+      // P2P 没有服务端 producer，sender 激活即生效。
       finish({{"ok", true}});
       return;
     }
@@ -400,6 +401,11 @@ void CallSession::HandleVideoStop(uint64_t id, const std::string& method,
     events_.Emit("video.state", {{"sharing", false}, {"source", source}});
     if (!is_camera) {
       // 屏幕路 producer 常驻 resume，停采即停流，无需通知服务端。
+      Complete(id, method, Response("", Json::object()));
+      return;
+    }
+    if (media_.mode() == MediaController::Mode::kP2p) {
+      // P2P 不经过服务端 producer，本地 sender 已关，直接返回。
       Complete(id, method, Response("", Json::object()));
       return;
     }
@@ -680,8 +686,20 @@ void CallSession::HandleMediaModeRequest(const std::string& id, Json data) {
     // 先通知界面：共享屏幕等只支持 SFU 的能力要立刻跟着放开，
     // 不必等发布与订阅全部完成。
     EmitModeChanged("sfu");
-    media_.SwitchToSfu(
-        [this, id] { signaling_.Send(Response(id, Json::object())); });
+    media_.SwitchToSfu([this, id] {
+      signaling_.Send(Response(id, Json::object()));
+      // P2P 期间摄像头 producer 一直 paused（没有走 setMute），切回 SFU
+      // 重新发布后需显式恢复，否则对端只能看到最后一张画面。
+      if (camera_sharing_) {
+        signaling_.Request(
+            "media.setMute", {{"source", "camera"}, {"muted", false}},
+            [](Json result) {
+              if (!result.value("ok", false)) {
+                TALK_LOG_WARN("session", "切回 SFU 后恢复摄像头 producer 失败");
+              }
+            });
+      }
+    });
     return;
   }
   TALK_LOG_WARN("session", "切换媒体模式失败：mode={} 无效", mode);

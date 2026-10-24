@@ -66,6 +66,8 @@ class WebRtcMedia : public Media {
                      const std::string& stream_id);
   // 按当前静音/暂停/共享状态重设 SFU 上行 sender，SDP 落地后必须补一次。
   void ApplySendState();
+  // P2P 与 SFU 一样预发布两路视频 m-line，启停只切对应 sender。
+  void ApplyP2pVideoState();
   Json TrackDescriptions(const std::string& audio_mid,
                          const std::string& camera_mid,
                          const std::string& screen_mid) const;

@@ -99,6 +99,9 @@ void PeerConnection::Close() {
       pc_ = nullptr;
     }
     senders_.clear();
+    // 关掉后同一个包装对象还可能被复用（P2P 重建），暂停标志归零。
+    receive_paused_ = false;
+    video_paused_ = false;
     path_.clear();
   });
 }
@@ -133,6 +136,16 @@ bool PeerConnection::AddTrack(
     }
     // 同一 track 重复添加不重复开 transceiver（按 track id 查重）。
     if (!key.empty() && senders_.find(key) != senders_.end()) {
+      return true;
+    }
+    // 应答方已经落地远端 offer：必须用 AddTrack 复用远端 m-line 的
+    // transceiver；再 AddTransceiver 会多出一组轨道（应答里是 recvonly，只收不发）。
+    if (pc_->remote_description() != nullptr) {
+      auto reused = pc_->AddTrack(track, {stream_id});
+      if (!reused.ok()) {
+        return false;
+      }
+      senders_[key] = reused.value();
       return true;
     }
     webrtc::RtpTransceiverInit init;
@@ -297,6 +310,9 @@ bool PeerConnection::SetSenderActiveOnSignaling(const std::string& mid,
       encoding.active = active;
       if (transceiver->media_type() == webrtc::MediaType::AUDIO) {
         encoding.max_bitrate_bps = kAudioMaxBitrateBps;
+      } else {
+        // AddTrack 复用的路径没有 transceiver init，码率上限在这里补齐。
+        encoding.max_bitrate_bps = kVideoMaxBitrateBps;
       }
     }
     if (!sender->SetParameters(parameters).ok()) {
@@ -398,6 +414,12 @@ void PeerConnection::SetReceivePaused(bool paused) {
       [this, paused] { ApplyReceiveStateOnSignaling(paused); });
 }
 
+void PeerConnection::SetVideoReceivePaused(bool paused) {
+  video_paused_ = paused;
+  RunOnSignaling(
+      [this, paused] { ApplyVideoReceiveStateOnSignaling(paused); });
+}
+
 void PeerConnection::set_gain(double gain) {
   gain_ = gain;
   RunOnSignaling([this, gain] { ApplyGainOnSignaling(gain); });
@@ -425,7 +447,17 @@ void PeerConnection::ApplyReceiveStateOnSignaling(bool paused) {
   for (const auto& receiver : pc_->GetReceivers()) {
     auto track = receiver->track();
     if (track) {
-      track->set_enabled(!paused);
+      // 视频额外受 video_paused_ 控，音频只看整体暂停。
+      const bool video = track->kind() == "video";
+      track->set_enabled(!paused && !(video && video_paused_.load()));
+    }
+  }
+}
+
+void PeerConnection::ApplyVideoReceiveStateOnSignaling(bool paused) {
+  for (auto& entry : remote_videos_) {
+    if (entry.second.track) {
+      entry.second.track->set_enabled(!paused && !receive_paused_.load());
     }
   }
 }
@@ -747,7 +779,7 @@ void PeerConnection::OnTrack(
     AttachRemoteVideoOnSignaling(
         webrtc::scoped_refptr<webrtc::VideoTrackInterface>(video),
         transceiver->mid().value_or(""));
-    track->set_enabled(!receive_paused_.load());
+    track->set_enabled(!receive_paused_.load() && !video_paused_.load());
   }
   if (event_) {
     event_("media.track", {{"pc", name_},

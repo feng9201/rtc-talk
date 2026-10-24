@@ -613,6 +613,18 @@ void MediaController::HandleMediaEvent(std::string name, Json data) {
                   data.value("pc", std::string()),
                   data.value("kind", std::string()),
                   data.value("mid", std::string()));
+    const std::string mid = data.value("mid", std::string());
+    if (data.value("pc", std::string()) == "p2p" &&
+        data.value("kind", std::string()) == "video" && !p2p_peer_.empty() &&
+        !mid.empty() &&
+        p2p_video_sources_.find(mid) == p2p_video_sources_.end()) {
+      // P2P m-line 顺序同 SFU（音频/摄像头/屏幕）：先到的是摄像头，后到是屏幕。
+      const std::string source =
+          p2p_video_sources_.empty() ? "camera" : "screen";
+      p2p_video_sources_[mid] = source;
+      events_.Emit("video.track",
+                   {{"mid", mid}, {"uid", p2p_peer_}, {"source", source}});
+    }
     events_.Emit(name, std::move(data));
     return;
   }
@@ -679,6 +691,7 @@ void MediaController::CloseP2p() {
        nullptr, false);
   p2p_session_.clear();
   p2p_peer_.clear();
+  p2p_video_sources_.clear();
   p2p_started_ = false;
   p2p_connected_ = false;
 }

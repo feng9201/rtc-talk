@@ -61,6 +61,8 @@ class PeerConnection : public webrtc::PeerConnectionObserver {
   void SetVideoSink(VideoFrameSink sink);
 
   void SetReceivePaused(bool paused);
+  // 只暂停视频下行：P2P 与 SFU 同名 mid 重叠时避免画面互盖。
+  void SetVideoReceivePaused(bool paused);
   void set_gain(double gain);
 
   Json Stats();
@@ -88,6 +90,7 @@ class PeerConnection : public webrtc::PeerConnectionObserver {
 
   void ApplyGainOnSignaling(double gain);
   void ApplyReceiveStateOnSignaling(bool paused);
+  void ApplyVideoReceiveStateOnSignaling(bool paused);
   bool AddTrack(
       TrackKind kind,
       webrtc::scoped_refptr<webrtc::MediaStreamTrackInterface> track,
@@ -124,6 +127,7 @@ class PeerConnection : public webrtc::PeerConnectionObserver {
   std::map<std::string, RemoteVideo> remote_videos_;
   std::atomic<double> gain_{0.5};
   std::atomic<bool> receive_paused_{false};
+  std::atomic<bool> video_paused_{false};
   std::string path_;
 };
 

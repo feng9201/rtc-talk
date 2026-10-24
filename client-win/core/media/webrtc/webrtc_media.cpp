@@ -7,6 +7,7 @@
 
 #include "api/audio_options.h"
 #include "api/make_ref_counted.h"
+#include "base/log.h"
 #include "media/webrtc/audio_device.h"
 #include "media/webrtc/media_stats.h"
 
@@ -166,7 +167,8 @@ Json WebRtcMedia::Answer(const std::string& sdp) {
 }
 
 Json WebRtcMedia::StartP2p(bool offerer) {
-  if (!environment_ || !SelectDevices(true) || !EnsureAudioTrack()) {
+  if (!environment_ || !SelectDevices(true) || !EnsureAudioTrack() ||
+      !EnsureVideoTracks()) {
     return Failed();
   }
   // answerer 等收到 offer 时再建 PC，避免刚建就丢掉。
@@ -184,10 +186,18 @@ Json WebRtcMedia::StartP2p(bool offerer) {
                      "talk-p2p")) {
     return Failed();
   }
+  // 与 SFU 上行同序预发布两路视频：音频/摄像头/屏幕，启停只切 sender。
+  if (!AddVideoTrack(*p2p_, camera_track_,
+                     webrtc::RtpTransceiverDirection::kSendRecv, "talk-p2p") ||
+      !AddVideoTrack(*p2p_, video_track_,
+                     webrtc::RtpTransceiverDirection::kSendRecv, "talk-p2p")) {
+    return Failed();
+  }
   if (!p2p_->CreateAndSetLocal(true)) {
     Fail("创建 P2P offer 失败");
     return Failed();
   }
+  ApplyP2pVideoState();
   std::string sdp;
   if (!p2p_->GetLocalSdp(&sdp)) {
     Fail("P2P SDP 序列化失败");
@@ -197,7 +207,8 @@ Json WebRtcMedia::StartP2p(bool offerer) {
 }
 
 Json WebRtcMedia::AnswerP2p(const std::string& sdp) {
-  if (!environment_ || !SelectDevices(true) || !EnsureAudioTrack()) {
+  if (!environment_ || !SelectDevices(true) || !EnsureAudioTrack() ||
+      !EnsureVideoTracks()) {
     return Failed();
   }
   if (!p2p_->Create(environment_->factory(), environment_->rtc_config())) {
@@ -205,12 +216,21 @@ Json WebRtcMedia::AnswerP2p(const std::string& sdp) {
     return Failed();
   }
   environment_->audio()->EnsurePlayout();
+  // 先应用远端 offer，再挂轨道：应答方用 AddTrack 复用 offer 里的 m-line，
+  // 顺序反过来会多出一组 recvonly 轨道，表现为只收不发。
+  if (!p2p_->SetRemote(webrtc::SdpType::kOffer, sdp)) {
+    Fail("设置 P2P offer 失败");
+    return Failed();
+  }
   if (!AddAudioTrack(*p2p_, webrtc::RtpTransceiverDirection::kSendRecv,
                      "talk-p2p")) {
     return Failed();
   }
-  if (!p2p_->SetRemote(webrtc::SdpType::kOffer, sdp)) {
-    Fail("设置 P2P offer 失败");
+  // m-line 顺序由 offer 决定（音频/摄像头/屏幕），这里按 kind 依次挂轨。
+  if (!AddVideoTrack(*p2p_, camera_track_,
+                     webrtc::RtpTransceiverDirection::kSendRecv, "talk-p2p") ||
+      !AddVideoTrack(*p2p_, video_track_,
+                     webrtc::RtpTransceiverDirection::kSendRecv, "talk-p2p")) {
     return Failed();
   }
   if (!p2p_->CreateAndSetLocal(false)) {
@@ -218,6 +238,7 @@ Json WebRtcMedia::AnswerP2p(const std::string& sdp) {
     return Failed();
   }
   p2p_->set_gain(gain_.load());
+  ApplyP2pVideoState();
   std::string out;
   if (!p2p_->GetLocalSdp(&out)) {
     Fail("P2P SDP 序列化失败");
@@ -232,6 +253,8 @@ Json WebRtcMedia::AcceptP2p(const std::string& sdp) {
     return Failed();
   }
   p2p_->set_gain(gain_.load());
+  // 协商期间用户可能已点共享，这里按当前状态补一次视频 sender。
+  ApplyP2pVideoState();
   return Json::object();
 }
 
@@ -303,10 +326,42 @@ void WebRtcMedia::ApplySendState() {
                          video_sharing_.load() && !paused);
 }
 
+void WebRtcMedia::ApplyP2pVideoState() {
+  if (!p2p_) {
+    return;
+  }
+  // P2P 与 SFU 的 m-line 顺序一致，第 0 路摄像头、第 1 路屏幕。
+  std::string camera_mid;
+  std::string screen_mid;
+  const bool has_camera = p2p_->MidFor(TrackKind::kVideo, 0, &camera_mid);
+  const bool has_screen = p2p_->MidFor(TrackKind::kVideo, 1, &screen_mid);
+  const bool camera_ok =
+      p2p_->SetSenderActive(TrackKind::kVideo, 0, camera_sharing_.load());
+  const bool screen_ok =
+      p2p_->SetSenderActive(TrackKind::kVideo, 1, video_sharing_.load());
+  TALK_LOG_INFO("media",
+                "P2P 视频状态 camera_mid={}({}) screen_mid={}({}) 直播中={}/{} "
+                "ok={}/{}",
+                camera_mid, has_camera ? "有" : "无", screen_mid,
+                has_screen ? "有" : "无", camera_sharing_.load(),
+                video_sharing_.load(), camera_ok, screen_ok);
+}
+
 void WebRtcMedia::SfuPause(bool paused) {
   sfu_paused_ = paused;
   if (recv_) {
     recv_->SetReceivePaused(paused);
+  }
+  if (p2p_) {
+    if (paused) {
+      // 进 P2P：直连画面接管，P2P 视频下行恢复。
+      p2p_->SetVideoReceivePaused(false);
+    } else {
+      // 切回 SFU：先停 P2P 视频收发，避免两路 mid 同名画面互相覆盖。
+      p2p_->SetSenderActive(TrackKind::kVideo, 0, false);
+      p2p_->SetSenderActive(TrackKind::kVideo, 1, false);
+      p2p_->SetVideoReceivePaused(true);
+    }
   }
   ApplySendState();
 }
@@ -337,8 +392,16 @@ Json WebRtcMedia::StartVideo(const std::string& source) {
                        : error);
     return Failed();
   }
-  if (!send_ || !send_->SetSenderActive(TrackKind::kVideo, is_camera ? 0 : 1,
-                                        !sfu_paused_.load())) {
+  // P2P 期间 SFU 上行处于暂停，只激活直连 sender；SFU 侧等切回时由
+  // ApplySendState 按 sharing 状态恢复。
+  const int index = is_camera ? 0 : 1;
+  const bool paused = sfu_paused_.load();
+  bool ok = send_ ? send_->SetSenderActive(TrackKind::kVideo, index, !paused)
+                  : false;
+  ok = p2p_->SetSenderActive(TrackKind::kVideo, index, true) && ok;
+  TALK_LOG_INFO("media", "视频 sender source={} sfu_paused={} ok={}", source,
+                paused, ok);
+  if (!ok) {
     if (is_camera) {
       camera_source_->Stop();
     } else {
@@ -379,6 +442,9 @@ Json WebRtcMedia::StopVideo(const std::string& source) {
   if (send_) {
     send_->SetSenderActive(TrackKind::kVideo, is_camera ? 0 : 1, false);
   }
+  if (p2p_) {
+    p2p_->SetSenderActive(TrackKind::kVideo, is_camera ? 0 : 1, false);
+  }
   return {{"sharing", false}, {"source", source}};
 }
 
@@ -387,6 +453,10 @@ void WebRtcMedia::SetVideoSink(VideoFrameSink sink) {
   // 已建好的接收链立即生效；还没建则在 Answer 时下发。
   if (recv_) {
     recv_->SetVideoSink(video_sink_);
+  }
+  // P2P 的远端视频轨也走同一个 sink，否则直连画面进不了界面。
+  if (p2p_) {
+    p2p_->SetVideoSink(video_sink_);
   }
 }
 
@@ -420,6 +490,10 @@ Json WebRtcMedia::GetStats() {
   send_state["muted"] = muted_.load();
   send_state["paused"] = sfu_paused_.load();
   out["send_active"] = std::move(send_state);
+  // P2P 上行 sender 真实状态：直连画面不动时先看这里。
+  if (p2p_) {
+    out["p2p_send_active"] = p2p_->SenderActiveState();
+  }
   return out;
 }
 

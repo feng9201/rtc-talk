@@ -46,7 +46,7 @@ TALK_API talk_handle* talk_create(const talk_options* options);
  * 未实现的命令本地返回 501；不透传未知命令。
  * connect: {url,token}；auth.update: {token}，用于后续重连。
  * audio.setSource: {source: mic|system}，运行时切换采集源（系统音=WASAPI loopback）。
- * video.start / video.stop: 屏幕共享启停（仅 SFU；P2P 返回 409）。
+ * video.start / video.stop: 摄像头/屏幕共享启停（SFU 与 P2P 均支持）。
  * room.join 使用协议参数。
  * 事件含 p2p.started / p2p.state（S3，服务端下发的 room.mediaMode 由核心自动应答）。 */
 TALK_API uint64_t talk_command(talk_handle*, const char* method,
