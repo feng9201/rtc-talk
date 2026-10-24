@@ -3,7 +3,7 @@
 > 配套文档：[项目计划](./project-plan.md) · [信令协议](./talk-protocol.md) · [环境/账号/进度速查](./env-access.md) · [RK3576 libwebrtc 编译计划](./rk3576-libwebrtc-build-plan.md)
 > 本文只覆盖**服务端（talk-server + mediasoup + coturn）**的开发、部署与联调；客户端核心库 talk-core 见项目计划。
 >
-> **进度速览（2026-10-21）**：S0 ✅ · S1 ✅ · S2 ✅ · S3 ✅（已发布测试机 `36a5d09`）· **下一步服务端视频 MVP**（S5 音频稳定性由真人联调并行；S4 后置）。机器账号、公钥、口令见本地 [env-access.md](./env-access.md)（该文件含口令，推送时不要带上它的改动）。
+> **进度速览（2026-10-24）**：S0 ✅ · S1 ✅ · S2 ✅ · S3 ✅ · **视频 MVP ✅**（单层 H.264 `62df51b`，随后 toffset / 视频策略 / offer 重试 / mid 归一化修复均已发布，测试机 `fd84db5`；59 用例、bot 公网冒烟通过）· **下一步：Windows 客户端联调优先（RK 端暂停）**，服务端 S4/S5 后置。机器账号、公钥、口令见本地 [env-access.md](./env-access.md)（该文件含口令，推送时不要带上它的改动）。
 
 ## 1. 两台机器现状（2026-10-18 实测）
 
@@ -184,6 +184,8 @@ Cursor 改代码 → 容器里 tsx watch 热重载 → bot / talk-cli 在局域�
 | **S4 对讲形态（最后）** | `floor.*`（PTT 抢麦、排队、超时收回）；`host.*`；发言人和音量通知 | PTT 按下到出声 < 300ms；主持人静音和踢人生效 | 2 天 |
 
 2026-10-21 决定：四人全双工联调不依赖 S4。房间默认 `talk_mode=free`、`max_speakers=0`，四人同时开麦即可。音频稳定性由真人并行测；服务端先做单层 H.264，H.265 和 Simulcast 后续再做，S4 放到最后。测试机继续跑 `36a5d09`，视频代码验证通过后再单独发布。
+
+2026-10-24 决定：客户端联调优先级改为 **Windows 先行**（`feat/windows-client`：两路视频上行、多路宫格、真人听音，对测试机 `fd84db5` 实测），**RK3576 客户端暂停**（C5 代码已完成于 `feat/rk3576-client`，板端媒体验证后置，恢复时从其计划的验证清单接续）。服务端视频相关修复已全部发布：toffset 白名单（`5e2d161`）、房间视频策略（`79d5223`）、`sfu.publish` 重试未应答 recv offer（`0f62af9`）、SDP mid 归一化 string（`fd84db5`，修复两路视频 409）。
 
 服务端合计约 **2~3 周**能达到"测试机上稳定支撑 3~4 人对讲"。客户端 talk-core（Windows → RK → macOS）和 RK3576 的 libwebrtc 编译并行推进。S2 一完成，客户端就可以接入真实服务端。
 
