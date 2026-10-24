@@ -1,7 +1,7 @@
 # 环境、账号与进度速查
 
 > 给接手人或换机器时用。口令只写在测试机用途上，**不要**把测试机密码同步到正式环境。
-> 更新：2026-10-23（toffset / 视频策略 / offer 竞态修复已发布 `bf1c985`）
+> 更新：2026-10-24（Windows 客户端视频一期完成，P2P 支持摄像头/屏幕共享）
 
 ## 1. 当前进度
 
@@ -12,6 +12,7 @@
 | **S2 SFU 语音 MVP** | ✅ 完成 | Router + WebRtcServer、标准 SDP 发布/订阅、开关麦 pause/resume；werift bot 互通 Opus |
 | **S3 P2P 与模式切换** | ✅ 服务端完成 · 客户端 C5 代码完成 | 服务端 `36a5d09`：`call.*`、`p2p.*` 转发、`room.mediaMode` 先建后断、TURN 临时凭证；RK 客户端 `8c7e12b`：P2P Peer、模式切换、呼叫与 UI；公网信令联调（无媒体）通过，板端合成音频 P2P 待测 |
 | **视频 MVP + 10-23 修复** | ✅ 已发布 `bf1c985` | 单层 H.264（`62df51b`）；toffset 白名单过滤（`5e2d161`，固化测试机热补丁）；房间视频策略生效（`79d5223`：`enabled` 默认 true、`max_publishers` 按 producer 计数、同 uid 同 source 去重，违反 409）；`sfu.publish` 重试未应答的 recv offer（`0f62af9`）；bot 先注册 offer handler 再发布（`bf1c985`）。59 用例通过，3×3 bot 公网音频冒烟通过 |
+| **Windows 客户端视频一期** | ✅ 代码完成 · 已联调 | `client-win`（`feat/windows-client`）：SFU 多人视频与一人两路（摄像头+屏幕）；P2P 预发布 audio/camera/screen 三条 m-line，第三人入房自动切 SFU 续传；P2P 下视频启停与 UI 按钮放开。`talk-cli` 公网双端联调：P2P 摄像头/屏幕 720p15 双向收发、三切 SFU 无断流、P2P 下 `video.stop/start` 正常；服务端零改动 |
 | S4 对讲形态（PTT/host） | 未开始 | — |
 | S5 稳定性 | 未开始 | — |
 
@@ -24,7 +25,7 @@
 
 1. RK 客户端 C5 板端验证：两人自动 P2P、第三人切 SFU、呼叫接听、路径判定（`scripts/s3-smoke.py`）。
 2. 跨 NAT/强制中继场景与 P2P→SFU 断音时长实测。
-3. `talk-cli`（Windows）仍待本机环境和 `webrtc_sdk_hevc`，真人听音放到那时。
+3. Windows 客户端 Qt 界面真人验收：本地/远端画面、摄像头与屏幕按钮联动、P2P↔SFU 切换后的画面归属（`talk-cli` 已可在本机运行，视频联调通过）。
 4. 视频 P1（背景与方案见 wiki.md §8/§10）：producer pause/resume 状态广播（目前接收端只能靠 5 秒无帧超时回收画面）；同 mid producer 复用（ICE restart 重发布会连带重建全部订阅端 consumer，全员闪断）。
 
 详细阶段表见 [rtc-server-dev-plan.md §4.6](./rtc-server-dev-plan.md)。

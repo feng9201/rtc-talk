@@ -280,9 +280,11 @@ const source = track.kind === 'video' ? (declared === 'screen' ? 'screen' : 'cam
 
 - `CallSession` 在应用媒体模式时发出新事件 **`mode.changed`**（`{mode: p2p|sfu}`），共三条路径：媒体未启用时按请求推断、P2P、SFU；mediasoup 初始化失败走 `media.error`，不发本事件；
 - `TalkWindow::ApplyMediaMode(mode)` 抽出，`joined` 与 `mode.changed` 共用；按钮使能与 tooltip 收敛到 `ApplyVideoButtonState()`，模式变更、`video.state`、`video.start/stop` 失败三个调用点条件一致；
-- 切换时在日志区明确提示：P2P →「媒体链路已切换为 P2P 直连，屏幕共享不可用」；SFU →「媒体链路已切换为 SFU，可以共享屏幕」。
+- 切换时在日志区明确提示：P2P →「媒体链路已切换为 P2P 直连，屏幕共享不可用」；SFU →「媒体链路已切换为 SFU，可以共享屏幕」（2026-10-24 P2P 支持视频后，文案改为「视频走点对点直传 / 视频经服务器转发」，见第 11 节）。
 
-不是缺陷的部分：**一期 P2P 模式本身不支持屏幕共享**（桌面采集只挂在 `sfu.publish` 的视频上行上）。两人房间把「模式」选成 `auto` 就会被切到 P2P，此时测不到视频 —— 两台机器都改成 `sfu` 再重新加入房间即可。
+不是缺陷的部分：**当时一期 P2P 模式本身不支持屏幕共享**（桌面采集只挂在 `sfu.publish` 的视频上行上）。两人房间把「模式」选成 `auto` 就会被切到 P2P，此时测不到视频 —— 两台机器都改成 `sfu` 再重新加入房间即可。
+
+> 2026-10-24 更新：P2P 已支持摄像头与屏幕共享（预发布两路视频 m-line），上述限制作废，详见第 11 节。
 
 ### 3. 现场操作注意（非代码缺陷）
 
@@ -355,9 +357,9 @@ cd deploy && ./package.sh && ./deploy.sh   # 按现场发布流程执行
 第一轮修复经代码审查后又收了四处：
 
 1. **P2P 房间误报「已开麦但音频上行异常」**：P2P 期间 SFU send PC 尚未发布，`send` 段即使存在也恒为 0 包，`sent == 0` 恒成立 → 开麦 15 秒必打假 WARN。现在整段上行判定限定在 `mode_ == kSfu`，P2P 下不再打印「音频发送」行；`音频sender/视频sender` 打印 `n/a`，`视频上行` 的 `pc状态` 打印 `p2p（无 SFU 连接）`。
-2. **P2P 下正在共享时停不掉**：原来切 P2P 无条件禁用按钮，但共享仍在跑、文案仍是「停止共享」。按钮使能现收敛到 `TalkWindow::ApplyVideoButtonState()`（模式变更 / `video.state` / `video.start|stop` 失败 三处共用）：离房或 `backend=none` 不可点；P2P 下只有正在共享时保留「停止共享」入口，tooltip 同步区分。
+2. **P2P 下正在共享时停不掉**：原来切 P2P 无条件禁用按钮，但共享仍在跑、文案仍是「停止共享」。按钮使能现收敛到 `TalkWindow::ApplyVideoButtonState()`（模式变更 / `video.state` / `video.start|stop` 失败 三处共用）：离房或 `backend=none` 不可点；P2P 下只有正在共享时保留「停止共享」入口，tooltip 同步区分。（2026-10-24 P2P 支持视频后，按钮不再按模式置灰，见第 11 节。）
 3. **`SetSenderActive` 失败时诊断显示过期状态**：`PeerConnection` 在 `SetParameters()` 失败时把 `sender_active_[kind]` 置 `false`，避免 `send_active` 仍显示旧值 `true`、正好复现「sender 已开但没包」的误判。
-4. `ApplySendState()` 的注释改为准确表述：P2P 的 PC 从不挂视频轨，`sfu_paused_` 仅由 `p2p.state connected` 驱动，进 P2P 时关掉的是 SFU 上行 sender。
+4. `ApplySendState()` 的注释改为准确表述：P2P 的 PC 当时不挂视频轨，`sfu_paused_` 仅由 `p2p.state connected` 驱动，进 P2P 时关掉的是 SFU 上行 sender。（2026-10-24 起 P2P 也挂两路视频轨，切换期靠 `SetVideoReceivePaused` 去重，见第 11 节。）
 
 ### 8. 多人视频房间：服务端缺口与建议（2026-10-23）
 
@@ -458,3 +460,30 @@ cd deploy && ./package.sh && ./deploy.sh   # 按现场发布流程执行
 - 关闭摄像头不影响共享；两路先后启停不触发音频/另一路的 producer 重建（看服务端是否打 `producer produced` 两次以上）；
 - `video.max_publishers=N` 时第 N+1 个 video producer 被 `409` 拒绝，关掉一路后可再发；
 - 4 人房每人两路：每端 `consumers = 3×(1音+2视) = 9`，无 `consume failed` / `recv negotiate failed`。
+
+### 11. P2P 支持视频（2026-10-24）
+
+背景：此前两人房间走 P2P 时只能对讲，`video.start` 在 P2P 直接返回 `409 P2P 模式暂不支持视频`。本次补齐为「P2P 也预发布摄像头 + 屏幕两路视频」，且 **服务端零改动**（`p2p.offer/answer/candidate` 只是 SDP/ICE 透明转发，不解析媒体内容）。
+
+#### 客户端改动
+
+1. `WebRtcMedia::StartP2p` / `AnswerP2p` 改为预加三条 m-line：音频 + 摄像头 + 屏幕，顺序与 SFU 一致（mid `0/1/2`）；新增 `ApplyP2pVideoState()` 按索引 0/1 应用摄像头/屏幕的采集状态。
+2. **应答方必须先 `SetRemote(offer)` 再 `AddTrack`**：`PeerConnection::AddTrack` 在 `pc_->remote_description() != nullptr` 时改走 `pc_->AddTrack()` 复用远端 m-line 的 transceiver；否则会多出一组本地 transceiver（`p2p_send_active` 出现 `audio2/video3/video4`），应答 m-line 变成 `recvonly` → 只收不发。
+3. `video.start/stop` 同时作用在 `send_`（SFU）与 `p2p_` 两个 PC 上；`SetVideoSink` 也同时下发两端，否则 P2P 画面进不了 UI。
+4. 会话层删掉 P2P 的 409 分支；摄像头启停在 P2P 下跳过 `media.setMute`（P2P 没有 producer），只靠 sender `active` 控制；`SwitchToSfu` 完成后若摄像头仍在采集，补发一次 `media.setMute{camera,false}` 恢复 P2P 期间一直 paused 的 producer。
+5. 切换期去重：新增 `PeerConnection::SetVideoReceivePaused()`，P2P↔SFU 重叠期把已让出链路的两路视频接收 `set_enabled(false)`，避免同名 mid 的画面互盖。
+6. `MediaController` 对 `pc=p2p` 的 `video.track` 按到达顺序标注 `source=camera|screen`、`uid=对端`，UI 宫格与 SFU 一致。
+7. UI `ApplyVideoButtonState()` 不再按模式置灰，P2P 与 SFU 下摄像头/屏幕按钮行为一致（`p2p_mode_` 成员已移除）。
+
+#### 验证（测试服 `47.117.159.193`，`talk-cli --media-mode auto --video --video-source screen`）
+
+- 双端 P2P 屏幕：A 发/收 183/188 帧、B 发/收 188/180 帧，720p15，`p2p_path=host`，`p2p_send_active={audio,video2}`；
+- 第三人 6 秒后加入：B `切换到 SFU` → `SFU 模式切换完成` 约 0.2s，切后 `pc=send`/`pc=recv` 帧数持续增长，C 收 114→346、发 51→189，无 409/失败/ERROR；
+- P2P 下 `video.stop` → 对端收帧停在 54，`video.start` 后恢复至 121，全程无错误；
+- **摄像头路径（A 摄像头 / B 屏幕，room `p2pcam2`）**：`video.start{source:camera}` 返回 `device=Logitech Webcam C925e`、`send_state=connected`；A `P2P 视频状态 camera_mid=1(有) 直播中=true ok=true`，`视频传输 pc=p2p` 发 55→115→119 帧、B 收 55→115→119 帧，720p15；`video.stop` 后 A `视频已停止 source=camera ok=true`、B 收帧停住，`video.start` 后恢复，无错误；
+- `max_publishers` 默认 9，3 人 × 2 路 = 6，不会触发 409。
+
+#### 遗留
+
+- 未做能力位协商（`caps.p2p_video`）：只与最新版服务端/客户端互通，旧客户端不兼容。
+- `talk-cli` 的 `--video-source` 默认值是 `screen`，测摄像头必须显式传 `--video-source camera`，否则会误以为摄像头未生效。
