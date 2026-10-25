@@ -1,7 +1,7 @@
 # 环境、账号与进度速查
 
 > 给接手人或换机器时用。口令只写在测试机用途上，**不要**把测试机密码同步到正式环境。
-> 更新：2026-10-25（`333f795` 已发布：视频 P1 + S5 第一批；`fd84db5` 为上一版可回滚。**RK 端暂停，优先调通 Windows 端**；Windows 客户端视频一期完成，P2P 支持摄像头/屏幕共享）
+> 更新：2026-10-25（`cd3fef2` 已发布：S4 对讲形态；`333f795` 为视频 P1 + S5 第一批，`fd84db5` 再上一版可回滚。**RK 端暂停，优先调通 Windows 端**；Windows 客户端视频一期与 S4 客户端配合均完成）
 
 ## 1. 当前进度
 
@@ -14,10 +14,10 @@
 | **视频 MVP + 10-23/24 修复** | ✅ 已发布 `fd84db5` | 单层 H.264（`62df51b`）；toffset 白名单过滤（`5e2d161`，固化测试机热补丁）；房间视频策略生效（`79d5223`：`enabled` 默认 true、`max_publishers` 按 producer 计数、同 uid 同 source 去重，违反 409）；`sfu.publish` 重试未应答的 recv offer（`0f62af9`）；bot 先注册 offer handler 再发布（`bf1c985`）；SDP mid 归一化 string（`fd84db5`：修复两路视频被判 duplicate camera 的 409、screen producer 自 `62df51b` 起被误标 camera）。59 用例通过，3×3 bot 公网音频冒烟通过 |
 | **Windows 客户端视频一期** | ✅ 代码完成 · 已联调 | `client-win`（`feat/windows-client`）：SFU 多人视频与一人两路（摄像头+屏幕）；P2P 预发布 audio/camera/screen 三条 m-line，第三人入房自动切 SFU 续传；P2P 下视频启停与 UI 按钮放开。`talk-cli` 公网双端联调：P2P 摄像头/屏幕 720p15 双向收发、三切 SFU 无断流、P2P 下 `video.stop/start` 正常；服务端零改动。**对接 `333f795`**：hello 上报 `caps.p2p_video`、停共享发 `media.setMute{source:"screen"}`、UI 收 `media.producer` 立即收画面 |
 | **视频 P1 + S5 第一批** | ✅ 已发布 `333f795` | screen 独立静音（`media.setMute{source}`）、producer 状态广播 `media.producer`、同 mid producer 复用（ICE restart 不重建全部订阅）、`max_publishers` 按“未关闭且未暂停”计数；`GET /metrics`（零依赖 Prometheus）、`sfu.stats` 聚合、worker 死亡延迟 3s 退出、systemd `MemoryHigh=800M`/`MemoryMax=1536M`；新增 `caps.p2p_video`、`room.mediaMode.p2p_video`、`sfu_video_codecs`；ptt/moderated 强制 SFU；H.265 仅 P2P（SFU 501）。64 用例通过 |
-| S4 对讲形态（PTT/host） | 未开始 | `floor.*`、`host.*`、`room.subscribeLevels` 待实现 |
+| S4 对讲形态（PTT/host） | ✅ 服务端已发布 `cd3fef2` · 客户端已完成 | 服务端：`ff242ea` 发言权状态机（单 holder + FIFO 队列 + `ptt_max_hold_sec`）、`host.grant/muteAll/kick/setPolicy`、`room.audioLevels`。客户端：非 free 入房不开麦、`floor.request/release` 按住说话、`floor.state` 倒计时与排队、`floor.revoked` 三种 reason 停发、`session.kicked` 不重连、主持人按钮行、音量条 |
 | S5 稳定性 | 部分完成 | 已有 `/metrics`、worker 退出、内存上限；待 recv 侧 restartIce 实测、tc netem 弱网、24h 长稳 |
 
-**已发布到测试机**：`333f795`（`/opt/talk/releases/20261025-094707-333f795`，视频 P1 + S5 第一批），`previous` 为 `fd84db5`，可 `deploy/deploy.sh --rollback`；客户端：Windows `feat/windows-client` 联调中、RK `feat/rk3576-client` `8c7e12b`（暂停）。  
+**已发布到测试机**：`cd3fef2`（S4 对讲形态），`previous` 为 `333f795`（视频 P1 + S5 第一批），可 `deploy/deploy.sh --rollback`；客户端：Windows `feat/windows-client` 联调中、RK `feat/rk3576-client` `8c7e12b`（暂停）。  
 **健康检查**：`http://47.117.159.193:8080/healthz`  
 **信令**：`ws://47.117.159.193:8080/talk/v1/ws`（子协议 `talk.v1.json`）  
 **开发 token**：`GET http://47.117.159.193:8080/dev/token?uid=xxx&rooms=room1`（仅 `TALK_ENV=dev`）
@@ -26,7 +26,7 @@
 
 1. **Windows 客户端对 `fd84db5` 实测**：两路视频（摄像头 + 屏幕共享）发布/订阅（修复前是 409 duplicate camera）；`media.setMute{camera}` 只停摄像头不停共享；3~4 人视频房宫格与 mid 分配；真人听音（回声 / 双讲 / 系统音采集源）。已完成（`talk-cli`）：P2P 摄像头/屏幕 720p15 双向收发、第三人入房切 SFU 续传、P2P 下视频启停；剩余 Qt 界面端到端验收（本地/远端画面、按钮联动、P2P↔SFU 切换后的画面归属）。
 2. 跨 NAT / 强制中继场景与 P2P→SFU 断音时长实测（Windows 端做）。
-3. **S4 对讲形态（PTT/host）**：`floor.request/release/state/revoked`、`host.grant/muteAll/kick`、`room.subscribeLevels` 与 `room.activeSpeaker`/`room.audioLevels` 推送（≤2 次/秒）。
+3. **S4 对讲形态（PTT/host）**：服务端 `cd3fef2` 已发布，客户端配合已完成（详见 [wiki.md 第 13 节](../wiki.md)）：PTT 持有/排队/递补、主持人收回与移出、忙线 `granted:false` 均已在公网实测；剩余两个服务端缺陷——`room-media.ts` 的 `AudioLevelObserver` 缺 `addProducer`（`room.audioLevels` 恒空）、`host.setPolicy` 因 zod `.default('free')` 会把 `talk_mode` 打回 free；另有 Qt 界面需真人验收。
 4. 视频 P1 已完成（`333f795`）：`media.producer` 状态广播、同 mid producer 复用、停共享释放名额。客户端配合已完成（2026-10-25）：停共享发 `media.setMute{source:"screen",muted:true}`、UI 处理 `media.producer` 立即收画面、hello 上报 `caps.p2p_video`。
 5. S5 剩余：recv 侧 ICE restart 实测、tc netem 弱网与 24h 长稳；`deploy.sh` 不更新 systemd unit，改 unit 需手动 `install` + `daemon-reload`。
 6. **RK3576 客户端暂停**：板端 C5 验证、双端媒体联调全部后置，等 Windows 端调通、协议与服务端稳定后再恢复；恢复入口见 [RK3576 客户端开发计划](./RK3576_客户端_开发计划_b524300f.md)。
