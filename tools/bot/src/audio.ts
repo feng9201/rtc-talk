@@ -1,6 +1,11 @@
 import { MediaStreamTrack, RTCPeerConnection, RtpHeader, RtpPacket, useOPUS } from 'werift';
 import type { SignalClient } from './signal-client.js';
 
+/** werift 的 offer 不带 extmap；补一条 RFC 6464 音量扩展，让 SFU 能算出音量 */
+function withAudioLevelExt(sdp: string): string {
+  return sdp.replace(/(m=audio [^\r\n]*\r?\n)/, '$1a=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\n');
+}
+
 /** 用 werift（标准 SDP）向 SFU 发 Opus，并统计收到的 RTP 包 */
 export class AudioSender {
   received = 0;
@@ -50,7 +55,7 @@ export class AudioSender {
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
     const answer = await this.client.request<{ sdp: string }>('sfu.publish', {
-      sdp: pc.localDescription?.sdp,
+      sdp: withAudioLevelExt(pc.localDescription?.sdp ?? ''),
       tracks: [{ mid: '0', kind: 'audio', source: 'mic' }],
     });
     await pc.setRemoteDescription({ type: 'answer', sdp: answer.sdp });
@@ -80,7 +85,14 @@ export class AudioSender {
     this.pump = setInterval(() => {
       this.track?.writeRtp(
         new RtpPacket(
-          new RtpHeader({ payloadType: pt, sequenceNumber: seq++, timestamp: ts, ssrc }),
+          new RtpHeader({
+            payloadType: pt,
+            sequenceNumber: seq++,
+            timestamp: ts,
+            ssrc,
+            // RFC 6464 音量扩展（V=1 + level=10）：没有它 mediasoup 的 AudioLevelObserver 读不到音量
+            extensions: [{ id: 1, payload: Buffer.from([0x8a]) }],
+          }),
           Buffer.from([0xf8, 0xff, 0xfe]),
         ),
       );

@@ -362,6 +362,15 @@ describe('call and p2p mode', () => {
     expect(await forceMute).toEqual({ source: 'mic', by: 'alice' });
     expect(await cleared).toEqual({ holder: null, queue: [] });
 
+    // 局部改策略不能把 talk_mode 等未给出的字段打回默认值（zod 4 default 回归）
+    const patched = await a.req('host.setPolicy', { ptt_queue: false });
+    expect(patched.data.policy).toMatchObject({
+      talk_mode: 'ptt',
+      ptt_queue: false,
+      max_speakers: 0,
+      ptt_max_hold_sec: 60,
+    });
+
     // 踢人：被踢者收 session.kicked，其余成员收 peerLeft
     const kicked = b.waitNtf('session.kicked');
     const left = a.waitNtf('room.peerLeft', (d) => d.uid === 'bob');

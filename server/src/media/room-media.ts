@@ -113,6 +113,8 @@ export class PeerMedia {
     private readonly answer: AnswerHandler,
     muted: boolean,
     videoOn = false,
+    /** 新 producer 创建后回调（RoomMedia 用来登记到音量/主讲人 observer） */
+    private readonly onProducer?: (producer: ms.Producer) => void,
   ) {
     this.muted = muted;
     this.cameraMuted = !videoOn;
@@ -191,6 +193,7 @@ export class PeerMedia {
       });
       this.producers.set(producer.id, producer);
       this.watchProducer(producer);
+      this.onProducer?.(producer);
       produced.push({ mid: track.mid, producer_id: producer.id, kind: track.kind, source, paused: producer.paused });
       sections.push({
         mid: track.mid,
@@ -452,6 +455,9 @@ export class RoomMedia {
   readonly peers = new Map<string, PeerMedia>();
   private activeObserver?: ms.ActiveSpeakerObserver;
   private levelObserver?: ms.AudioLevelObserver;
+  /** 已登记到 observer 的 producer（避免重复 addProducer） */
+  private readonly observed = new Set<string>();
+  private enabling?: Promise<void>;
   /** 主讲人变化（uid），来自 ActiveSpeakerObserver */
   onActiveSpeaker?: (uid: string) => void;
   /** 音量（dBFS 归一化 0..1），observer 每 500ms 触发一次 */
@@ -468,7 +474,9 @@ export class RoomMedia {
   addPeer(uid: string, muted: boolean, videoOn = false): PeerMedia {
     const existing = this.peers.get(uid);
     if (existing) return existing;
-    const peer = new PeerMedia(uid, this.router, this.webRtcServer, this.log, this.answer, muted, videoOn);
+    const peer = new PeerMedia(uid, this.router, this.webRtcServer, this.log, this.answer, muted, videoOn, (p) =>
+      this.watchProducer(p),
+    );
     this.peers.set(uid, peer);
     for (const other of this.peers.values()) {
       if (other === peer) continue;
@@ -490,9 +498,19 @@ export class RoomMedia {
     }
   }
 
-  /** 建立主讲人 / 音量观测器（需 Consumer 已存在才会出数据） */
+  /** 建立主讲人 / 音量观测器；mediasoup 必须显式 addProducer 才会采样（与 Consumer 无关） */
   async enableObservers(): Promise<void> {
     if (this.activeObserver) return;
+    if (!this.enabling) {
+      this.enabling = this.openObservers().catch((err: unknown) => {
+        this.enabling = undefined;
+        throw err;
+      });
+    }
+    await this.enabling;
+  }
+
+  private async openObservers(): Promise<void> {
     const active = await this.router.createActiveSpeakerObserver({ interval: 300 });
     const levels = await this.router.createAudioLevelObserver({ maxEntries: 24, threshold: -70, interval: 500 });
 
@@ -512,11 +530,31 @@ export class RoomMedia {
     });
     this.activeObserver = active;
     this.levelObserver = levels;
+    // createRoom 不 await enableObservers：此处回补建立期间已发布的 producer
+    for (const peer of this.peers.values()) {
+      for (const producer of peer.producers.values()) this.watchProducer(producer);
+    }
+  }
+
+  /** 音频 producer 登记到两个 observer；observer 未就绪或已登记时忽略 */
+  private watchProducer(producer: ms.Producer): void {
+    if (producer.closed || producer.kind !== 'audio') return;
+    if (!this.activeObserver || !this.levelObserver || this.observed.has(producer.id)) return;
+    this.observed.add(producer.id);
+    producer.observer.on('close', () => this.observed.delete(producer.id));
+    void this.activeObserver.addProducer({ producerId: producer.id }).catch((err: unknown) => {
+      this.log.warn({ err, producer: producer.id }, 'active speaker addProducer failed');
+    });
+    void this.levelObserver.addProducer({ producerId: producer.id }).catch((err: unknown) => {
+      this.log.warn({ err, producer: producer.id }, 'audio level addProducer failed');
+    });
   }
 
   close(): void {
     this.activeObserver?.close();
     this.levelObserver?.close();
+    this.observed.clear();
+    this.enabling = undefined;
     for (const p of this.peers.values()) p.close();
     this.peers.clear();
     this.router.close();

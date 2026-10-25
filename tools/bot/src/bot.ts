@@ -29,6 +29,11 @@ interface Bot {
   others: Map<string, Peer>;
   events: string[];
   audio?: AudioSender;
+  /** 收到的 room.audioLevels 次数与峰值（0=静音，1=最响） */
+  levels: number;
+  loudest: number;
+  /** 收到过 room.activeSpeaker 的主讲人 */
+  speakers: Set<string>;
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -61,7 +66,13 @@ function track(bot: Bot): void {
     else if (method === 'room.peerUpdated') {
       const p = bot.others.get(uid);
       if (p && data.audio) p.audio = data.audio as Peer['audio'];
-    } else if (method === 'session.kicked') log(`${bot.uid} kicked: ${JSON.stringify(data)}`);
+    } else if (method === 'room.audioLevels') {
+      bot.levels += 1;
+      for (const l of (data.levels ?? []) as { uid: string; level: number }[]) {
+        bot.loudest = Math.max(bot.loudest, l.level);
+      }
+    } else if (method === 'room.activeSpeaker') bot.speakers.add(uid);
+    else if (method === 'session.kicked') log(`${bot.uid} kicked: ${JSON.stringify(data)}`);
   });
 }
 
@@ -82,6 +93,9 @@ async function startBot(base: string, room: string, uid: string): Promise<Bot> {
     heartbeat: hello.heartbeat_interval,
     others: new Map(),
     events: [],
+    levels: 0,
+    loudest: 0,
+    speakers: new Set(),
   };
   track(bot);
   const join = await client.request<{ room: { role: string }; media_mode: string; peers: Peer[] }>('room.join', {
@@ -171,6 +185,8 @@ async function main(): Promise<number> {
     // 先给所有 bot 注册 sfu.offer handler 再依次发布：
     // 否则前面 bot 的发布会给还没注册 handler 的 bot 发 offer，被回 501
     for (const b of bots) b.audio = new AudioSender(b.client, loopback);
+    // 音量/主讲人推送要显式订阅；没订阅时服务端不推 room.audioLevels
+    for (const b of bots) await b.client.request('room.subscribeLevels', { enabled: true });
     for (const b of bots) {
       await b.client.request('media.setMute', { source: 'mic', muted: false });
       await b.audio!.publish();
@@ -189,6 +205,14 @@ async function main(): Promise<number> {
         errors.push(`[audio] ${b.uid} received ${b.audio!.received} rtp packets, expected from ${expectFrom} peers`);
       } else if (expectFrom > 0) {
         log(`${b.uid} received ${b.audio!.received} rtp packets`);
+      }
+      if (b.levels < 2 || b.loudest <= 0) {
+        errors.push(`[levels] ${b.uid} received ${b.levels} audioLevels, loudest=${b.loudest}`);
+      } else {
+        log(
+          `${b.uid} received ${b.levels} audioLevels, loudest=${b.loudest}, ` +
+            `speakers=${[...b.speakers].join(',') || '-'}`,
+        );
       }
       b.audio!.stop();
     }

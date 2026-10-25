@@ -11,6 +11,11 @@ import { SUBPROTOCOL, WS_PATH } from '../src/gateway/protocol.js';
 
 const logger = createLogger({ level: 'silent', pretty: false });
 
+/** werift 的 offer 不带任何 extmap；补上 RFC 6464 音量扩展，否则 mediasoup 的 AudioLevelObserver 读不到音量 */
+function withAudioLevelExt(sdp: string): string {
+  return sdp.replace(/(m=audio [^\r\n]*\r?\n)/, '$1a=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\n');
+}
+
 function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
     const srv = createServer();
@@ -26,6 +31,7 @@ interface Wire {
   ws: WebSocket;
   req(method: string, data?: unknown): Promise<any>;
   onServerReq(fn: (method: string, data: any) => Promise<unknown>): void;
+  waitNtf(method: string, pred?: (d: any) => boolean, timeoutMs?: number): Promise<any>;
   close(): void;
 }
 
@@ -33,11 +39,17 @@ function connect(base: string, token: string): Promise<Wire> {
   const ws = new WebSocket(`${base.replace(/^http/, 'ws')}${WS_PATH}?token=${token}`, SUBPROTOCOL);
   let seq = 1;
   const pending = new Map<string, (msg: any) => void>();
+  const ntfs: { method: string; data: any }[] = [];
+  const waiters: { method: string; pred: (d: any) => boolean; resolve: (d: any) => void }[] = [];
   let onReq: (method: string, data: any) => Promise<unknown> = async () => ({});
   ws.on('message', (raw) => {
     const msg = JSON.parse(raw.toString());
     if (msg.type === 'res') pending.get(msg.id)?.(msg);
-    else if (msg.type === 'req') {
+    else if (msg.type === 'ntf') {
+      const i = waiters.findIndex((w) => w.method === msg.method && w.pred(msg.data));
+      if (i >= 0) waiters.splice(i, 1)[0]!.resolve(msg.data);
+      else ntfs.push({ method: msg.method, data: msg.data });
+    } else if (msg.type === 'req') {
       void onReq(msg.method, msg.data).then(
         (data) => ws.send(JSON.stringify({ v: 1, type: 'res', id: msg.id, ok: true, data: data ?? {} })),
         (err: Error) =>
@@ -64,6 +76,21 @@ function connect(base: string, token: string): Promise<Wire> {
     },
     onServerReq(fn) {
       onReq = fn;
+    },
+    waitNtf(method, pred = () => true, timeoutMs = 5000) {
+      const i = ntfs.findIndex((n) => n.method === method && pred(n.data));
+      if (i >= 0) return Promise.resolve(ntfs.splice(i, 1)[0]!.data);
+      return new Promise((resolve, reject) => {
+        const w = { method, pred, resolve };
+        waiters.push(w);
+        setTimeout(() => {
+          const j = waiters.indexOf(w);
+          if (j >= 0) {
+            waiters.splice(j, 1);
+            reject(new Error(`timeout waiting ${method}`));
+          }
+        }, timeoutMs);
+      });
     },
     close() {
       ws.close();
@@ -126,7 +153,7 @@ class Peer {
     }
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
-    const res = await this.wire.req('sfu.publish', { sdp: pc.localDescription!.sdp, tracks });
+    const res = await this.wire.req('sfu.publish', { sdp: withAudioLevelExt(pc.localDescription!.sdp), tracks });
     if (!res.ok) throw new Error(`publish failed ${res.error?.code} ${res.error?.msg}`);
     await pc.setRemoteDescription({ type: 'answer', sdp: res.data.sdp });
     return res.data.sdp as string;
@@ -155,7 +182,15 @@ class Peer {
     let seq = 1;
     let ts = 0;
     this.pump = setInterval(() => {
-      const header = new RtpHeader({ payloadType: pt, sequenceNumber: seq++, timestamp: ts, ssrc, marker: false });
+      const header = new RtpHeader({
+        payloadType: pt,
+        sequenceNumber: seq++,
+        timestamp: ts,
+        ssrc,
+        marker: false,
+        // RFC 6464：V=1 + level(7bit)，level 越小越响（mediasoup 取 -level 当 dBov）
+        extensions: [{ id: 1, payload: Buffer.from([0x8b]) }],
+      });
       ts += 960;
       this.track?.writeRtp(new RtpPacket(header, Buffer.from([0xf8, 0xff, 0xfe])));
     }, 20);
@@ -711,4 +746,55 @@ describe('sfu audio', () => {
     expect((await a.wire.req('media.setMute', { source: 'mic', muted: true })).ok).toBe(true);
     expect((await b.wire.req('media.setMute', { source: 'mic', muted: false })).ok).toBe(true);
   }, 20000);
+
+  it('pushes audio levels and the active speaker for audio producers', async () => {
+    const rtcPort = await freePort();
+    media = await MediaNode.create({
+      numWorkers: 1,
+      workerBin: process.env.MEDIASOUP_WORKER_BIN,
+      listenIp: '127.0.0.1',
+      announcedAddress: '127.0.0.1',
+      port: rtcPort,
+      logger,
+      onWorkerDied: () => {},
+    });
+    const config = loadConfig({
+      TALK_ENV: 'dev',
+      TALK_HTTP_HOST: '127.0.0.1',
+      TALK_JWT_SECRET: 's'.repeat(40),
+    });
+    config.http.port = 0;
+    app = createApp({ config, logger, media });
+    const addr = await app.listen();
+    const base = `http://127.0.0.1:${addr.port}`;
+
+    async function open(uid: string) {
+      const token = ((await (await fetch(`${base}/dev/token?uid=${uid}`)).json()) as { token: string }).token;
+      const wire = await connect(base, token);
+      const peer = new Peer(wire);
+      peers.push(peer);
+      expect((await wire.req('session.hello', { client: { platform: 'linux', version: '0' } })).ok).toBe(true);
+      expect((await wire.req('room.join', { room_id: 'sfu-levels', media: { audio: { muted: false } } })).ok).toBe(
+        true,
+      );
+      return { peer, wire };
+    }
+
+    const a = await open('alice');
+    const b = await open('bob');
+    // bob 订阅音量；alice 监听主讲人（广播给全房间）
+    expect((await b.wire.req('room.subscribeLevels', { enabled: true })).data).toMatchObject({ enabled: true });
+    const levels = b.wire.waitNtf('room.audioLevels', (d) => Array.isArray(d.levels) && d.levels.length > 0, 8000);
+    const speaker = a.wire.waitNtf('room.activeSpeaker', (d) => typeof d.uid === 'string', 8000);
+
+    await a.peer.publish();
+    await b.peer.publish();
+    await Promise.all([a.peer.recvReady, b.peer.recvReady]);
+    a.peer.startAudio();
+    b.peer.startAudio();
+
+    const lv = await levels;
+    expect(lv.levels.map((x: { uid: string }) => x.uid)).toEqual(expect.arrayContaining(['alice']));
+    expect((await speaker).uid).toMatch(/^(alice|bob)$/);
+  }, 25000);
 });

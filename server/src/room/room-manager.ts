@@ -1,5 +1,5 @@
 import { TalkError } from '../gateway/protocol.js';
-import { buildPolicy, type RoomPolicy, type RoomPolicyInput } from './policy.js';
+import { buildPolicy, mergePolicy, type RoomPolicy, type RoomPolicyInput } from './policy.js';
 
 export type Role = 'host' | 'member';
 export type LeaveReason = 'leave' | 'timeout' | 'kicked' | 'replaced';
@@ -149,16 +149,13 @@ export class RoomManager {
     for (const uid of uids) this.leave(roomId, uid, reason);
   }
 
-  /** 主持人修改策略。返回合并后的策略 */
+  /** 主持人修改策略（局部字段合并，未给出的字段保持不变）。返回合并后的策略 */
   setPolicy(roomId: string, uid: string, patch: RoomPolicyInput): RoomPolicy {
     const room = this.rooms.get(roomId);
     const self = room?.members.get(uid);
     if (!room || !self) throw new TalkError(409, 'not in room');
     if (self.role !== 'host') throw new TalkError(403, 'host only');
-    const policy = buildPolicy(
-      { ...room.policy, ...patch, video: { ...room.policy.video, ...patch.video } },
-      this.opts.maxPeersLimit,
-    );
+    const policy = mergePolicy(room.policy, patch, this.opts.maxPeersLimit);
     const previous = room.policy;
     room.policy = policy;
     this.opts.onEvent({ type: 'policyChanged', room, policy, previous });
