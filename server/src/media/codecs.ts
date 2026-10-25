@@ -2,7 +2,7 @@ import type { types as ms } from 'mediasoup';
 
 /**
  * 音频 Opus + 单层 H.264（Constrained Baseline 42e01f）。
- * H.265 按协议留到下一版，Router 里先不注册。
+ * H.265 只走 P2P：mediasoup 3.16.6 已移除 HEVC，Router 注册会报 media codec not supported。
  * Opus channels=2 以匹配浏览器/libwebrtc 的 opus/48000/2。
  */
 export const AUDIO_MEDIA_CODECS: ms.RouterRtpCodecCapability[] = [
@@ -38,6 +38,9 @@ export const VIDEO_MEDIA_CODECS: ms.RouterRtpCodecCapability[] = [
 ];
 
 export const MEDIA_CODECS: ms.RouterRtpCodecCapability[] = [...AUDIO_MEDIA_CODECS, ...VIDEO_MEDIA_CODECS];
+
+/** SFU 可转发的视频编码，随 room.join 应答下发；P2P 不受此限制 */
+export const SFU_VIDEO_CODECS = ['h264'] as const;
 
 export const AUDIO_EXTENSIONS = new Set<string>([
   'urn:ietf:params:rtp-hdrext:sdes:mid',

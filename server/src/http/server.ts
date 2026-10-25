@@ -10,6 +10,8 @@ export interface HealthInfo {
 export interface RouteResult {
   status: number;
   body: unknown;
+  /** 不传按 JSON；/metrics 用 text/plain */
+  contentType?: string;
 }
 
 /** GET 路由；抛 TalkError 时按其 code 返回 */
@@ -21,10 +23,15 @@ export interface HttpServerOptions {
   routes?: Record<string, Route>;
 }
 
-function sendJson(res: ServerResponse, status: number, body: unknown): void {
-  const data = JSON.stringify(body);
+function sendBody(
+  res: ServerResponse,
+  status: number,
+  body: unknown,
+  contentType = 'application/json; charset=utf-8',
+): void {
+  const data = typeof body === 'string' ? body : JSON.stringify(body);
   res.writeHead(status, {
-    'content-type': 'application/json; charset=utf-8',
+    'content-type': contentType,
     'content-length': Buffer.byteLength(data),
     'cache-control': 'no-store',
   });
@@ -43,19 +50,19 @@ export function createHttpServer(opts: HttpServerOptions): Server {
     const url = new URL(req.url ?? '/', 'http://localhost');
     const route = req.method === 'GET' ? routes[url.pathname] : undefined;
     if (!route) {
-      sendJson(res, 404, { error: 'not_found' });
+      sendBody(res, 404, { error: 'not_found' });
       return;
     }
     Promise.resolve()
       .then(() => route(url, req))
       .then(
-        (r) => sendJson(res, r.status, r.body),
+        (r) => sendBody(res, r.status, r.body, r.contentType),
         (err: unknown) => {
           if (err instanceof TalkError) {
-            sendJson(res, err.code, { error: err.reason, msg: err.message });
+            sendBody(res, err.code, { error: err.reason, msg: err.message });
           } else {
             opts.logger.error({ err, path: url.pathname }, 'http route failed');
-            sendJson(res, 500, { error: 'internal' });
+            sendBody(res, 500, { error: 'internal' });
           }
         },
       );

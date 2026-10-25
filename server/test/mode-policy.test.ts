@@ -16,4 +16,10 @@ describe('desiredMediaMode', () => {
     expect(desiredMediaMode({ ...base, policy: 'sfu' })).toBe('sfu');
     expect(desiredMediaMode({ ...base, stickySfu: true })).toBe('sfu');
   });
+
+  it('forces sfu for ptt and moderated rooms', () => {
+    expect(desiredMediaMode({ ...base, talkMode: 'ptt' })).toBe('sfu');
+    expect(desiredMediaMode({ ...base, talkMode: 'moderated' })).toBe('sfu');
+    expect(desiredMediaMode({ ...base, talkMode: 'free' })).toBe('p2p');
+  });
 });

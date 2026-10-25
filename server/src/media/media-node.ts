@@ -3,7 +3,7 @@ import type { types as ms } from 'mediasoup';
 import { TalkError } from '../gateway/protocol.js';
 import type { Logger } from '../logger.js';
 import { MEDIA_CODECS } from './codecs.js';
-import { RoomMedia, type AnswerHandler } from './room-media.js';
+import { RoomMedia, type AnswerHandler, type ProducerState } from './room-media.js';
 import { WorkerPool } from './worker-pool.js';
 
 export interface MediaNodeOptions {
@@ -153,12 +153,12 @@ export class MediaNode {
     const room = this.rooms.get(roomId);
     const peer = room?.peers.get(uid);
     if (!room || !peer) throw new TalkError(409, 'not in room');
-    /** 房间内未关闭的视频 producer 数；本端被本次 offer 原位替换的 mid 不计（重发布/ICE restart） */
+    /** 房间内活跃（未关闭且未暂停）的视频 producer 数；本端被本次 offer 原位替换的 mid 不计（重发布/ICE restart） */
     const countRoomVideo = (excludeMids: Set<string>): number => {
       let count = 0;
       for (const other of room.peers.values()) {
         for (const p of other.producers.values()) {
-          if (p.closed || p.kind !== 'video') continue;
+          if (p.closed || p.paused || p.kind !== 'video') continue;
           if (other === peer && excludeMids.has(String(p.appData.mid))) continue;
           count++;
         }
@@ -172,13 +172,18 @@ export class MediaNode {
     return result;
   }
 
-  async setMuted(roomId: string, uid: string, muted: boolean, source: 'mic' | 'camera' = 'mic'): Promise<void> {
+  async setMuted(
+    roomId: string,
+    uid: string,
+    muted: boolean,
+    source: 'mic' | 'camera' | 'screen' = 'mic',
+  ): Promise<ProducerState[]> {
     const peer = this.rooms.get(roomId)?.peers.get(uid);
     if (!peer) {
       this.log.warn({ room: roomId, uid, source }, 'setMuted: peer not in media room');
-      return;
+      return [];
     }
-    await peer.setMuted(source, muted);
+    return peer.setMuted(source, muted);
   }
 
   async restartIce(roomId: string, uid: string, pc: 'send' | 'recv'): Promise<void> {

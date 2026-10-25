@@ -171,7 +171,9 @@ talk::VideoDecoderFactory 同理（H.265 解码能力单独探测）
 
 - 信令 `session.hello` 的 `caps.video.codecs` 上报探测结果（含 `hw` 标记），见 [协议 9.2](./talk-protocol.md)。
 - 编码优先级：H.264 硬编 > H.265（双方都有硬件时）> VP8 软编。
-- mediasoup 只转发不解码，H.264/H.265 都支持；房间内只要有一端不支持 H.265，该发布者就用 H.264 发（或 simulcast 时多一路 H.264）。
+- **mediasoup 3.30.1 不支持 H.265**（2026-10-24 容器实测：Router 注册 `video/H265` 直接报 `media codec not supported`；上游 CHANGELOG 3.16.6 "Remove H265 codec"，PR #1564，worker 侧 H.265 帧解析/关键帧识别已删除，NACK/PLI/requestKeyFrame 均不可用）。**SFU 房间视频 = H.264 单层**，H.265-only offer 服务端返回 501（`sdp.ts` parseSdp）。
+- **H.265 仅 P2P 直连可用**（`p2p.offer/answer` 透明转发，服务端零参与）：双方都有 H.265 硬件时可用，任一方没有则 SDP 协商自然回落 H.264；第三人入房切 SFU 后新 PC 重新以 H.264 协商（模式切换本就重建 PC，无需额外处理）。
+- 上游若恢复 H265，服务端需同步改四处：`codecs.ts` 注册 codec、`sdp.ts` parseSdp 匹配 h265 并去掉 501、`buildSdp` 的 rtpmap 按 codec 写（现为 `H264`/`opus` 硬编码）、`room-media.ts` `recvCaps` 放行，约 1 天。不建议 fork worker 补齐：关键帧识别被删，弱网下重传/关键帧恢复全废。
 - 后续浏览器接入：Chrome 136+ 在有硬件支持时才协商 H.265，必须保留 H.264。
 
 ## 6. 其他平台

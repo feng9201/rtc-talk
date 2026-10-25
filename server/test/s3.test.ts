@@ -6,6 +6,11 @@ import { connect, type TestClient } from './helpers/ws-client.js';
 
 const logger = createLogger({ level: 'silent', pretty: false });
 const HELLO = { client: { platform: 'linux-arm64', version: '0.0.1' }, caps: { p2p: true } };
+/** p2p_video 声明：双方都有才允许 P2P 链路上带视频 */
+const VIDEO_HELLO = {
+  client: { platform: 'linux-arm64', version: '0.0.1' },
+  caps: { p2p: true, p2p_video: true },
+};
 
 describe('call and p2p mode', () => {
   let app: App | undefined;
@@ -47,16 +52,18 @@ describe('call and p2p mode', () => {
 
   it('places two capable peers on p2p and forwards sdp', async () => {
     const base = await start();
-    const a = await open(base, 'alice');
-    const b = await open(base, 'bob');
+    const a = await open(base, 'alice', VIDEO_HELLO);
+    const b = await open(base, 'bob', VIDEO_HELLO);
     expect((await join(a, 'r-1')).data.media_mode).toBe('sfu');
 
     const offered = a.waitReq('room.mediaMode', (d) => d.mode === 'p2p');
     const jb = await join(b, 'r-1');
     const mode = await offered;
     expect(mode.p2p).toMatchObject({ role: 'offerer', peer: 'bob' });
+    expect(mode.p2p_video).toBe(true);
     expect(jb.data).toMatchObject({
       media_mode: 'p2p',
+      p2p_video: true,
       p2p: { role: 'answerer', peer: 'alice', session: mode.p2p.session },
     });
 
@@ -84,6 +91,34 @@ describe('call and p2p mode', () => {
     await expect(b.waitNtf('p2p.offer', () => true, 200)).rejects.toThrow(/timeout/);
     await expect(a.waitNtf('p2p.offer', () => true, 200)).rejects.toThrow(/timeout/);
     expect((await a.req('sfu.publish', { sdp: 'v=0' })).error).toMatchObject({ code: 409 });
+  });
+
+  it('marks p2p_video false when only one peer declares it', async () => {
+    const base = await start();
+    const a = await open(base, 'alice', VIDEO_HELLO);
+    const b = await open(base, 'bob');
+    await join(a, 'r-1');
+    expect((await join(b, 'r-1')).data).toMatchObject({ media_mode: 'p2p', p2p_video: false });
+  });
+
+  it('exposes prometheus metrics and aggregates sfu.stats', async () => {
+    const base = await start();
+    const a = await open(base, 'alice');
+    a.ntf('sfu.stats', { pc: 'recv', rtt: 80, loss: 50, bitrate: 32000 });
+    a.ntf('sfu.stats', { pc: 'recv', rtt: 40, loss: 0.01, bitrate: 48000 });
+    await new Promise((r) => setTimeout(r, 100));
+
+    const res = await fetch(`${base}/metrics`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('text/plain');
+    const text = await res.text();
+    expect(text).toContain('talk_up 1');
+    expect(text).toContain('talk_signaling_connections 1');
+    expect(text).toContain('talk_sfu_client_stats_reports_total 2');
+    expect(text).toContain('talk_sfu_client_rtt_ms_avg 60');
+    // loss 兼容 0~1 与 0~100：(0.5 + 0.01) / 2
+    expect(text).toContain('talk_sfu_client_loss_ratio_avg 0.255');
+    expect(text).toContain('talk_sfu_client_bitrate_avg 40000');
   });
 
   it('keeps a forced sfu room on sfu', async () => {

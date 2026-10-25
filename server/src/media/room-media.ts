@@ -21,6 +21,14 @@ export interface RecvOffer {
 
 export type AnswerHandler = (uid: string, offer: RecvOffer) => Promise<string>;
 
+/** media.producer 通知的载荷：producer 的媒体事实 */
+export interface ProducerState {
+  mid: string;
+  kind: 'audio' | 'video';
+  source: 'mic' | 'camera' | 'screen';
+  paused: boolean;
+}
+
 interface Slot {
   mid: string;
   kind: 'audio' | 'video';
@@ -51,6 +59,28 @@ function trackSource(producer: ms.Producer): 'mic' | 'camera' | 'screen' {
   return producer.kind === 'video' ? 'camera' : 'mic';
 }
 
+/** 参数对象按 key 排序后比较，避免字段顺序不同导致误判 */
+function sameParams(a?: Record<string, unknown>, b?: Record<string, unknown>): boolean {
+  const norm = (p?: Record<string, unknown>) =>
+    JSON.stringify(Object.entries(p ?? {}).sort(([x], [y]) => x.localeCompare(y)));
+  return norm(a) === norm(b);
+}
+
+/**
+ * 同 mid 重发布（ICE restart、重发完整 offer）能否沿用原 producer。
+ * 编码/PT/SSRC/fmtp 任一变化都要重建，否则客户端与 producer 的 RTP 对不上。
+ */
+function canReuse(producer: ms.Producer, rtp: ms.RtpParameters, source: 'mic' | 'camera' | 'screen'): boolean {
+  if (producer.closed || trackSource(producer) !== source) return false;
+  const current = producer.rtpParameters;
+  const a = current.codecs[0];
+  const b = rtp.codecs[0];
+  if (!a || !b) return false;
+  if (a.mimeType !== b.mimeType || a.payloadType !== b.payloadType) return false;
+  if (!sameParams(a.parameters, b.parameters)) return false;
+  return current.encodings?.[0]?.ssrc === rtp.encodings?.[0]?.ssrc;
+}
+
 export class PeerMedia {
   readonly producers = new Map<string, ms.Producer>();
   private send?: ms.WebRtcTransport;
@@ -67,6 +97,8 @@ export class PeerMedia {
   private readonly sessionId = String(Math.floor(Math.random() * 1e9));
   private muted: boolean;
   private cameraMuted: boolean;
+  /** 屏幕共享是否已停（重发布同 mid 时沿用，不会因 ICE restart 意外恢复） */
+  private screenMuted = false;
   private timer: NodeJS.Timeout | undefined;
   private busy = false;
   private dirty = false;
@@ -95,7 +127,7 @@ export class PeerMedia {
     tracks?: { mid: string; kind: 'audio' | 'video'; source?: 'mic' | 'camera' | 'screen' }[],
     videoPolicy?: { enabled: boolean; max_publishers: number },
     countRoomVideo?: (excludeMids: Set<string>) => number,
-  ): Promise<{ sdp: string; producers: { mid: string; producer_id: string; paused: boolean }[] }> {
+  ): Promise<{ sdp: string; producers: (ProducerState & { producer_id: string })[] }> {
     const parsed = parseSdp(sdp);
     this.checkVideoPolicy(parsed.tracks, tracks, videoPolicy, countRoomVideo);
     if (!this.send) {
@@ -121,7 +153,7 @@ export class PeerMedia {
       this.remoteIceUfrag = parsed.iceUfrag;
     }
 
-    const produced: { mid: string; producer_id: string; paused: boolean }[] = [];
+    const produced: (ProducerState & { producer_id: string })[] = [];
     const sections: SdpSection[] = [];
     for (const track of parsed.tracks) {
       if (track.closed || !track.rtpParameters) {
@@ -135,17 +167,31 @@ export class PeerMedia {
       }
       const declared = tracks?.find((t) => t.mid === track.mid)?.source;
       const source = track.kind === 'video' ? (declared === 'screen' ? 'screen' : 'camera') : 'mic';
-      let producer = [...this.producers.values()].find((p) => p.appData.mid === track.mid && !p.closed);
-      if (producer) producer.close();
-      producer = await this.send.produce({
+      const existing = [...this.producers.values()].find((p) => p.appData.mid === track.mid && !p.closed);
+      const paused = source === 'screen' ? this.screenMuted : source === 'camera' ? this.cameraMuted : this.muted;
+      if (existing && canReuse(existing, track.rtpParameters, source)) {
+        // 同一路重发布：沿用 producer，只对齐暂停状态，避免 ICE restart 丢首帧
+        if (existing.paused !== paused) await (paused ? existing.pause() : existing.resume());
+        produced.push({ mid: track.mid, producer_id: existing.id, kind: track.kind, source, paused: existing.paused });
+        sections.push({
+          mid: track.mid,
+          kind: track.kind,
+          closed: false,
+          direction: 'recvonly',
+          rtpParameters: existing.rtpParameters,
+        });
+        continue;
+      }
+      if (existing) existing.close();
+      const producer = await this.send.produce({
         kind: track.kind,
         rtpParameters: track.rtpParameters,
-        paused: source === 'screen' ? false : source === 'camera' ? this.cameraMuted : this.muted,
+        paused,
         appData: { uid: this.uid, mid: track.mid, source },
       });
       this.producers.set(producer.id, producer);
       this.watchProducer(producer);
-      produced.push({ mid: track.mid, producer_id: producer.id, paused: producer.paused });
+      produced.push({ mid: track.mid, producer_id: producer.id, kind: track.kind, source, paused: producer.paused });
       sections.push({
         mid: track.mid,
         kind: track.kind,
@@ -185,9 +231,9 @@ export class PeerMedia {
       if (sources.has(source)) throw new TalkError(409, `duplicate ${source} video track`);
       sources.add(source);
     }
-    // 本次 offer 未覆盖的本端存量视频轨，source 不能与新轨重复
+    // 本次 offer 未覆盖的本端存量视频轨，source 不能与新轨重复（停掉的旧路不占名额）
     for (const p of this.producers.values()) {
-      if (p.closed || p.kind !== 'video') continue;
+      if (p.closed || p.paused || p.kind !== 'video') continue;
       if (offerMids.has(String(p.appData.mid))) continue;
       const source = p.appData.source === 'screen' ? 'screen' : 'camera';
       if (sources.has(source)) throw new TalkError(409, `duplicate ${source} video track`);
@@ -216,15 +262,23 @@ export class PeerMedia {
     this.schedule();
   }
 
-  async setMuted(source: 'mic' | 'camera', muted: boolean): Promise<void> {
+  /** 按 source 精确暂停/恢复：mic→音频，camera→摄像头，screen→屏幕共享。返回受影响的 producer */
+  async setMuted(source: 'mic' | 'camera' | 'screen', muted: boolean): Promise<ProducerState[]> {
     if (source === 'camera') this.cameraMuted = muted;
+    else if (source === 'screen') this.screenMuted = muted;
     else this.muted = muted;
     const targets = [...this.producers.values()].filter((p) => {
       if (p.closed) return false;
       if (source === 'mic') return p.kind === 'audio';
-      return p.kind === 'video' && p.appData.source !== 'screen';
+      return p.kind === 'video' && (p.appData.source === 'screen' ? 'screen' : 'camera') === source;
     });
     await Promise.all(targets.map((p) => (muted ? p.pause() : p.resume())));
+    return targets.map((p) => ({
+      mid: String(p.appData.mid ?? ''),
+      kind: p.kind === 'video' ? 'video' : 'audio',
+      source: trackSource(p),
+      paused: p.paused,
+    }));
   }
 
   async restartIce(pc: 'send' | 'recv'): Promise<void> {

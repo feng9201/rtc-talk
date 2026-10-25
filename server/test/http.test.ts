@@ -1,6 +1,6 @@
 import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
-import { createHttpServer, listen, type HealthInfo } from '../src/http/server.js';
+import { createHttpServer, listen, type HealthInfo, type Route } from '../src/http/server.js';
 import { createLogger } from '../src/logger.js';
 
 const logger = createLogger({ level: 'silent', pretty: false });
@@ -9,8 +9,8 @@ describe('http server', () => {
   let close: (() => void) | undefined;
   afterEach(() => close?.());
 
-  async function start(health: () => HealthInfo): Promise<string> {
-    const server = createHttpServer({ logger, health });
+  async function start(health: () => HealthInfo, routes?: Record<string, Route>): Promise<string> {
+    const server = createHttpServer({ logger, health, ...(routes ? { routes } : {}) });
     await listen(server, '127.0.0.1', 0);
     close = () => server.close();
     return `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -31,5 +31,15 @@ describe('http server', () => {
   it('unknown path returns 404', async () => {
     const base = await start(() => ({ ok: true }));
     expect((await fetch(`${base}/nope`)).status).toBe(404);
+  });
+
+  it('routes can return plain text', async () => {
+    const base = await start(() => ({ ok: true }), {
+      '/metrics': () => ({ status: 200, contentType: 'text/plain; version=0.0.4', body: 'talk_up 1\n' }),
+    });
+    const res = await fetch(`${base}/metrics`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('text/plain; version=0.0.4');
+    expect(await res.text()).toBe('talk_up 1\n');
   });
 });

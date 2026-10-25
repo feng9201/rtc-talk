@@ -83,13 +83,23 @@ describe('RoomManager', () => {
     expect(() => rooms.setMuted('r-1', 'zz', false)).toThrow(expect.objectContaining({ code: 409 }));
   });
 
-  it('setVideo emits peerUpdated only on change', () => {
+  it('setVideoSource tracks camera and screen independently', () => {
     rooms.join(input('a'));
     events = [];
-    rooms.setVideo('r-1', 'a', false);
+    rooms.setVideoSource('r-1', 'a', 'camera', false);
     expect(events).toHaveLength(0);
-    rooms.setVideo('r-1', 'a', true);
-    expect(events).toMatchObject([{ type: 'peerUpdated', uid: 'a', patch: { video: { on: true } } }]);
-    expect(() => rooms.setVideo('r-1', 'zz', true)).toThrow(expect.objectContaining({ code: 409 }));
+    rooms.setVideoSource('r-1', 'a', 'camera', true);
+    expect(events).toMatchObject([
+      { type: 'peerUpdated', uid: 'a', patch: { video: { camera: true, screen: false, on: true } } },
+    ]);
+    events = [];
+    rooms.setVideoSource('r-1', 'a', 'screen', true);
+    expect(events).toMatchObject([{ type: 'peerUpdated', uid: 'a', patch: { video: { screen: true, on: true } } }]);
+    // 摄像头关掉后屏幕还开着，汇总值仍为 true
+    rooms.setVideoSource('r-1', 'a', 'camera', false);
+    expect(rooms.get('r-1')?.members.get('a')?.video).toEqual({ camera: false, screen: true, on: true });
+    rooms.setVideoSource('r-1', 'a', 'screen', false);
+    expect(rooms.get('r-1')?.members.get('a')?.video).toEqual({ camera: false, screen: false, on: false });
+    expect(() => rooms.setVideoSource('r-1', 'zz', 'screen', true)).toThrow(expect.objectContaining({ code: 409 }));
   });
 });

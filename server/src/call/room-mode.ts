@@ -17,6 +17,8 @@ export interface P2pAssignment {
 export interface ModeView {
   media_mode: MediaMode;
   p2p?: P2pAssignment;
+  /** P2P 链路能否承载视频（双方 caps.p2p_video） */
+  p2p_video?: boolean;
 }
 
 export interface RoomModeDeps {
@@ -24,6 +26,7 @@ export interface RoomModeDeps {
   p2pTimeoutMs: number;
   room(roomId: string): Room | undefined;
   supportsP2p(uid: string): boolean;
+  supportsP2pVideo(uid: string): boolean;
   callerOf(roomId: string): string | undefined;
   online(uid: string): boolean;
   request(uid: string, method: string, data: unknown): Promise<unknown>;
@@ -176,6 +179,7 @@ export class RoomMode {
       memberCount: members.length,
       allSupportP2p: members.length > 0 && members.every((uid) => this.deps.supportsP2p(uid)),
       stickySfu: state.stickySfu,
+      talkMode: room.policy.talk_mode,
     });
     if (desired === state.mode) {
       state.pendingReason = undefined;
@@ -214,8 +218,7 @@ export class RoomMode {
   }
 
   private leaveP2p(roomId: string, state: RoomState, room: Room, memberCount: number): void {
-    const reason: ModeReason =
-      state.pendingReason ?? (memberCount > 2 || room.policy.media_mode !== 'sfu' ? 'peer_count' : 'policy');
+    const reason: ModeReason = state.pendingReason ?? (memberCount > 2 ? 'peer_count' : 'policy');
     state.pendingReason = undefined;
     const stick = reason === 'p2p_failed' || reason === 'policy' || (reason === 'peer_count' && memberCount > 2);
     if (stick) state.stickySfu = true;
@@ -360,6 +363,7 @@ export class RoomMode {
     return {
       media_mode: 'p2p',
       p2p: { peer: role === 'offerer' ? session.answerer : session.offerer, role, session: session.id },
+      p2p_video: this.p2pVideo(session),
     };
   }
 
@@ -369,12 +373,18 @@ export class RoomMode {
       mode: 'p2p' as const,
       reason,
       media_mode: 'p2p' as const,
+      p2p_video: this.p2pVideo(session),
       p2p: {
         peer: role === 'offerer' ? session.answerer : session.offerer,
         role,
         session: session.id,
       },
     };
+  }
+
+  /** 双方都声明 caps.p2p_video 才允许在 P2P 链路上加视频 m-line */
+  private p2pVideo(session: P2pSession): boolean {
+    return this.deps.supportsP2pVideo(session.offerer) && this.deps.supportsP2pVideo(session.answerer);
   }
 
   private emitClose(session: P2pSession): void {

@@ -487,3 +487,55 @@ cd deploy && ./package.sh && ./deploy.sh   # 按现场发布流程执行
 
 - 未做能力位协商（`caps.p2p_video`）：只与最新版服务端/客户端互通，旧客户端不兼容。
 - `talk-cli` 的 `--video-source` 默认值是 `screen`，测摄像头必须显式传 `--video-source camera`，否则会误以为摄像头未生效。
+
+---
+
+## 第三部分 · 服务端视频 P1 + S5 第一批（2026-10-24）
+
+> 对应 `plan/talk-protocol.md` 本次扩展；服务端已落地，64 用例通过。客户端（Windows）需按第 4 节配合三处。
+
+### 1. 协议扩展（不升 v，旧客户端忽略未知字段）
+
+| 变更 | 说明 |
+|---|---|
+| `media.setMute` 的 `source` 增加 `screen` | 摄像头/屏幕共享互相独立；`camera` 不再隐式停共享 |
+| `room.peerUpdated.video` → `{camera, screen, on}` | `on = camera OR screen`，保留给只认 `{on}` 的旧端 |
+| 新增 `media.producer`（S→C ntf） | `{uid, mid, kind, source, paused}`：producer publish/pause/resume 后的媒体事实，接收端可据此清空停掉的共享画面 |
+| `room.mediaMode` / join 应答增加 `p2p_video` | 双方 `caps.p2p_video` 都为 true 才允许 P2P 链路带视频 |
+| join 应答增加 `sfu_video_codecs: ["h264"]` | SFU 可转发的编码；P2P 不受限制 |
+| `caps` 改为结构化解析 | 只读 `p2p` / `p2p_video` / `video.codecs[]`，解析失败不拒绝 hello |
+| `talk_mode=ptt/moderated` 强制 SFU | `mode-policy` 决策加入 talk_mode；P2P 房里主持人切 PTT 会触发 `room.mediaMode{reason:"policy"}` |
+| `sfu.stats` 支持 notify 上报 | 服务端聚合 rtt/loss/bitrate 平均值，`loss` 兼容 0~1 与 0~100 |
+
+### 2. 服务端实现点
+
+- `room-manager.ts`：`video: {camera, screen, on}`，`setVideoSource(room, uid, source, on)` 独立维护两路。
+- `room-media.ts`
+  - `setMuted(source)` 精确匹配：`mic`→音频、`camera`→`appData.source!=='screen'`、`screen`→`appData.source==='screen'`；新增 `screenMuted`，重发布同 mid 时沿用，ICE restart 不会把已停的共享恢复。
+  - **同 mid producer 复用**：编码 mime / payloadType / fmtp / SSRC 全一致时复用原 producer（只对齐 paused），不再 close+produce → ICE restart 不必等新关键帧。
+  - 返回 `kind/source/paused`，供信令层广播 `media.producer`。
+- `media-node.ts`：`max_publishers` 计数改为“未关闭且未暂停”；停共享后名额立即释放。
+- `signaling.ts`：`media.producer` 广播（除本人）、`sfu.stats` 聚合、`statsSnapshot()`、caps 结构化。
+- `metrics.ts` + `GET /metrics`：Prometheus 文本格式（无第三方依赖），含 `talk_up`、`talk_uptime_seconds`、`talk_process_rss_bytes`、`talk_signaling_connections`、`talk_sessions`、`talk_rooms`、`talk_media_workers`、`talk_media_workers_closed`、`talk_media_rooms`、`talk_sfu_client_*`。
+- `index.ts`：worker 死亡改为 3s 后退出（先让 `/healthz` 503 摘流）；`deploy/systemd/talk-server.service`：`MemoryHigh=800M` / `MemoryMax=1536M`（原 600M 在多房间视频时易被 cgroup OOM kill）。
+
+### 3. 测试
+
+`npx vitest run` 64 用例通过（新增 5 个）：
+
+- `room.test.ts`：camera/screen 独立，`on` 汇总；
+- `mode-policy.test.ts`：ptt/moderated 强制 SFU；
+- `s3.test.ts`：`p2p_video` 双方/单方声明；`/metrics` 与 `sfu.stats` 聚合；
+- `sfu.int.test.ts`：screen 暂停释放名额 + `media.producer` 广播 + 同 offer 重发复用 producer_id。
+
+### 4. 客户端待配合（Windows / RK）
+
+1. **停共享发 `media.setMute{source:"screen", muted:true}`**：当前 `call_session.cpp:403` 注释为“屏幕路 producer 常驻 resume，停采即停流，无需通知服务端”——SFU 下这样名额不释放、对端停在最后一帧。需在 `video.stop` 的 SFU 分支补发；`video.start` 时补 `muted:false`。
+2. **处理 `media.producer`**：`source=screen && paused=true` 时立即清空共享画面（不必等 RTP 超时）。
+3. **`session.hello` 上报 `caps.p2p_video`**：P2P 能带视频才置 true；不报则按 false 处理（P2P 仍可通话，但不得加视频 m-line）。
+
+### 5. 未完成 / 下一步
+
+- S4（`floor.*`、`host.muteAll/kick`、ActiveSpeaker/AudioLevel observer、`room.subscribeLevels`）：协议已定义，代码未实现。
+- H.265：仅 P2P 可用；SFU 侧维持 501（mediasoup 3.16.6 已移除 HEVC，上游 issue #1789）。
+- 弱网（tc netem）与 24h 长稳需在测试服执行，本轮未做。
