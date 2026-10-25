@@ -536,6 +536,71 @@ cd deploy && ./package.sh && ./deploy.sh   # 按现场发布流程执行
 
 ### 5. 未完成 / 下一步
 
-- S4（`floor.*`、`host.muteAll/kick`、ActiveSpeaker/AudioLevel observer、`room.subscribeLevels`）：协议已定义，代码未实现。
+- S4（`floor.*`、`host.muteAll/kick`、ActiveSpeaker/AudioLevel observer、`room.subscribeLevels`）：本部分时为“协议已定义、代码未实现”；已于 2026-10-25 完成，见第四部分。
 - H.265：仅 P2P 可用；SFU 侧维持 501（mediasoup 3.16.6 已移除 HEVC，上游 issue #1789）。
 - 弱网（tc netem）与 24h 长稳需在测试服执行，本轮未做。
+
+---
+
+## 第四部分 · 服务端 S4 对讲形态（2026-10-25）
+
+> 对应 `plan/talk-protocol.md` §8 / §8.1 / §8.2；服务端已落地，`npx vitest run` 75 用例通过，tsc / eslint / prettier 均干净。客户端（Windows / RK）需按第 4 节配合。
+
+### 1. 新增能力
+
+| 能力 | 协议 | 说明 |
+|---|---|---|
+| 抢麦 | `floor.request` / `floor.release` / `floor.state` | 单 holder + FIFO 队列；`ptt_max_hold_sec` 到期自动收回并递补 |
+| 被收回 | `floor.revoked{reason}` | `timeout`（超时）/ `preempt`（主持人改授他人）/ `host`（主持人收回） |
+| 主持人管控 | `host.grant` / `host.muteAll` / `host.kick` | 放行或收回发言权、全员静音、踢出房间 |
+| 主讲人 | `room.activeSpeaker{uid}` | ActiveSpeakerObserver（interval 300ms），房间内广播 |
+| 音量条 | `room.subscribeLevels` + `room.audioLevels` | AudioLevelObserver（500ms，≤2 次/秒），只推给已订阅成员 |
+| 开麦限流 | `media.setMute{muted:false}` → `429` | 仅 `free` 模式：`max_speakers` 按“未关闭且未暂停”的 audio producer 计 |
+
+### 2. 服务端实现点
+
+- `room/floor.ts`（新增）：`Floor` 类维护 `holder / queue / expiresAt / timer`，对外 `request / release / grant / revoke / drop / reset / onPolicy / view`，依赖通过 `FloorDeps` 注入（`policy / members / isHost / setMuted / applyMic / notify / broadcast`），不直接依赖 signaling。
+  - 定时器 `setTimeout(...).unref()`，避免阻塞进程退出；`hold()` 每次重置到期时间。
+  - 暂停/恢复统一走 `setMic()`：先 `setMuted`（发 `room.peerUpdated`），再 `applyMic`（发 `media.producer`）。
+- `signaling.ts`：新增 6 个 handler（`floor.request/release`、`host.grant/muteAll/kick`、`room.subscribeLevels`）；`roomView()` 带上 `floor` 字段；入房时 `talk_mode != free` 强制 `muted=true`；`media.setMute{muted:false}` 前调 `checkSpeakAllowed()`（ptt/moderated 无 floor → `403`，free 超 `max_speakers` → `429`）；`room.peerLeft` / `room.closed` / `policyChanged` 分别触发 `floors.drop/reset/onPolicy`。
+- `room/room-manager.ts`：`policyChanged` 事件新增 `previous`，供 floor 判断 talk_mode 是否真的变了。
+- `media/room-media.ts`：`RoomMedia` 懒加载 `enableObservers()`（`createActiveSpeakerObserver({interval:300})` + `createAudioLevelObserver({maxEntries:24, threshold:-70, interval:500})`），转发 `dominantspeaker` / `volumes`；`close()` 一并关闭 observer。
+  - 音量归一化：`(dBFS + 100) / 100` 并截断到 `0..1`、保留两位小数。
+- `media/media-node.ts`：`setAudioObservers(sink)` 把 `(roomId, uid)` / `(roomId, entries)` 回灌给信令层；`resumedAudioCount(roomId, excludeUid)` 供 `max_speakers` 计数。
+
+### 3. 语义与易踩坑
+
+1. **moderated 非主持人 `request` 一律排队**（即使当前空闲）：靠 `host.grant` 放行，避免“谁先按谁先说”；主持人自己按麦直接获批，但仍占单麦口。
+2. **`preempt` 只出现在主持人改授**：`host.grant{uid}` 授予新人时，原持有人收到 `floor.revoked{reason:"preempt"}`；`host.grant{allow:false}` 收回则发 `host`。
+3. **`ptt_queue=false` 的拒绝不带 `queue_pos`**：客户端应提示“忙线”并在下次按键重试，不要轮询。
+4. **`floor.request` 在 p2p 下 `409`**：发言权依赖服务端 `producer.pause()`，P2P 无服务端媒体面；切 `ptt/moderated` 会强制 SFU。
+5. **`host.muteAll` 会清空 floor**：被静音的人即使原本持有发言权也要重新 `floor.request`，且广播 `floor.state{holder:null}`。
+6. **observer 不覆盖 paused producer**：没上台的人不会出现在 `room.audioLevels.levels` 里：UI 用“先 `floor.state` 定颜色、用 `levels` 补音量条”的思路，而不是靠 `levels` 是否存在判断在麦人数。
+7. **音量订阅是会话级**：断线重连或重新 `session.hello` 后需重新 `room.subscribeLevels{enabled:true}`（服务端在会话销毁时清理）。
+8. **`host.kick` 先发再断**：目标端会先收到 `session.kicked{reason:"kicked"}`，随后 WS 以 `4003` 关闭；其他成员收到 `room.peerLeft{reason:"kicked"}`。不能踢自己（`400`）。
+9. **`free` 模式下 `host.grant` 返回 `409`**：没有发言权概念，客户端不要在自由通话里展示“放行/收回”按钮（`floor.request` 在 `free` 下始终 `{granted:true}`）。
+
+### 4. 客户端待配合（Windows / RK）
+
+1. **入房后不要本地直接开麦**：`talk_mode != free` 时服务端已强制静音，本地要先 `floor.request`，**收到 `granted:true` 后再恢复 RTP**（服务端此时已 `resume`）。
+2. **按键松手发 `floor.release`**：长时间不释放会被 `ptt_max_hold_sec` 收回并收到 `floor.revoked{reason:"timeout"}`，届时必须停发。
+3. **处理 `floor.state`**：用它渲染“谁在说 / 排队人数 / 倒计时”（`expires_at` 为 epoch ms）；队列变化也会推这条通知。
+4. **`floor.revoked` 要停发并提示**：`host` = 被主持人收回，`preempt` = 改授他人，`timeout` = 超时；三种都要立刻 `setMuted` 本地发送端。
+5. **主持人 UI 调 `host.*`**：非主持人调用会收到 `403`，不要默认展示按钮（按 `room.role === "host"` 控制）。
+6. **音量条接 `room.audioLevels`**：先 `room.subscribeLevels{enabled:true}`；`level` 为 0~1 可直接映射高度，`0` 就显示为静音。
+7. **`session.kicked` 需单独处理**：不要当成普通断线重连，否则会被踢后反复重连。
+
+### 5. 测试
+
+`npx vitest run` 75 用例通过（本轮新增 11 个）：
+
+- `floor.test.ts`（8）：空闲获批 + 排队去重、释放递补、超时递补（`floor.revoked{timeout}`）、`ptt_queue=false` 拒排、moderated 需主持人放行（含主持人自麦 + 改授 `preempt`）、离房清队列、切 ptt 全员暂停、free 不占 floor。
+- `s3.test.ts`（+1）：`runs ptt floor and host controls` —— ptt 强制 sfu、入房静音、request/release 递补、无发言权开麦 `403`、非主持人 `host.*` `403`、`host.muteAll` 全员静音+清 floor、`host.kick` 的 `session.kicked`/`peerLeft`。
+- `sfu.int.test.ts`（+2）：ptt 下 producer 默认 paused、双向零收包，获批后对端立即有声、排队后释放递补；free + `max_speakers=1` 时第二人开麦 `429`，前者关麦后名额释放。
+
+### 6. 未完成 / 下一步
+
+- 客户端侧 S4（Windows 按键麦、排队 UI、音量条）尚未开始；RK3576 端同上。
+- `/metrics` 本轮未加 floor 相关指标（`talk_floor_holder_*` 等），如需大盘再补。
+- 多房间长时间抢麦压测（队列抖动、定时器泄漏）未做，建议在测试服跟 netem 一起验。
+

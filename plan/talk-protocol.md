@@ -417,7 +417,8 @@ S       : 两端都 ok 后通知 p2p 关闭 → A,B 关闭 P2P PC
 ## 8. 发言权（floor.*，talk_mode=ptt/moderated）
 
 - **仅 SFU 模式生效**：`talk_mode` 为 `ptt`/`moderated` 时房间强制 `media_mode=sfu`（见 5.2）；P2P 房间里主持人切到 PTT 会触发 `room.mediaMode{mode:"sfu",reason:"policy"}`。
-- `max_speakers`：同时处于 `resume` 的音频 producer 上限，0=不限；超过时 `floor.request` 排队，`media.setMute{muted:false}` 返回 `429`。
+- **单麦口**：同一时刻只有一个 holder，其余按申请先后 FIFO 排队；`ptt_max_hold_sec` 到期自动收回（`reason:"timeout"`）并让队首递补。
+- `max_speakers` **只在 `free` 模式生效**（口径见 5.1：按“未关闭且未暂停”的 audio producer 计），超限时 `media.setMute{muted:false}` 返回 `429`；`ptt`/`moderated` 靠单 holder 限流，不再叠加人数上限。
 
 | method | 方向 | data | 说明 |
 |---|---|---|---|
@@ -435,6 +436,34 @@ PTT 的媒体实现：
 - `floor.request` 获批后服务端 `producer.resume()` 并广播 `floor.state`，客户端收到应答后恢复发送；
 - 其他成员的 Consumer 已预先建立（6.4），抢麦不需要重协商；
 - 目标：按键到对端出声 < 300ms。
+
+### 8.1 实现口径（服务端 `server/src/room/floor.ts`）
+
+`floor.request`：
+
+| 当前状态 | `talk_mode` | 应答 | 服务端动作 |
+|---|---|---|---|
+| 任意 | `free` | `{granted:true}` | 不占 floor，也不需要 `floor.release` |
+| 本人已是 holder | `ptt`/`moderated` | `{granted:true}` | 幂等，不重置超时 |
+| 非主持人 | `moderated` | `{granted:false, queue_pos}` | 一律入队，等 `host.grant{allow:true}`；避免“谁先按谁先说” |
+| 空闲 | `ptt`/`moderated` | `{granted:true}` | `setMuted(false)` + `producer.resume()` + 广播 `floor.state` |
+| 被占用且 `ptt_queue=true` | `ptt` | `{granted:false, queue_pos}` | 入队（重复申请返回原位置，不重复排队） |
+| 被占用且 `ptt_queue=false` | `ptt` | `{granted:false}` | 不入队，客户端下次按键再试 |
+
+- `moderated` 下主持人自己按麦直接获批（不需要自授权），但同样占用单麦口，主持人改授他人时原持有人收到 `floor.revoked{reason:"preempt"}`。
+- `floor.release`：holder 释放 → 暂停 producer、清定时器、队首递补；仅是排队者释放 → 只移出队列。
+- `host.grant{uid, allow:false}`：若 `uid` 是 holder → `floor.revoked{reason:"host"}` + 暂停 + 递补；若仅在排队 → 移出队列。
+- `host.muteAll{except}`：对每个成员 `setMuted(true)` + 给本人 `media.forceMute{source:"mic"}` + 广播 `media.producer`，最后清空 floor 并广播 `floor.state{holder:null}`；res 返回 `{muted:[uid]}`。
+- `host.kick{uid}`：先 `floor.drop` 收尾，再 `room.peerLeft{reason:"kicked"}` 广播、给本人 `session.kicked{reason:"kicked"}`、以关闭码 `4003` 断开；不能踢自己（`400`）。
+- 成员离开（`leave/timeout/kicked/replaced`）与房间关闭会自动清理队列与定时器；`talk_mode` 变化时（`policyChanged`）清空 floor，切进 `ptt`/`moderated` 还会把全员静音（`media.producer` 广播 `paused:true`）。
+- 错误：`floor.request` 在 `media_mode=p2p` 下 `409`（发言权依赖服务端暂停 producer）；`host.grant` 在 `free` 模式 `409`（没有发言权概念）；`host.*` 非主持人 `403`，非本房间成员 `404`。
+
+### 8.2 音量与主讲人（仅 SFU）
+
+- `room.subscribeLevels{enabled}` 是按会话开关：应答 `{enabled, media_mode}`，关闭后不再收到 `room.audioLevels`；重连/重发 `session.hello` 后需要重新开启。
+- `room.activeSpeaker{uid}`：`ActiveSpeakerObserver`（`interval=300ms`）的 `dominantspeaker` 事件，广播给房间内所有人，不做订阅过滤。
+- `room.audioLevels{levels:[{uid, level}]}`：`AudioLevelObserver`（`maxEntries=24, threshold=-70dBov, interval=500ms`，即 ≤2 次/秒），只推给已订阅的成员；`level` 由 dBFS 映射到 `0..1` 并保留两位小数（`(dB+100)/100` 截断），`0` 表示静音。
+- 上台 `producer.resume()` 的瞬间 observer 才开始产出电平，`paused` 的 producer 不会出现在 `levels` 里，客户端可据此把未上台者置灰。
 
 ---
 
