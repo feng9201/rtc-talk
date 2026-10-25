@@ -603,4 +603,112 @@ describe('sfu audio', () => {
     bSend.close();
     bWire.close();
   }, 20000);
+
+  it('grants ptt floor and resumes the paused producer', async () => {
+    const rtcPort = await freePort();
+    media = await MediaNode.create({
+      numWorkers: 1,
+      workerBin: process.env.MEDIASOUP_WORKER_BIN,
+      listenIp: '127.0.0.1',
+      announcedAddress: '127.0.0.1',
+      port: rtcPort,
+      logger,
+      onWorkerDied: () => {},
+    });
+    const config = loadConfig({
+      TALK_ENV: 'dev',
+      TALK_HTTP_HOST: '127.0.0.1',
+      TALK_JWT_SECRET: 's'.repeat(40),
+    });
+    config.http.port = 0;
+    app = createApp({ config, logger, media });
+    const addr = await app.listen();
+    const base = `http://127.0.0.1:${addr.port}`;
+
+    async function open(uid: string, policy?: object) {
+      const token = ((await (await fetch(`${base}/dev/token?uid=${uid}`)).json()) as { token: string }).token;
+      const wire = await connect(base, token);
+      const peer = new Peer(wire);
+      peers.push(peer);
+      expect((await wire.req('session.hello', { client: { platform: 'linux', version: '0' } })).ok).toBe(true);
+      const joined = await wire.req('room.join', {
+        room_id: 'sfu-ptt',
+        media: { audio: { muted: false } },
+        ...(policy ? { policy } : {}),
+      });
+      expect(joined.ok).toBe(true);
+      return { peer, wire, joined };
+    }
+
+    const a = await open('alice', { talk_mode: 'ptt' });
+    const b = await open('bob');
+    expect(a.joined.data.media_mode).toBe('sfu');
+
+    // 入房即静音：发布后 audio producer 仍为 paused，双方都收不到
+    await a.peer.publish();
+    await b.peer.publish();
+    await Promise.all([a.peer.recvReady, b.peer.recvReady]);
+    a.peer.startAudio();
+    b.peer.startAudio();
+    await new Promise((r) => setTimeout(r, 500));
+    expect(a.peer.recvCount).toBe(0);
+    expect(b.peer.recvCount).toBe(0);
+
+    // alice 拿到发言权 → producer resume，bob 立即能听到
+    expect((await a.wire.req('floor.request', {})).data).toEqual({ granted: true });
+    await new Promise((r) => setTimeout(r, 700));
+    expect(b.peer.recvCount).toBeGreaterThan(3);
+    expect(a.peer.recvCount).toBe(0);
+
+    // bob 排队；alice 释放后递补，反向也通
+    expect((await b.wire.req('floor.request', {})).data).toEqual({ granted: false, queue_pos: 1 });
+    expect((await a.wire.req('floor.release', {})).ok).toBe(true);
+    await new Promise((r) => setTimeout(r, 700));
+    expect(a.peer.recvCount).toBeGreaterThan(3);
+  }, 25000);
+
+  it('rejects the second unmute when max_speakers is reached', async () => {
+    const rtcPort = await freePort();
+    media = await MediaNode.create({
+      numWorkers: 1,
+      workerBin: process.env.MEDIASOUP_WORKER_BIN,
+      listenIp: '127.0.0.1',
+      announcedAddress: '127.0.0.1',
+      port: rtcPort,
+      logger,
+      onWorkerDied: () => {},
+    });
+    const config = loadConfig({
+      TALK_ENV: 'dev',
+      TALK_HTTP_HOST: '127.0.0.1',
+      TALK_JWT_SECRET: 's'.repeat(40),
+    });
+    config.http.port = 0;
+    app = createApp({ config, logger, media });
+    const addr = await app.listen();
+    const base = `http://127.0.0.1:${addr.port}`;
+
+    async function open(uid: string, policy?: object) {
+      const token = ((await (await fetch(`${base}/dev/token?uid=${uid}`)).json()) as { token: string }).token;
+      const wire = await connect(base, token);
+      const peer = new Peer(wire);
+      peers.push(peer);
+      expect((await wire.req('session.hello', { client: { platform: 'linux', version: '0' } })).ok).toBe(true);
+      const joined = await wire.req('room.join', { room_id: 'sfu-max', ...(policy ? { policy } : {}) });
+      expect(joined.ok).toBe(true);
+      return { peer, wire };
+    }
+
+    const a = await open('alice', { max_speakers: 1 });
+    const b = await open('bob');
+    await a.peer.publish();
+    await b.peer.publish();
+
+    expect((await a.wire.req('media.setMute', { source: 'mic', muted: false })).ok).toBe(true);
+    expect((await b.wire.req('media.setMute', { source: 'mic', muted: false })).error?.code).toBe(429);
+
+    // 一个人关麦后名额释放
+    expect((await a.wire.req('media.setMute', { source: 'mic', muted: true })).ok).toBe(true);
+    expect((await b.wire.req('media.setMute', { source: 'mic', muted: false })).ok).toBe(true);
+  }, 20000);
 });

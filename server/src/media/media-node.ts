@@ -31,6 +31,11 @@ export class MediaNode {
   private shuttingDown = false;
   private readonly servers: ms.WebRtcServer[] = [];
   private answer: AnswerHandler = () => Promise.reject(new TalkError(500, 'no answer handler'));
+  /** 主讲人 / 音量回调，由信令层注入；没有订阅者时仍然产生事件，由上层过滤 */
+  private audioSink: {
+    activeSpeaker?: (roomId: string, uid: string) => void;
+    audioLevels?: (roomId: string, entries: { uid: string; level: number }[]) => void;
+  } = {};
 
   private constructor(
     private readonly pool: WorkerPool,
@@ -63,6 +68,14 @@ export class MediaNode {
   /** 由信令层注入：把 sfu.offer 发给客户端并拿到 answer SDP */
   setAnswerHandler(handler: AnswerHandler): void {
     this.answer = handler;
+  }
+
+  /** 由信令层注入：主讲人与音量事件（仅 SFU，房间创建时懒加载 observer） */
+  setAudioObservers(sink: {
+    activeSpeaker?: (roomId: string, uid: string) => void;
+    audioLevels?: (roomId: string, entries: { uid: string; level: number }[]) => void;
+  }): void {
+    this.audioSink = sink;
   }
 
   private serverFor(worker: ms.Worker): ms.WebRtcServer {
@@ -115,7 +128,12 @@ export class MediaNode {
       return current;
     }
     const room = new RoomMedia(roomId, router, this.serverFor(worker), this.log, this.answer);
+    room.onActiveSpeaker = (uid) => this.audioSink.activeSpeaker?.(roomId, uid);
+    room.onAudioLevels = (entries) => this.audioSink.audioLevels?.(roomId, entries);
     this.rooms.set(roomId, room);
+    void room
+      .enableObservers()
+      .catch((err: unknown) => this.log.warn({ err, room: roomId }, 'enable audio observers failed'));
     this.log.info({ room: roomId, router: router.id }, 'router created');
     return room;
   }
@@ -190,6 +208,20 @@ export class MediaNode {
     const peer = this.rooms.get(roomId)?.peers.get(uid);
     if (!peer) throw new TalkError(409, 'not in room');
     await peer.restartIce(pc);
+  }
+
+  /** 房间内处于 resume 的音频 producer 数（free 模式的 max_speakers 用） */
+  resumedAudioCount(roomId: string, excludeUid?: string): number {
+    const room = this.rooms.get(roomId);
+    if (!room) return 0;
+    let count = 0;
+    for (const [uid, peer] of room.peers) {
+      if (uid === excludeUid) continue;
+      for (const p of peer.producers.values()) {
+        if (!p.closed && !p.paused && p.kind === 'audio') count++;
+      }
+    }
+    return count;
   }
 
   onPeerOnline(roomId: string, uid: string): void {

@@ -41,7 +41,7 @@ export type RoomEvent =
   | { type: 'peerJoined'; room: Room; peer: Peer }
   | { type: 'peerLeft'; room: Room; uid: string; reason: LeaveReason }
   | { type: 'peerUpdated'; room: Room; uid: string; patch: Partial<Pick<Peer, 'audio' | 'video' | 'role'>> }
-  | { type: 'policyChanged'; room: Room; policy: RoomPolicy }
+  | { type: 'policyChanged'; room: Room; policy: RoomPolicy; previous: RoomPolicy }
   | { type: 'roomClosed'; room: Room; reason: string; uids: string[] };
 
 export const ROOM_ID_RE = /^[A-Za-z0-9_.-]{1,64}$/;
@@ -159,8 +159,9 @@ export class RoomManager {
       { ...room.policy, ...patch, video: { ...room.policy.video, ...patch.video } },
       this.opts.maxPeersLimit,
     );
+    const previous = room.policy;
     room.policy = policy;
-    this.opts.onEvent({ type: 'policyChanged', room, policy });
+    this.opts.onEvent({ type: 'policyChanged', room, policy, previous });
     return policy;
   }
 
