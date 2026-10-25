@@ -439,6 +439,7 @@ cd deploy && ./package.sh && ./deploy.sh   # 按现场发布流程执行
    - 客户端配合：一人两路必须在 join 时一次性发布两路 video m-line，之后只用 `media.setMute` / `SetSenderActive`，不要为启停单路重新 publish。
 5. **producer 暂停状态没有广播**
    - `watchProducer`（220-224）只处理 `close`，`pause/resume` 不通知别人，订阅端只能靠无帧推断。
+   - **2026-10-25 已解决（服务端 `333f795` + 客户端本轮适配）**：服务端新增 `media.producer{uid,mid,kind,source,paused}` 广播，客户端 UI 收到 `paused=true` 立即收掉对应画面；5 秒无帧超时降级为兜底。详见第 12 节。
    - 一人两路时 UI 需要区分「摄像头关」和「屏幕共享停」：建议新增 `media.producer` 事件（uid/mid/source/paused），或随 `room.peerUpdated` 带 `video.sources`。
 
 #### P2 建议（人数上来再做）
@@ -470,7 +471,7 @@ cd deploy && ./package.sh && ./deploy.sh   # 按现场发布流程执行
 1. `WebRtcMedia::StartP2p` / `AnswerP2p` 改为预加三条 m-line：音频 + 摄像头 + 屏幕，顺序与 SFU 一致（mid `0/1/2`）；新增 `ApplyP2pVideoState()` 按索引 0/1 应用摄像头/屏幕的采集状态。
 2. **应答方必须先 `SetRemote(offer)` 再 `AddTrack`**：`PeerConnection::AddTrack` 在 `pc_->remote_description() != nullptr` 时改走 `pc_->AddTrack()` 复用远端 m-line 的 transceiver；否则会多出一组本地 transceiver（`p2p_send_active` 出现 `audio2/video3/video4`），应答 m-line 变成 `recvonly` → 只收不发。
 3. `video.start/stop` 同时作用在 `send_`（SFU）与 `p2p_` 两个 PC 上；`SetVideoSink` 也同时下发两端，否则 P2P 画面进不了 UI。
-4. 会话层删掉 P2P 的 409 分支；摄像头启停在 P2P 下跳过 `media.setMute`（P2P 没有 producer），只靠 sender `active` 控制；`SwitchToSfu` 完成后若摄像头仍在采集，补发一次 `media.setMute{camera,false}` 恢复 P2P 期间一直 paused 的 producer。
+4. 会话层删掉 P2P 的 409 分支；摄像头启停在 P2P 下跳过 `media.setMute`（P2P 没有 producer），只靠 sender `active` 控制；`SwitchToSfu` 完成后按 `camera_sharing_`/`video_sharing_` 逐路补发 `media.setMute{camera|screen,false}` 恢复 P2P 期间一直 paused 的 producer（2026-10-25 起屏幕共享也走这条路径，见第 12 节）。
 5. 切换期去重：新增 `PeerConnection::SetVideoReceivePaused()`，P2P↔SFU 重叠期把已让出链路的两路视频接收 `set_enabled(false)`，避免同名 mid 的画面互盖。
 6. `MediaController` 对 `pc=p2p` 的 `video.track` 按到达顺序标注 `source=camera|screen`、`uid=对端`，UI 宫格与 SFU 一致。
 7. UI `ApplyVideoButtonState()` 不再按模式置灰，P2P 与 SFU 下摄像头/屏幕按钮行为一致（`p2p_mode_` 成员已移除）。
@@ -485,5 +486,29 @@ cd deploy && ./package.sh && ./deploy.sh   # 按现场发布流程执行
 
 #### 遗留
 
-- 未做能力位协商（`caps.p2p_video`）：只与最新版服务端/客户端互通，旧客户端不兼容。
+- ~~未做能力位协商（`caps.p2p_video`）：只与最新版服务端/客户端互通，旧客户端不兼容。~~ → 2026-10-25 已补：hello 上报 `caps.p2p_video=true`，服务端双方都声明才在 `room.mediaMode.p2p_video` 透出 true（见第 12 节）。
 - `talk-cli` 的 `--video-source` 默认值是 `screen`，测摄像头必须显式传 `--video-source camera`，否则会误以为摄像头未生效。
+
+### 12. 对接服务端视频 P1（`333f795`，2026-10-25）
+
+背景：服务端 `333f795` 上线视频 P1，客户端需要配合三件事才能完整受益（否则只是“不坏”）：停共享真正 pause producer（释放 `max_publishers` 名额）、对端停共享立即收画面（不再等 5 秒）、以及 P2P 视频能力位。
+
+#### 客户端改动
+
+1. **hello 上报 `caps.p2p_video`**（`call_session.cpp` `HandleOpen`）：服务端要求双方都声明才在 `room.mediaMode` 里回 `p2p_video=true`；客户端两路视频 m-line 是 P2P 预发布，能力上确实支持。
+2. **屏幕共享精确暂停**（`HandleVideoStart/Stop`）：原来只有摄像头走 `media.setMute`，屏幕路注释写着“producer 常驻 resume”。改为两路统一按 `source` 精确控制：P2P 下仍直接返回（无 producer），SFU 下 `start→setMute{source,muted:false}`、`stop→setMute{source,muted:true}`；失败只告警（画面停在最后一帧），不回滚。停共享后服务端把该 producer 计为暂停，`max_publishers` 名额释放（`room-media.ts` 按“未关闭且未暂停”计数）。
+3. **处理 `media.producer`**（`ui/qt/window.cpp` `HandleProducerState`）：`{uid,mid,kind,source,paused}` 里的 `mid` 是**发布方**的 mid，订阅端拿到的是 consumer mid，两者不同，所以只能按 `uid+source` 匹配本地 `video_tracks_`；`paused=true` 时立即 `RemoveVideoView`（日志“移除远端视频 mid=X：对端停止屏幕共享”），`paused=false` 不主动建视图，等第一帧到达由 `EnsureVideoView` 自然重建。`kind=audio` 直接忽略。
+4. `PruneVideoViews` 的 5 秒无帧超时保留作兜底（`media.producer` 在断线重连窗口可能丢），但不再是唯一手段；抽了 `RemoveVideoView(mid, reason)` 复用移除+重排逻辑。
+5. `talk-cli` 打印 `media.producer`（uid/kind/source/paused），方便联调时确认服务端是否真的 pause。
+6. `HandleMediaModeRequest` 日志带上 `p2p_video`，便于核对协商结果。
+
+#### 验证（测试服 `47.117.159.193`）
+
+- **P2P 双端（room `p2pvid9`）**：`切换媒体模式 mode=p2p p2p_video=true`（能力位生效）；`video.stop`/`start` 全程无 `media.setMute` 请求，`video.stop` 返回 `ok=true data={}`；`P2P 视频状态 camera_mid=1(有) screen_mid=2(有) 直播中=false/true ok=true/true`。
+- **3 人 SFU（room `sfuscreen2`）**：A 第 12 秒停共享、第 18 秒恢复；A 侧 `send_active.video2` 由 true→false→true、`video_capture.sharing` 同步；B/C 各收到一次 `media.producer{source:"screen",uid:"sa",paused:true}` 与 `paused:false`（后者无 `producer_id`，即 `setMute` 路径的广播），证明屏幕独立暂停/恢复生效，且音频与摄像头 producer 未被牵连。
+- 客户端 `cmake --build --preset windows-x64-release` 通过（仅 websocketpp 既有 C4267 告警）。
+
+#### 遗留
+
+- P2P 下停共享仍只能靠对端 5 秒无帧超时收画面（P2P 无 producer、无 `media.producer`），若以后要即时，需要走 DataChannel 或服务端在 P2P 房间转发一条轻量通知。
+- Qt 界面侧的“画面立即消失/恢复重建”需要真人验收（本轮只验证到事件到达与 CLI 日志）。
