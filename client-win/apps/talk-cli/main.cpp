@@ -44,6 +44,9 @@ struct Options {
   // 摄像头启停时刻：0 表示不操作，用来验证反复开关的完整链路。
   int video_stop_at = 0;
   int video_restart_at = 0;
+  // PTT 联调：第 N 秒按住/松开发言键，验证 floor 授予、排队与释放。
+  int ptt_request_at = 0;
+  int ptt_release_at = 0;
   // 运行时切换采集源：<第 N 秒, mic|system>，可多次。
   std::vector<std::pair<int, std::string>> source_switches;
   talk::LogOptions log;
@@ -62,6 +65,8 @@ const char* const kUsage =
     "[--unmute-at 秒] [--no-auto-unmute] "
     "[--video] [--video-source screen|camera] "
     "[--video-stop-at 秒] [--video-restart-at 秒] "
+    "[--talk-mode free|ptt|moderated] "
+    "[--ptt-request-at 秒] [--ptt-release-at 秒] "
     "[--log-file 路径] [--log-level trace|debug|info|warn|error] "
     "[--log-console]；单跑 --list-devices 枚举音频设备";
 
@@ -112,6 +117,12 @@ Options ParseOptions(int argc, char** argv) {
       options.video_source = value;
     } else if (arg == "--media-mode") {
       options.config["media_mode"] = value;
+    } else if (arg == "--talk-mode") {
+      options.config["talk_mode"] = value;
+    } else if (arg == "--ptt-request-at") {
+      options.ptt_request_at = std::stoi(value);
+    } else if (arg == "--ptt-release-at") {
+      options.ptt_release_at = std::stoi(value);
     } else if (arg == "--config") {
       options.config_file = value;
     } else if (arg == "--duration") {
@@ -184,6 +195,21 @@ void Validate(const Options& options) {
       throw std::runtime_error("media_mode 必须是 auto/sfu/p2p");
     }
   }
+  if (options.config.contains("talk_mode")) {
+    const std::string mode = options.config["talk_mode"].get<std::string>();
+    if (mode != "free" && mode != "ptt" && mode != "moderated") {
+      throw std::runtime_error("talk_mode 必须是 free/ptt/moderated");
+    }
+  }
+  for (const int at : {options.ptt_request_at, options.ptt_release_at}) {
+    if (at < 0 || at > options.duration) {
+      throw std::runtime_error("ptt-request-at/release-at 秒必须在 0..duration 之间");
+    }
+  }
+  if (options.ptt_release_at > 0 &&
+      options.ptt_release_at <= options.ptt_request_at) {
+    throw std::runtime_error("ptt-release-at 必须大于 ptt-request-at");
+  }
   if (options.config.contains("audio_source")) {
     if (!options.config["audio_source"].is_string()) {
       throw std::runtime_error("audio_source 必须是字符串");
@@ -246,6 +272,9 @@ class App {
 
   void SetVideo(bool video) { video_ = video; }
   bool video() const { return video_; }
+
+  // 对讲模式：非 free 时不能直接 media.setMute，要先拿发言权。
+  void SetTalkMode(std::string mode) { talk_mode_ = std::move(mode); }
 
   void SetVideoSource(std::string source) { video_source_ = std::move(source); }
 
@@ -321,13 +350,18 @@ class App {
     }
     if (name == "joined") {
       joined_ = true;
-      if (!audio_ && !no_auto_unmute_) {
+      // 房间可能已存在且模式不由本次入房决定，以 joined 视图为准。
+      talk_mode_ = data.value("room", Json::object())
+                       .value("policy", Json::object())
+                       .value("talk_mode", talk_mode_);
+      Command("room.subscribeLevels", {{"enabled", true}});
+      if (talk_mode_ == "free" && !audio_ && !no_auto_unmute_) {
         Command("media.setMute", {{"muted", false}});
       }
     }
     if (name == "published") {
       published_ = true;
-      if (!no_auto_unmute_) {
+      if (talk_mode_ == "free" && !no_auto_unmute_) {
         Command("media.setMute", {{"muted", false}});
       }
       if (video_) {
@@ -343,6 +377,35 @@ class App {
                 << " kind=" << data.value("kind", std::string())
                 << " source=" << data.value("source", std::string())
                 << " paused=" << data.value("paused", false) << std::endl;
+    }
+    if (name == "floor.state") {
+      // holder 可能是 null，直接 value<string> 会抛异常。
+      const Json holder = data.value("holder", Json());
+      std::cout << "发言权 holder="
+                << (holder.is_string() ? holder.get<std::string>() : "-")
+                << " self=" << data.value("self", false)
+                << " queue=" << data.value("queue", Json::array()).size()
+                << " expires_in_ms="
+                << data.value("expires_in_ms", static_cast<int64_t>(0))
+                << " talk_mode=" << data.value("talk_mode", std::string())
+                << std::endl;
+    }
+    if (name == "floor.revoked") {
+      std::cout << "发言权被收回 reason="
+                << data.value("reason", std::string()) << std::endl;
+    }
+    if (name == "room.policyChanged") {
+      std::cout << "房间策略 talk_mode="
+                << data.value("talk_mode", std::string())
+                << " ptt_queue=" << data.value("ptt_queue", true) << std::endl;
+    }
+    if (name == "room.audioLevels") {
+      std::cout << "音量：";
+      for (const auto& entry : data.value("levels", Json::array())) {
+        std::cout << entry.value("uid", std::string()) << ":"
+                  << entry.value("level", 0.0) << " ";
+      }
+      std::cout << std::endl;
     }
     if (name == "result" &&
         data.value("method", std::string()) == "media.stats") {
@@ -364,6 +427,7 @@ class App {
 
   talk_handle* core_ = nullptr;
   std::string room_;
+  std::string talk_mode_ = "free";
   bool audio_ = false;
   bool video_ = false;
   std::string video_source_ = "screen";
@@ -404,6 +468,7 @@ int RunTalk(const Options& options) {
   Json config = options.config;
   App app(options.room);
   app.SetAudio(config.value("audio_backend", std::string("none")) != "none");
+  app.SetTalkMode(config.value("talk_mode", std::string("free")));
   app.SetNoAutoUnmute(options.no_auto_unmute);
   app.SetVideo(options.video);
   app.SetVideoSource(options.video_source);
@@ -437,6 +502,14 @@ int RunTalk(const Options& options) {
     if (options.video_restart_at > 0 && i + 1 == options.video_restart_at) {
       std::cout << "重新开启视频 source=" << options.video_source << std::endl;
       app.Command("video.start", {{"source", options.video_source}});
+    }
+    if (options.ptt_request_at > 0 && i + 1 == options.ptt_request_at) {
+      std::cout << "按下发言键 floor.request" << std::endl;
+      app.Command("floor.request");
+    }
+    if (options.ptt_release_at > 0 && i + 1 == options.ptt_release_at) {
+      std::cout << "松开发言键 floor.release" << std::endl;
+      app.Command("floor.release");
     }
     if (app.audio() && (i % 5 == 0 || i == options.duration - 1) &&
         !app.stats_pending()) {

@@ -44,6 +44,15 @@ class CallSession {
   void HandleJoin(uint64_t id, const std::string& method, Json data);
   void HandleLeave(uint64_t id, const std::string& method);
   void HandleSetMute(uint64_t id, const std::string& method, Json data);
+  // S4 发言权与主持人命令：floor.* / host.* / room.subscribeLevels 直通信令。
+  void HandleFloorCommand(uint64_t id, const std::string& method, Json data);
+  // 发言权视图：holder 是自己时放行本地采集，否则关门并广播 floor.state。
+  void ApplyFloor(Json view);
+  // 房间对讲策略：talk_mode / ptt_queue，决定开麦按钮形态。
+  void ApplyTalkMode(const Json& policy);
+  // 本地采集门：PTT 下服务端已按 floor 控制 producer，这里只切本地上行。
+  void SetFloorMic(bool open);
+  static int64_t NowMs();
   void HandleVideoStart(uint64_t id, const std::string& method, Json data);
   void HandleVideoStop(uint64_t id, const std::string& method, Json data);
   void HandleSessionRequest(uint64_t id, const std::string& method,
@@ -77,7 +86,15 @@ class CallSession {
   std::string url_;
   std::string token_;
   std::string session_id_;
+  std::string self_uid_;
   std::string room_id_;
+  // S4：房间对讲策略、最近一次发言权视图与本地采集门状态。
+  std::string talk_mode_ = "free";
+  bool ptt_queue_ = true;
+  Json floor_ = Json::object();
+  bool floor_open_ = false;
+  // 本地时钟 - 服务端时钟（毫秒），把 expires_at 换算成剩余时间。
+  int64_t server_offset_ms_ = 0;
   uint64_t epoch_ = 0;
   uint64_t mute_epoch_ = 0;
   uint64_t video_epoch_ = 0;   // 屏幕共享命令序号

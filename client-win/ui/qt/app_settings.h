@@ -12,6 +12,7 @@ struct AppSettings {
   QString room;
   QString backend;
   QString media_mode;
+  QString talk_mode;
   QString audio_source;
   QString recording_device;
   QString playout_device;

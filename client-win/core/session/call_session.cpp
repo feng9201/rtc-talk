@@ -26,6 +26,15 @@ int Clamp(int value, int low, int high) {
   return std::max(low, std::min(high, value));
 }
 
+// floor 视图里的 holder 可能是 null，直接 value() 会抛类型错误。
+std::string HolderOf(const Json& floor) {
+  if (!floor.is_object() || !floor.contains("holder") ||
+      !floor["holder"].is_string()) {
+    return {};
+  }
+  return floor["holder"].get<std::string>();
+}
+
 }  // namespace
 
 CallSession::CallSession(asio::io_context& io, const Json& config,
@@ -82,6 +91,13 @@ void CallSession::Command(uint64_t id, std::string method, Json data) {
   }
   if (method == "media.setMute") {
     HandleSetMute(id, method, std::move(data));
+    return;
+  }
+  if (method == "floor.request" || method == "floor.release" ||
+      method == "host.grant" || method == "host.muteAll" ||
+      method == "host.kick" || method == "host.setPolicy" ||
+      method == "room.subscribeLevels") {
+    HandleFloorCommand(id, method, std::move(data));
     return;
   }
   if (method == "video.start") {
@@ -195,7 +211,7 @@ void CallSession::HandleJoin(uint64_t id, const std::string& method,
   data["media"] = {{"audio", {{"send", true}, {"muted", true}}},
                    {"video", {{"send", false}}}};
   data["policy"] = {
-      {"talk_mode", "free"},
+      {"talk_mode", config_.value("talk_mode", std::string("free"))},
       {"media_mode", config_.value("media_mode", std::string("auto"))}};
   TALK_LOG_INFO("session", "加入房间 room={} mode={}",
                 data.value("room_id", std::string()),
@@ -219,7 +235,16 @@ void CallSession::HandleJoin(uint64_t id, const std::string& method,
                         view.value("media_mode", std::string("sfu")),
                         view.value("peers", Json::array()).size());
           media_.ApplyModeView(view);
+          const Json room = view.value("room", Json::object());
+          ApplyTalkMode(room.value("policy", Json::object()));
+          if (talk_mode_ != "free") {
+            // PTT/审核模式入房即静音，等 floor 授予才放行本地采集。
+            floor_open_ = false;
+            media_.gate()->store(true);
+            media_.SetMuted(true);
+          }
           events_.Emit("joined", view);
+          ApplyFloor(view.value("floor", Json::object()));
           // 每次入房都从「未共享」开始，界面按钮文案以此为准。
           video_sharing_ = false;
           camera_sharing_ = false;
@@ -264,6 +289,11 @@ void CallSession::HandleSetMute(uint64_t id, const std::string& method,
     return;
   }
   const bool muted = data.at("muted").get<bool>();
+  if (!muted && talk_mode_ != "free") {
+    // PTT/审核模式下开麦必须先拿发言权，服务端也会回 403；本地直接拦住。
+    Complete(id, method, Failure("", 403, "需先申请发言权"));
+    return;
+  }
   const uint64_t generation = ++mute_epoch_;
   TALK_LOG_INFO("session", "设置静音 muted={} generation={}", muted,
                 generation);
@@ -297,6 +327,90 @@ void CallSession::HandleSetMute(uint64_t id, const std::string& method,
               Complete(id, method, result);
             });
       });
+}
+
+void CallSession::HandleFloorCommand(uint64_t id, const std::string& method,
+                                     Json data) {
+  if (room_id_.empty()) {
+    Complete(id, method, Failure("", 409, "未入房"));
+    return;
+  }
+  TALK_LOG_INFO("session", "S4 请求 method={}", method);
+  signaling_.Request(method, data, [this, id, method](Json result) {
+    if (result.value("ok", false)) {
+      const Json payload = result.value("data", Json::object());
+      if (payload.contains("policy") && payload["policy"].is_object()) {
+        ApplyTalkMode(payload["policy"]);
+      }
+      if (payload.contains("floor")) {
+        ApplyFloor(payload["floor"]);
+      }
+    } else {
+      const Json error = result.value("error", Json::object());
+      TALK_LOG_WARN("session", "S4 请求失败 method={} code={} msg={}", method,
+                    error.value("code", 0), error.value("msg", std::string()));
+    }
+    Complete(id, method, result);
+  });
+}
+
+void CallSession::ApplyTalkMode(const Json& policy) {
+  const std::string mode = policy.value("talk_mode", std::string("free"));
+  const bool changed = mode != talk_mode_;
+  ptt_queue_ = policy.value("ptt_queue", true);
+  talk_mode_ = mode;
+  if (talk_mode_ == "free") {
+    // free 模式由 media.setMute 直接控制采集，发言权不再约束本地门。
+    floor_open_ = false;
+    floor_ = Json::object();
+    return;
+  }
+  if (changed) {
+    TALK_LOG_INFO("session", "对讲模式 {} ptt_queue={}", mode, ptt_queue_);
+    // 切进 PTT/审核时服务端会收回发言权并暂停 producer，本地也要闭嘴。
+    if (floor_open_) {
+      SetFloorMic(false);
+    }
+  }
+}
+
+void CallSession::ApplyFloor(Json view) {
+  floor_ = view.is_object() ? std::move(view) : Json::object();
+  const bool mine = !self_uid_.empty() && HolderOf(floor_) == self_uid_;
+  if (talk_mode_ != "free") {
+    SetFloorMic(mine);
+  }
+  Json out = floor_;
+  if (out.contains("expires_at") && out["expires_at"].is_number()) {
+    const int64_t expires = out["expires_at"].get<int64_t>();
+    // expires_at 是服务端 epoch ms，按时钟偏差换算成本地剩余时间。
+    out["expires_in_ms"] =
+        std::max<int64_t>(0, expires - (NowMs() - server_offset_ms_));
+  }
+  out["self"] = mine;
+  out["talk_mode"] = talk_mode_;
+  out["ptt_queue"] = ptt_queue_;
+  events_.Emit("floor.state", std::move(out));
+}
+
+void CallSession::SetFloorMic(bool open) {
+  if (floor_open_ == open) {
+    return;
+  }
+  floor_open_ = open;
+  // 服务端授予发言权时已 resume producer，这里只放开本地上行，
+  // 不能再发 media.setMute，否则会把服务端的授予结果覆盖掉。
+  media_.gate()->store(!open);
+  media_.SetMuted(!open);
+  TALK_LOG_INFO("session", "本地发言门 open={} talk_mode={}", open,
+                talk_mode_);
+  events_.Emit("floor.local", {{"open", open}});
+}
+
+int64_t CallSession::NowMs() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+             std::chrono::system_clock::now().time_since_epoch())
+      .count();
 }
 
 void CallSession::HandleVideoStart(uint64_t id, const std::string& method,
@@ -548,6 +662,13 @@ void CallSession::HandleOpen(uint64_t epoch, uint64_t operation,
           return;
         }
         session_id_ = data["session_id"].get<std::string>();
+        self_uid_ = data.value("uid", std::string());
+        // hello 的 server_time 是唯一的对时基准，心跳会持续校正。
+        const int64_t server_time =
+            data.value("server_time", static_cast<int64_t>(0));
+        if (server_time > 0) {
+          server_offset_ms_ = NowMs() - server_time;
+        }
         ice_servers_ = data.value("ice_servers", Json::array());
         media_.SetIceServers(ice_servers_);
         ready_ = true;
@@ -582,7 +703,10 @@ void CallSession::HandleOpen(uint64_t epoch, uint64_t operation,
           TALK_LOG_INFO("session", "恢复入房 room={}", room_id_);
           const std::string previous = media_.p2p_session();
           media_.ApplyModeView(view);
+          ApplyTalkMode(view.value("room", Json::object())
+                            .value("policy", Json::object()));
           events_.Emit("joined", view);
+          ApplyFloor(view.value("floor", Json::object()));
           // 断线期间采集仍在跑，按实际状态回报，避免按钮与画面不一致。
           events_.Emit("video.state",
                        {{"sharing", video_sharing_}, {"source", "screen"}});
@@ -809,10 +933,32 @@ void CallSession::HandleNotification(const std::string& method, Json data) {
     return;
   }
   if (method == "session.kicked") {
-    TALK_LOG_WARN("session", "会话被顶号");
+    // kicked：被主持人移出；replaced：同一 uid 在别处重新登录。两者都不重连。
+    TALK_LOG_WARN("session", "会话被服务端关闭 reason={}",
+                  data.value("reason", std::string("replaced")));
     retry_ = false;
     events_.Emit(method, data);
     HandleLost();
+    return;
+  }
+  if (method == "floor.state") {
+    ApplyFloor(std::move(data));
+    return;
+  }
+  if (method == "room.policyChanged") {
+    ApplyTalkMode(data);
+    events_.Emit(method, std::move(data));
+    return;
+  }
+  if (method == "floor.revoked") {
+    // 服务端已收回发言权并暂停 producer，本地采集门与界面要立刻跟上。
+    TALK_LOG_WARN("session", "发言权被收回 reason={}",
+                  data.value("reason", std::string()));
+    floor_open_ = false;
+    media_.gate()->store(true);
+    ++mute_epoch_;
+    media_.SetMuted(true);
+    events_.Emit(method, std::move(data));
     return;
   }
   if (method == "room.closed") {
@@ -821,7 +967,7 @@ void CallSession::HandleNotification(const std::string& method, Json data) {
     join_intent_ = Json::object();
     ResetMedia();
   }
-  if (method == "media.forceMute" || method == "floor.revoked") {
+  if (method == "media.forceMute") {
     TALK_LOG_WARN("session", "服务端强制静音 method={}", method);
     media_.gate()->store(true);
     ++mute_epoch_;
@@ -888,6 +1034,13 @@ void CallSession::SchedulePing() {
                          if (!result.value("ok", false)) {
                            HandleLost();
                          } else {
+                           const Json payload =
+                               result.value("data", Json::object());
+                           const int64_t server_time = payload.value(
+                               "server_time", static_cast<int64_t>(0));
+                           if (server_time > 0) {
+                             server_offset_ms_ = NowMs() - server_time;
+                           }
                            SchedulePing();
                          }
                        });
@@ -902,6 +1055,8 @@ void CallSession::ResetMedia() {
   ++camera_epoch_;
   video_sharing_ = false;
   camera_sharing_ = false;
+  floor_open_ = false;
+  floor_ = Json::object();
   media_.Reset();
 }
 

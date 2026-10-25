@@ -45,6 +45,16 @@ void FillDevices(QComboBox* box, const QJsonArray& devices,
   box->setCurrentIndex(index < 0 ? 0 : index);
 }
 
+// 音量条：5 格方块，0..1 映射到 0..100%。
+QString LevelBar(double level) {
+  const int pct = qBound(0, static_cast<int>(level * 100.0 + 0.5), 100);
+  const int filled = (pct * 5 + 50) / 100;
+  return QStringLiteral("%1%2 %3%")
+      .arg(QString(filled, QChar(0x25AE)),
+           QString(5 - filled, QChar(0x25AF)))
+      .arg(pct);
+}
+
 }  // namespace
 
 TalkWindow::TalkWindow(QWidget* parent)
@@ -65,6 +75,7 @@ TalkWindow::~TalkWindow() {
     settings_.backend = backend_->currentData().toString();
   }
   settings_.media_mode = mode_->currentData().toString();
+  settings_.talk_mode = talk_->currentData().toString();
   settings_.audio_source = source_->currentData().toString();
   settings_.recording_device = recording_->currentData().toString();
   settings_.playout_device = playout_->currentData().toString();
@@ -101,6 +112,14 @@ void TalkWindow::BuildUi() {
   mode_->setToolTip(
       QStringLiteral("入房时作为策略提交；2 人且双方支持 P2P 时走直连"));
 
+  talk_ = new QComboBox;
+  talk_->addItem(QStringLiteral("自由发言（free）"), "free");
+  talk_->addItem(QStringLiteral("按住说话（ptt）"), "ptt");
+  talk_->addItem(QStringLiteral("主持人审核（moderated）"), "moderated");
+  talk_->setToolTip(QStringLiteral(
+      "入房时作为房间策略提交，只在房间首次创建时生效；"
+      "已建房间的模式需由主持人修改"));
+
   source_ = new QComboBox;
   source_->addItem(QStringLiteral("麦克风"), "mic");
   source_->addItem(QStringLiteral("系统音（默认播放设备）"), "system");
@@ -122,6 +141,7 @@ void TalkWindow::BuildUi() {
   form->addRow(dev_);
   form->addRow(QStringLiteral("音频后端"), backend_);
   form->addRow(QStringLiteral("媒体模式"), mode_);
+  form->addRow(QStringLiteral("对讲模式"), talk_);
   form->addRow(QStringLiteral("采集源"), source_);
   auto* audio = new QHBoxLayout;
   audio->addWidget(recording_);
@@ -150,10 +170,23 @@ void TalkWindow::BuildUi() {
   }
   layout->addLayout(buttons);
 
+  // 主持人操作：仅 room.role==host 且非 free 模式时显示。
+  grant_ = new QPushButton(QStringLiteral("授予/收回发言权"));
+  mute_all_ = new QPushButton(QStringLiteral("全员静音"));
+  kick_ = new QPushButton(QStringLiteral("移出房间"));
+  auto* host_bar = new QHBoxLayout;
+  for (auto* button : {grant_, mute_all_, kick_}) {
+    button->setVisible(false);
+    host_bar->addWidget(button);
+  }
+  layout->addLayout(host_bar);
+
   state_ = new QLabel(QStringLiteral("未连接"));
   media_ = new QLabel(QStringLiteral("媒体：未建立"));
+  floor_ = new QLabel(QStringLiteral("对讲模式：自由发言"));
   layout->addWidget(state_);
   layout->addWidget(media_);
+  layout->addWidget(floor_);
 
   // 中部左右分栏：左侧远端画面自适应伸展，右侧成员与日志固定宽度。
   // 画面区用堆叠布局：没有视频时显示提示，有画面时切到宫格。
@@ -195,6 +228,12 @@ void TalkWindow::BuildUi() {
           [this] { PruneVideoViews(); });
   video_prune_timer_->start();
 
+  // 发言权倒计时：每秒按本地 deadline 重算，不依赖服务端周期推送。
+  floor_timer_ = new QTimer(this);
+  floor_timer_->setInterval(1000);
+  connect(floor_timer_, &QTimer::timeout, this, [this] { UpdateFloorUi(); });
+  floor_timer_->start();
+
   http_ = new QNetworkAccessManager(this);
 }
 
@@ -215,6 +254,8 @@ void TalkWindow::ApplySettings() {
   }
   index = mode_->findData(settings_.media_mode);
   mode_->setCurrentIndex(index < 0 ? 0 : index);
+  index = talk_->findData(settings_.talk_mode);
+  talk_->setCurrentIndex(index < 0 ? 0 : index);
   index = source_->findData(settings_.audio_source);
   source_->setCurrentIndex(index < 0 ? 0 : index);
   active_source_ = source_->currentData().toString();
@@ -234,8 +275,24 @@ void TalkWindow::ConnectSignals() {
   connect(leave_, &QPushButton::clicked, this,
           [this] { SendCommand("room.leave"); });
   connect(mute_, &QPushButton::clicked, this, [this] {
+    // free 模式点一下切换；ptt/moderated 走按住说话，不用这条路径。
+    if (talk_mode_ != QStringLiteral("free")) {
+      return;
+    }
     mute_->setEnabled(false);
     SendCommand("media.setMute", {{"muted", !muted_}});
+  });
+  connect(mute_, &QPushButton::pressed, this, [this] {
+    if (talk_mode_ == QStringLiteral("free") || !leave_->isEnabled()) {
+      return;
+    }
+    SendCommand("floor.request");
+  });
+  connect(mute_, &QPushButton::released, this, [this] {
+    if (talk_mode_ == QStringLiteral("free") || !leave_->isEnabled()) {
+      return;
+    }
+    SendCommand("floor.release");
   });
   connect(camera_, &QPushButton::clicked, this, [this] {
     // 结果由 video.state / result 事件回填，期间禁用以防连点。
@@ -264,6 +321,31 @@ void TalkWindow::ConnectSignals() {
             settings_.media_mode = mode_->currentData().toString();
             settings_.Save();
           });
+  connect(talk_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+          [this] {
+            settings_.talk_mode = talk_->currentData().toString();
+            settings_.Save();
+            AppendLog(QStringLiteral("%1 仅在新建房间时生效")
+                          .arg(talk_->currentText()));
+          });
+  connect(grant_, &QPushButton::clicked, this, [this] {
+    const QString uid = SelectedMemberUid();
+    if (uid.isEmpty()) {
+      AppendLog(QStringLiteral("先在成员列表选中一位成员"));
+      return;
+    }
+    SendCommand("host.grant", {{"uid", uid}, {"allow", floor_holder_ != uid}});
+  });
+  connect(mute_all_, &QPushButton::clicked, this,
+          [this] { SendCommand("host.muteAll"); });
+  connect(kick_, &QPushButton::clicked, this, [this] {
+    const QString uid = SelectedMemberUid();
+    if (uid.isEmpty()) {
+      AppendLog(QStringLiteral("先在成员列表选中一位成员"));
+      return;
+    }
+    SendCommand("host.kick", {{"uid", uid}});
+  });
   connect(source_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
           [this] {
             const QString source = source_->currentData().toString();
@@ -322,6 +404,7 @@ QJsonObject TalkWindow::CoreConfig() const {
       {"audio_backend", backend_->currentData().toString()},
       {"audio_source", source_->currentData().toString()},
       {"media_mode", mode_->currentData().toString()},
+      {"talk_mode", talk_->currentData().toString()},
       {"recording_device", recording_->currentData().toString()},
       {"playout_device", playout_->currentData().toString()}};
 }
@@ -473,6 +556,10 @@ void TalkWindow::ResetButtons() {
   UpdateSourceControls();
   muted_ = true;
   mute_->setText(QStringLiteral("开麦"));
+  self_role_ = QStringLiteral("member");
+  talk_mode_ = QStringLiteral("free");
+  ClearFloor();
+  UpdateHostControls();
   camera_on_ = false;
   camera_->setText(QStringLiteral("开摄像头"));
   video_sharing_ = false;
@@ -480,15 +567,34 @@ void TalkWindow::ResetButtons() {
 }
 
 void TalkWindow::RefreshMembers() {
+  // 音量条每 500ms 重建一次列表，先记住选中项避免选择被清掉。
+  const QString selected = SelectedMemberUid();
   members_->clear();
   for (auto it = peers_.begin(); it != peers_.end(); ++it) {
     const QJsonObject& peer = it.value();
-    members_->addItem(QStringLiteral("%1 · %2 · %3")
-                          .arg(peer["display"].toString(it.key()),
-                               peer["role"].toString(),
-                               peer["audio"].toObject()["muted"].toBool()
-                                   ? QStringLiteral("静音")
-                                   : QStringLiteral("开麦")));
+    QStringList parts;
+    parts << QStringLiteral("%1 · %2 · %3")
+                 .arg(peer["display"].toString(it.key()),
+                      peer["role"].toString(),
+                      peer["audio"].toObject()["muted"].toBool()
+                          ? QStringLiteral("静音")
+                          : QStringLiteral("开麦"));
+    if (talk_mode_ != QStringLiteral("free")) {
+      if (it.key() == floor_holder_) {
+        parts << QStringLiteral("[发言]");
+      }
+      const int pos = floor_queue_.indexOf(it.key());
+      if (pos >= 0) {
+        parts << QStringLiteral("[排队%1]").arg(pos + 1);
+      }
+    }
+    parts << LevelBar(levels_.value(it.key(), 0.0));
+    auto* item = new QListWidgetItem(parts.join(QStringLiteral(" ")));
+    item->setData(Qt::UserRole, it.key());
+    members_->addItem(item);
+    if (it.key() == selected) {
+      members_->setCurrentItem(item);
+    }
   }
 }
 
@@ -519,6 +625,7 @@ void TalkWindow::HandleEvent(const QString& name, const QJsonObject& data) {
   }
   if (name == "ready") {
     self_uid_ = data["uid"].toString();
+    kicked_notice_.clear();
     state_->setText(QStringLiteral("已连接"));
     disconnect_->setEnabled(true);
     join_->setEnabled(true);
@@ -579,6 +686,12 @@ void TalkWindow::HandleEvent(const QString& name, const QJsonObject& data) {
   }
   if (name == "left" || name == "room.closed") {
     peers_.clear();
+    levels_.clear();
+    self_role_ = QStringLiteral("member");
+    talk_mode_ = QStringLiteral("free");
+    ptt_queue_ = true;
+    ClearFloor();
+    UpdateHostControls();
     RefreshMembers();
     join_->setEnabled(true);
     leave_->setEnabled(false);
@@ -620,9 +733,42 @@ void TalkWindow::HandleEvent(const QString& name, const QJsonObject& data) {
     RefreshMembers();
     return;
   }
+  if (name == "session.kicked") {
+    HandleKicked(data);
+    return;
+  }
+  if (name == "floor.state") {
+    HandleFloorState(data);
+    return;
+  }
+  if (name == "floor.revoked") {
+    ClearFloor();
+    const QString reason = data["reason"].toString();
+    QString text = QStringLiteral("发言权被收回");
+    if (reason == QStringLiteral("timeout")) {
+      text += QStringLiteral("（超过单次持麦时长）");
+    } else if (reason == QStringLiteral("preempt")) {
+      text += QStringLiteral("（主持人已授予他人）");
+    } else if (reason == QStringLiteral("host")) {
+      text += QStringLiteral("（主持人收回）");
+    } else if (!reason.isEmpty()) {
+      text += QStringLiteral("（%1）").arg(reason);
+    }
+    AppendLog(text);
+    return;
+  }
+  if (name == "room.policyChanged") {
+    ApplyTalkMode(data["talk_mode"].toString(QStringLiteral("free")), data);
+    return;
+  }
+  if (name == "room.audioLevels") {
+    HandleAudioLevels(data);
+    return;
+  }
   if (name == "media.forceMute" || name == "muted") {
     muted_ = name == "media.forceMute" || data["muted"].toBool(true);
-    mute_->setText(muted_ ? QStringLiteral("开麦") : QStringLiteral("静音"));
+    // PTT 下按钮文案是「按住说话」，统一交给发言权渲染决定。
+    UpdateFloorUi();
     return;
   }
   if (name == "media.state") {
@@ -653,7 +799,11 @@ void TalkWindow::HandleEvent(const QString& name, const QJsonObject& data) {
 
 void TalkWindow::HandleState(const QJsonObject& data) {
   const QString state = data["state"].toString();
-  state_->setText(QStringLiteral("信令：%1").arg(state));
+  // 被移出/顶号后紧跟的 disconnected 不能把提示覆盖成普通断线。
+  state_->setText(state == QStringLiteral("disconnected") &&
+                          !kicked_notice_.isEmpty()
+                      ? kicked_notice_
+                      : QStringLiteral("信令：%1").arg(state));
   if (state == "disconnected") {
     ResetButtons();
     peers_.clear();
@@ -677,6 +827,13 @@ void TalkWindow::HandleJoined(const QJsonObject& data) {
     const QJsonObject peer = value.toObject();
     peers_[peer["uid"].toString()] = peer;
   }
+  const QJsonObject room = data["room"].toObject();
+  const QJsonObject policy = room["policy"].toObject();
+  self_role_ = room["role"].toString(QStringLiteral("member"));
+  ApplyTalkMode(policy["talk_mode"].toString(QStringLiteral("free")), policy);
+  HandleFloorState(data["floor"].toObject());
+  // 音量条只在 SFU 房间推送；SFU 下订阅后服务端每 500ms 发一次电平。
+  SendCommand("room.subscribeLevels", {{"enabled", true}});
   RefreshMembers();
   join_->setEnabled(false);
   leave_->setEnabled(true);
@@ -696,6 +853,135 @@ void TalkWindow::HandleJoined(const QJsonObject& data) {
     core_->SetVideoCallback(true);
   }
   ApplyMediaMode(data["media_mode"].toString(QStringLiteral("sfu")));
+}
+
+// 对讲策略变化：按钮形态、主持人面板与成员标记都跟着变。
+void TalkWindow::ApplyTalkMode(const QString& mode,
+                               const QJsonObject& policy) {
+  const bool changed = mode != talk_mode_;
+  talk_mode_ = mode.isEmpty() ? QStringLiteral("free") : mode;
+  ptt_queue_ = policy["ptt_queue"].toBool(true);
+  if (changed) {
+    ClearFloor();
+    const QString name =
+        talk_mode_ == QStringLiteral("free")
+            ? QStringLiteral("自由发言")
+            : talk_mode_ == QStringLiteral("ptt")
+                  ? QStringLiteral("按住说话")
+                  : QStringLiteral("主持人审核");
+    AppendLog(QStringLiteral("房间对讲模式：%1（%2）")
+                  .arg(name, ptt_queue_ ? QStringLiteral("允许排队")
+                                        : QStringLiteral("忙线不排队")));
+  }
+  UpdateHostControls();
+  UpdateFloorUi();
+  RefreshMembers();
+}
+
+// 主持人按钮只在 host 且 talk_mode 非 free 时出现，服务端对其他人回 403。
+void TalkWindow::UpdateHostControls() {
+  const bool host = self_role_ == QStringLiteral("host") &&
+                    talk_mode_ != QStringLiteral("free");
+  grant_->setVisible(host);
+  mute_all_->setVisible(host);
+  kick_->setVisible(host);
+}
+
+void TalkWindow::ClearFloor() {
+  floor_holder_.clear();
+  floor_mine_ = false;
+  floor_queue_.clear();
+  floor_deadline_ms_ = 0;
+  UpdateFloorUi();
+}
+
+// floor.state 由服务端在每次授予/排队/释放时广播，会话层已换算好剩余时间。
+void TalkWindow::HandleFloorState(const QJsonObject& data) {
+  if (data.contains("talk_mode")) {
+    talk_mode_ = data["talk_mode"].toString(talk_mode_);
+    ptt_queue_ = data["ptt_queue"].toBool(ptt_queue_);
+    UpdateHostControls();
+  }
+  floor_mine_ = data["self"].toBool(false);
+  floor_holder_ = data["holder"].toString();
+  floor_queue_.clear();
+  for (const auto& value : data["queue"].toArray()) {
+    floor_queue_.append(value.toString());
+  }
+  const double expires_in = data["expires_in_ms"].toDouble(0);
+  floor_deadline_ms_ = floor_holder_.isEmpty() || expires_in <= 0
+                           ? 0
+                           : QDateTime::currentMSecsSinceEpoch() +
+                                 static_cast<qint64>(expires_in);
+  UpdateFloorUi();
+  RefreshMembers();
+}
+
+void TalkWindow::UpdateFloorUi() {
+  if (floor_ == nullptr) {
+    return;
+  }
+  if (talk_mode_ == QStringLiteral("free")) {
+    floor_->setText(QStringLiteral("对讲模式：自由发言（点“开麦”切换）"));
+    mute_->setText(muted_ ? QStringLiteral("开麦") : QStringLiteral("静音"));
+    return;
+  }
+  const bool ptt = talk_mode_ == QStringLiteral("ptt");
+  mute_->setText(floor_mine_ ? QStringLiteral("正在发言…")
+                             : ptt ? QStringLiteral("按住说话")
+                                   : QStringLiteral("按住申请发言"));
+  QString text = QStringLiteral("对讲模式：%1")
+                     .arg(ptt ? QStringLiteral("按住说话")
+                              : QStringLiteral("主持人审核"));
+  if (floor_holder_.isEmpty()) {
+    text += QStringLiteral("｜当前无人发言");
+  } else {
+    text += QStringLiteral("｜正在发言：%1")
+                .arg(floor_mine_ ? QStringLiteral("我") : floor_holder_);
+    if (floor_deadline_ms_ > 0) {
+      const qint64 left =
+          floor_deadline_ms_ - QDateTime::currentMSecsSinceEpoch();
+      text += QStringLiteral("（剩余 %1 秒）").arg(qMax<qint64>(0, left) / 1000);
+    }
+  }
+  if (!floor_queue_.isEmpty()) {
+    QStringList queued;
+    for (int i = 0; i < floor_queue_.size(); ++i) {
+      queued << QStringLiteral("%1(第%2位)")
+                    .arg(floor_queue_.at(i))
+                    .arg(i + 1);
+    }
+    text += QStringLiteral("｜排队：%1").arg(queued.join(QStringLiteral("，")));
+  } else if (!ptt_queue_) {
+    text += QStringLiteral("｜当前不排队，忙线请稍后");
+  }
+  floor_->setText(text);
+}
+
+// session.kicked 不走重连：kicked=被主持人移出，replaced=同 uid 在别处登录。
+void TalkWindow::HandleKicked(const QJsonObject& data) {
+  kicked_notice_ = data["reason"].toString() == QStringLiteral("kicked")
+                       ? QStringLiteral("已断开：被主持人移出房间")
+                       : QStringLiteral("已断开：同一账号在其它客户端登录");
+  state_->setText(kicked_notice_);
+  AppendLog(kicked_notice_ + QStringLiteral("（不会自动重连）"));
+}
+
+// 服务端只上报有声的 producer：缺失的成员按半衰衰减，暂停后自然归零。
+void TalkWindow::HandleAudioLevels(const QJsonObject& data) {
+  for (auto it = levels_.begin(); it != levels_.end(); ++it) {
+    it.value() = it.value() < 0.02 ? 0.0 : it.value() * 0.5;
+  }
+  for (const auto& value : data["levels"].toArray()) {
+    const QJsonObject entry = value.toObject();
+    levels_[entry["uid"].toString()] = entry["level"].toDouble();
+  }
+  RefreshMembers();
+}
+
+QString TalkWindow::SelectedMemberUid() const {
+  const QListWidgetItem* item = members_->currentItem();
+  return item == nullptr ? QString() : item->data(Qt::UserRole).toString();
 }
 
 // 服务端会在房间人数变化时下发 room.mediaMode（2 人 P2P / 3 人以上 SFU），
@@ -771,8 +1057,21 @@ void TalkWindow::HandleResult(const QJsonObject& data) {
     }
   }
   if (method == "media.setMute") {
-    mute_->setText(muted_ ? QStringLiteral("开麦") : QStringLiteral("静音"));
+    UpdateFloorUi();
     mute_->setEnabled(leave_->isEnabled());
+  }
+  if (method == "floor.request") {
+    if (!ok) {
+      AppendLog(QStringLiteral("申请发言失败，错误码 %1")
+                    .arg(data["error"].toObject()["code"].toInt()));
+    } else {
+      const QJsonObject payload = data["data"].toObject();
+      if (!payload["granted"].toBool()) {
+        const int pos = payload["queue_pos"].toInt(0);
+        AppendLog(pos > 0 ? QStringLiteral("已排队，排在第 %1 位").arg(pos)
+                          : QStringLiteral("发言权忙线，请稍后再试"));
+      }
+    }
   }
   if (!ok && (method == "video.start" || method == "video.stop")) {
     // 失败时恢复可点，文案与实际状态一致。

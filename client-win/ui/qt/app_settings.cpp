@@ -26,6 +26,8 @@ AppSettings AppSettings::Load() {
       storage.value("backend", QStringLiteral("wasapi")).toString();
   settings.media_mode =
       storage.value("media_mode", QStringLiteral("auto")).toString();
+  settings.talk_mode =
+      storage.value("talk_mode", QStringLiteral("free")).toString();
   settings.audio_source =
       storage.value("audio_source", QStringLiteral("mic")).toString();
   settings.recording_device =
@@ -41,6 +43,7 @@ void AppSettings::Save() const {
   storage.setValue("room", room);
   storage.setValue("backend", backend);
   storage.setValue("media_mode", media_mode);
+  storage.setValue("talk_mode", talk_mode);
   storage.setValue("audio_source", audio_source);
   storage.setValue("recording_device", recording_device);
   storage.setValue("playout_device", playout_device);

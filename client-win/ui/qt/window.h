@@ -6,6 +6,7 @@
 #include <QJsonObject>
 #include <QMap>
 #include <QString>
+#include <QStringList>
 #include <QWidget>
 
 #include "app_settings.h"
@@ -58,6 +59,15 @@ class TalkWindow : public QWidget {
   void HandleState(const QJsonObject& data);
   void HandleJoined(const QJsonObject& data);
   void HandleResult(const QJsonObject& data);
+  // S4：对讲策略、发言权视图、主播面板与音量条。
+  void ApplyTalkMode(const QString& mode, const QJsonObject& policy);
+  void HandleFloorState(const QJsonObject& data);
+  void HandleKicked(const QJsonObject& data);
+  void HandleAudioLevels(const QJsonObject& data);
+  void UpdateFloorUi();
+  void UpdateHostControls();
+  void ClearFloor();
+  QString SelectedMemberUid() const;
   void HandleVideoState(const QJsonObject& data);
   // 服务端 media.producer：对端某一路发布被暂停时立即收掉对应画面。
   void HandleProducerState(const QJsonObject& data);
@@ -86,6 +96,18 @@ class TalkWindow : public QWidget {
   bool muted_ = true;
   bool camera_on_ = false;
   bool video_sharing_ = false;
+  // S4：房间对讲策略与本机发言权；levels_ 为对端音量（uid -> 0..1）。
+  QString self_role_ = QStringLiteral("member");
+  QString talk_mode_ = QStringLiteral("free");
+  bool ptt_queue_ = true;
+  bool floor_mine_ = false;
+  QString floor_holder_;
+  QStringList floor_queue_;
+  // 倒计时终点（本地 epoch ms）；0 表示当前发言无超时。
+  qint64 floor_deadline_ms_ = 0;
+  QMap<QString, double> levels_;
+  // 被移出/顶号的提示；断线事件不能用它覆盖成普通断线。
+  QString kicked_notice_;
 
   QLineEdit* url_ = nullptr;
   QLineEdit* uid_ = nullptr;
@@ -94,6 +116,7 @@ class TalkWindow : public QWidget {
   QCheckBox* dev_ = nullptr;
   QComboBox* backend_ = nullptr;
   QComboBox* mode_ = nullptr;
+  QComboBox* talk_ = nullptr;
   QComboBox* source_ = nullptr;
   QComboBox* recording_ = nullptr;
   QComboBox* playout_ = nullptr;
@@ -105,14 +128,19 @@ class TalkWindow : public QWidget {
   QPushButton* camera_ = nullptr;
   QPushButton* video_ = nullptr;
   QPushButton* devices_ = nullptr;
+  QPushButton* grant_ = nullptr;
+  QPushButton* mute_all_ = nullptr;
+  QPushButton* kick_ = nullptr;
   QLabel* state_ = nullptr;
   QLabel* media_ = nullptr;
+  QLabel* floor_ = nullptr;
   QWidget* video_area_ = nullptr;
   QWidget* video_grid_widget_ = nullptr;
   QGridLayout* video_grid_ = nullptr;
   QStackedLayout* video_stack_ = nullptr;
   QLabel* video_placeholder_ = nullptr;
   QTimer* video_prune_timer_ = nullptr;
+  QTimer* floor_timer_ = nullptr;
   QListWidget* members_ = nullptr;
   QSlider* volume_ = nullptr;
   QPlainTextEdit* log_ = nullptr;
