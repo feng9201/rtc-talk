@@ -425,6 +425,105 @@ describe('sfu audio', () => {
     expect(ok2.data.producers).toHaveLength(3);
   }, 20000);
 
+  it('pauses screen and releases publisher quota without touching camera', async () => {
+    const rtcPort = await freePort();
+    media = await MediaNode.create({
+      numWorkers: 1,
+      workerBin: process.env.MEDIASOUP_WORKER_BIN,
+      listenIp: '127.0.0.1',
+      announcedAddress: '127.0.0.1',
+      port: rtcPort,
+      logger,
+      onWorkerDied: () => {},
+    });
+    const config = loadConfig({
+      TALK_ENV: 'dev',
+      TALK_HTTP_HOST: '127.0.0.1',
+      TALK_JWT_SECRET: 's'.repeat(40),
+    });
+    config.http.port = 0;
+    app = createApp({ config, logger, media });
+    const addr = await app.listen();
+    const base = `http://127.0.0.1:${addr.port}`;
+
+    async function open(uid: string, video = true): Promise<Peer> {
+      const token = ((await (await fetch(`${base}/dev/token?uid=${uid}`)).json()) as { token: string }).token;
+      const wire = await connect(base, token);
+      const peer = new Peer(wire, video);
+      peers.push(peer);
+      expect((await wire.req('session.hello', { client: { platform: 'linux', version: '0' } })).ok).toBe(true);
+      expect(
+        (
+          await wire.req('room.join', {
+            room_id: 'sfu-screen',
+            media: { audio: { muted: false }, video: { send: true } },
+            policy: { video: { enabled: true, max_publishers: 2 } },
+          })
+        ).ok,
+      ).toBe(true);
+      return peer;
+    }
+
+    const a = await open('s1');
+    const b = await open('s2');
+
+    // A 同时发 camera + screen，占满 2 个名额
+    const pc = new RTCPeerConnection({
+      iceServers: [] as [],
+      iceAdditionalHostAddresses: ['127.0.0.1'],
+      iceUseTcp: false,
+      codecs: { audio: [useOPUS()], video: [useH264()] },
+    });
+    pc.addTrack(new MediaStreamTrack({ kind: 'audio' }));
+    pc.addTrack(new MediaStreamTrack({ kind: 'video' }));
+    pc.addTrack(new MediaStreamTrack({ kind: 'video' }));
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    const offerSdp = pc.localDescription!.sdp;
+    const pub = await a.wire.req('sfu.publish', {
+      sdp: offerSdp,
+      tracks: [
+        { mid: '0', kind: 'audio', source: 'mic' },
+        { mid: '1', kind: 'video', source: 'camera' },
+        { mid: '2', kind: 'video', source: 'screen' },
+      ],
+    });
+    pc.close();
+    expect(pub.ok).toBe(true);
+
+    // 名额已满：B 的视频被拒
+    await expect(b.publish()).rejects.toThrow(/publish failed 409/);
+
+    // A 停共享：B 收到 media.producer，名额释放后 B 可发布
+    const paused = new Promise<Record<string, unknown>>((resolve) => {
+      b.wire.ws.on('message', (raw) => {
+        const msg = JSON.parse(raw.toString());
+        if (msg.type === 'ntf' && msg.method === 'media.producer') resolve(msg.data as Record<string, unknown>);
+      });
+    });
+    const mute = await a.wire.req('media.setMute', { source: 'screen', muted: true });
+    expect(mute.ok).toBe(true);
+    expect(mute.data.video).toMatchObject({ camera: true, screen: false, on: true });
+    expect(await paused).toMatchObject({ uid: 's1', kind: 'video', source: 'screen', paused: true });
+
+    // ICE restart / 重发完整 offer：三路 producer 全部复用，屏幕路保持暂停
+    const again = await a.wire.req('sfu.publish', {
+      sdp: offerSdp,
+      tracks: [
+        { mid: '0', kind: 'audio', source: 'mic' },
+        { mid: '1', kind: 'video', source: 'camera' },
+        { mid: '2', kind: 'video', source: 'screen' },
+      ],
+    });
+    expect(again.ok).toBe(true);
+    expect(again.data.producers.map((p: { producer_id: string }) => p.producer_id)).toEqual(
+      pub.data.producers.map((p: { producer_id: string }) => p.producer_id),
+    );
+    expect(again.data.producers.find((p: { mid: string }) => p.mid === '2')?.paused).toBe(true);
+
+    await b.publish();
+  }, 20000);
+
   it('retries recv offer after a failed answer once the peer publishes', async () => {
     const rtcPort = await freePort();
     media = await MediaNode.create({
@@ -446,8 +545,7 @@ describe('sfu audio', () => {
     const addr = await app.listen();
     const base = `http://127.0.0.1:${addr.port}`;
 
-    async function helloJoin(wire: Wire, uid: string): Promise<void> {
-      const token = ((await (await fetch(`${base}/dev/token?uid=${uid}`)).json()) as { token: string }).token;
+    async function helloJoin(wire: Wire, _uid: string): Promise<void> {
       expect((await wire.req('session.hello', { client: { platform: 'linux', version: '0' } })).ok).toBe(true);
       expect((await wire.req('room.join', { room_id: 'sfu-retry', media: { audio: { muted: false } } })).ok).toBe(true);
     }
@@ -500,9 +598,7 @@ describe('sfu audio', () => {
 
     await new Promise((r) => setTimeout(r, 1000));
     expect(offers).toBeGreaterThanOrEqual(1);
-    expect(lastConsumers).toEqual(
-      expect.arrayContaining([expect.objectContaining({ uid: 'alice', kind: 'audio' })]),
-    );
+    expect(lastConsumers).toEqual(expect.arrayContaining([expect.objectContaining({ uid: 'alice', kind: 'audio' })]));
     bRecv.close();
     bSend.close();
     bWire.close();

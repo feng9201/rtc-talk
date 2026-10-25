@@ -99,9 +99,10 @@ wss://<host>:<port>/talk/v1/ws?token=<JWT>
               "device_id": "rk3576-sn-xxxx", "sdk": "webrtc-m146" },
   "caps": {
     "audio": { "codecs": ["opus"], "aec": "webrtc|hw|none" },
-    "video": { "codecs": [ { "name": "H264", "hw": true }, { "name": "VP8", "hw": false } ],
-               "simulcast": true, "max_recv": 9 },          // 预留，一期可省略
+    "video": { "codecs": [ { "name": "H264", "hw": true }, { "name": "H265", "hw": false } ],
+               "simulcast": false, "max_recv": 9 },        // 一期单层，simulcast 预留
     "p2p": true,
+    "p2p_video": true,                                     // 本端 P2P 链路能否承载视频 m-line
     "sfu_sdp": "unified-plan"
   },
   "resume": { "session_id": "sess-abc" }                   // 可选，断线恢复
@@ -129,6 +130,9 @@ wss://<host>:<port>/talk/v1/ws?token=<JWT>
 }
 ```
 
+- `caps` 只做能力声明：服务端据此决定媒体模式与下发 `room.mediaMode`，未识别的字段忽略，**不得因此拒绝 hello**。
+- `caps.video.codecs[].name` 大小写不敏感；服务端可用的 SFU 编码以 `room.join` 应答的 `sfu_video_codecs` 为准（见 5.2），客户端只在其声明的编码与实际 `MediaCapabilities` 里挑选。
+- `caps.p2p_video` 缺省为 `false`：P2P 视频需要**双方都为 true** 才允许在 P2P 链路上加视频 m-line（见 7.5）。
 - TURN 凭证采用 coturn `use-auth-secret`（REST 临时凭证），过期前客户端调 `session.refreshIce` 刷新。
 - 连接上未完成 `session.hello` 时调用其他方法返回 `409`；同一连接重复 hello 也返回 `409`。
 - 恢复条件：`resume.session_id` 仍在保留期内且属于同一 uid；否则按新会话处理（`resumed=false`，客户端需重新入房）。断线期间的通知不补发，以应答里的 `room` 快照为准。
@@ -158,7 +162,7 @@ wss://<host>:<port>/talk/v1/ws?token=<JWT>
   "media_mode": "auto|sfu|p2p",        // auto：2 人且双方支持则 P2P，否则 SFU
   "p2p_allow_relay": true,             // P2P 是否允许走 TURN 中继
   "max_peers": 20,
-  "video": { "enabled": true, "max_publishers": 9 }    // 单层 H.264；enabled=false 时房间拒绝视频轨
+  "video": { "enabled": true, "max_publishers": 9 }    // 单层 H.264；enabled=false 时房间拒绝视频轨；max_publishers 按“未关闭且未暂停”的 producer 计
 }
 ```
 
@@ -176,7 +180,8 @@ wss://<host>:<port>/talk/v1/ws?token=<JWT>
 房间由客户端即时创建：`room_id` 不存在时，服务端按 `policy` 创建房间，第一个入房者的 `role` 为 `host`；房间已存在时忽略 `policy`。最后一名成员离开（含 `resume_ttl` 超时清理）后房间销毁。
 
 - host 离开后按入房顺序把 host 移交给下一名成员，并广播 `room.peerUpdated{uid, role:"host"}`。
-- 错误：`room_id` 不合法（`[A-Za-z0-9_.-]{1,64}`）或 policy 字段无效 `400`；token 带 `rooms` 声明且不包含该房间 `403`；已在某个房间（一个会话同时只能在一个房间）`409`；人数达到 `max_peers` `429`。`video.enabled` / `video.send` 已可用于单层 H.264；仅含 H.265 的 offer 仍返回 `501`。
+- 错误：`room_id` 不合法（`[A-Za-z0-9_.-]{1,64}`）或 policy 字段无效 `400`；token 带 `rooms` 声明且不包含该房间 `403`；已在某个房间（一个会话同时只能在一个房间）`409`；人数达到 `max_peers` `429`。
+- `media_mode` 决策：`talk_mode` 为 `ptt` / `moderated` 时**强制 SFU**（发言权与 producer 暂停依赖服务端控制，P2P 不生效）；仅 `free` 允许 P2P，且需两人、双方 `caps.p2p=true`、`max_peers<=2` 且未粘滞。
 - `max_peers` 不超过服务端上限（`TALK_MAX_PEERS`，默认 20）。
 
 应答：
@@ -185,10 +190,11 @@ wss://<host>:<port>/talk/v1/ws?token=<JWT>
 {
   "room": { "room_id": "r-001", "policy": { /* 5.1 */ }, "role": "member|host" },
   "media_mode": "sfu",                       // 当前生效的媒体模式
+  "sfu_video_codecs": ["h264"],              // 服务端可转发的视频编码（P2P 不受此限制）
   "peers": [
     { "uid": "u1002", "display": "李四", "platform": "linux-arm64", "role": "member",
       "audio": { "muted": false, "speaking": false },
-      "video": { "on": false } }
+      "video": { "camera": false, "screen": false, "on": false } }   // on = camera || screen，兼容旧客户端
   ],
   "floor": { "holder": null, "queue": [] }   // talk_mode=ptt 时有效
 }
@@ -207,21 +213,32 @@ wss://<host>:<port>/talk/v1/ws?token=<JWT>
 | `room.peerLeft` | S→C ntf | `{uid, reason}` | 成员离开（`leave/timeout/kicked/replaced`） |
 | `room.peerUpdated` | S→C ntf | `{uid, audio?, video?, role?}` | 成员状态变化（静音、角色）；静音变化不发给本人，角色变化包括本人 |
 | `room.policyChanged` | S→C ntf | policy | 策略变更（主持人切换 talk_mode 等） |
-| `room.mediaMode` | S→C req | `{mode, reason}` | 要求切换媒体模式，见 7.4；客户端完成后回 res |
-| `room.activeSpeaker` | S→C ntf | `{uid}` | 当前主讲人（mediasoup ActiveSpeakerObserver） |
-| `room.audioLevels` | S→C ntf | `{levels:[{uid, level}]}` | 音量（≤2 次/秒，需 `room.subscribeLevels` 开启） |
+| `room.mediaMode` | S→C req | `{mode, reason, p2p_video?}` | 要求切换媒体模式，见 7.4；`p2p_video` 表示本次 P2P 链路能否承载视频（双方 `caps.p2p_video` 均 true），客户端完成后回 res |
+| `room.subscribeLevels` | C→S req | `{enabled:true}` | 开启/关闭本端音量推送（开启后才有 `room.audioLevels`） |
+| `room.activeSpeaker` | S→C ntf | `{uid}` | 当前主讲人（mediasoup ActiveSpeakerObserver，仅 SFU） |
+| `room.audioLevels` | S→C ntf | `{levels:[{uid, level}]}` | 音量（≤2 次/秒，需 `room.subscribeLevels` 开启，仅 SFU） |
+| `media.producer` | S→C ntf | `{uid, mid, kind, source, paused}` | 成员 producer 的暂停/恢复/关闭，见 6.6 |
 | `room.closed` | S→C ntf | `{reason}` | 房间解散 |
 
 ### 5.4 静音（media.*）
 
 | method | 方向 | data | 说明 |
 |---|---|---|---|
-| `media.setMute` | C→S req | `{source:"mic|camera", muted}` | 开/关麦。开麦可能返回 `429`（超过 `max_speakers`）或 `403`（moderated 无发言权） |
+| `media.setMute` | C→S req | `{source:"mic|camera|screen", muted}` | 开/关麦、摄像头、屏幕共享。开麦可能返回 `429`（超过 `max_speakers`）或 `403`（moderated 无发言权） |
 | `media.forceMute` | S→C ntf | `{source, by}` | 被主持人/策略强制静音 |
+
+`source` 的语义（三者互相独立，共享开关**不再隐含在 `camera` 里**）：
+
+| source | 作用对象 | 应答 |
+|---|---|---|
+| `mic` | `kind=audio` 的 producer | `{audio:{muted,speaking}}` |
+| `camera` | `kind=video` 且 `source=camera` 的 producer | `{video:{camera,screen,on}}` |
+| `screen` | `kind=video` 且 `source=screen` 的 producer | `{video:{camera,screen,on}}` |
 
 实现约定：
 - 客户端关麦：本地 `RtpSender` 置 `active=false`（不再发包），服务端 `producer.pause()`。
 - 客户端开麦：先发 `media.setMute{muted:false}`，**收到成功应答后**再恢复发送，保证服务端策略生效。
+- **屏幕共享停止时客户端必须发 `media.setMute{source:"screen", muted:true}`**（不发 `video.stop` 之类的本地命令），服务端据此 `producer.pause()`、广播 `media.producer`，并释放 `video.max_publishers` 名额；下一次开共享沿用同一 mid 重新 `sfu.publish` 时不会因“同 uid 同 source 去重”被 `409`。
 - P2P 模式下 `media.setMute` 仍发给服务端（用于状态同步），媒体侧本地处理。
 
 ---
@@ -254,12 +271,14 @@ wss://<host>:<port>/talk/v1/ws?token=<JWT>
 ```jsonc
 {
   "sdp": "v=0...",                      // answer
-  "producers": [ { "mid": "0", "producer_id": "p-xx", "paused": true } ]
+  "producers": [ { "mid": "0", "producer_id": "p-xx", "kind": "audio", "source": "mic",
+                   "codec": "opus", "paused": true } ]
 }
 ```
 
 - 新增/删除发送轨（后续加摄像头）时重新 `sfu.publish`，携带完整 offer；删除的轨在 `tracks` 中标记 `"closed": true`。
-- 视频轨受房间策略约束，违反返回 `409`：`video.enabled=false`；房间内视频 producer 数已达 `video.max_publishers`（按 producer 计数，本端重发布原 mid 不重复计入）；同一 `uid` 重复发布相同 `source` 的视频轨。
+- 同一 mid 的视频轨重发布（如屏幕共享停后再开）若 `codec` 与保留下来的 producer 一致，则复用原 producer 只改 `paused`，不重建；编码/参数变化才走 close+produce（见 6.6）。
+- 视频轨受房间策略约束，违反返回 `409`：`video.enabled=false`；房间内 **未关闭且未暂停** 的视频 producer 数已达 `video.max_publishers`（本端同 mid 重发布不重复计入）；同一 `uid` 存在另一个**未暂停**的同 `source` 视频 producer（自己把自己旧路的 `paused` 置 true 再发不算冲突）。
 
 ### 6.3 订阅：`sfu.offer`（S→C req）
 
@@ -309,6 +328,20 @@ wss://<host>:<port>/talk/v1/ws?token=<JWT>
 | `sfu.stats` | C→S ntf | `{pc, rtt, jitter, loss, bitrate}` | 每 10s 上报质量（用于监控） |
 | `sfu.consumerLayers` | C→S req | `{consumer_id, spatial, temporal}` | 预留：视频选层 |
 | `sfu.keyframe` | C→S req | `{consumer_id}` | 预留：请求关键帧 |
+
+### 6.6 producer 状态广播
+
+`media.producer`（S→C ntf）在以下时机广播给房间内**除本人外**的成员：
+
+| 时机 | 字段 |
+|---|---|
+| `sfu.publish` 新建/重建 producer | `{uid, mid, kind, source, paused}`（可带 `producer_id`） |
+| `media.setMute` 使 `producer.pause()/resume()` | 同上，`paused` 为目标值 |
+
+- 成员离开不看这个通知，以 `room.peerLeft` 为准；producer 因重发布被重建时以 `sfu.offer` 的 `consumers` 为准。
+
+- 用作接收端的“最后一帧/断流”提示：`screen` 变 `paused=true` 时对端可以立刻清空共享画面，不必等 RTP 超时。
+- 与 `room.peerUpdated` 的分工：`peerUpdated.video` 是用户意图（自报状态），`media.producer` 是媒体事实（服务端 `pause/resume` 后的结果）；以 `media.producer` 为准。
 
 ---
 
@@ -372,9 +405,19 @@ S       : 两端都 ok 后通知 p2p 关闭 → A,B 关闭 P2P PC
 - 切换期间两条链路同时存在，客户端**仅播放一路**：新链路出声后再静音旧链路，用户无感。
 - SFU → P2P 的回切默认关闭（避免人数在 2/3 间抖动导致来回切换），可配置为"稳定 2 人 30s 后回切"。
 
+### 7.5 P2P 视频与 H.265
+
+- P2P 模式下媒体两端直连，服务端只转发 SDP/ICE，**不解析 m-line**，因此编码不受服务端 `sfu_video_codecs` 限制。
+- 允许在 P2P 链路上开视频的条件：双方 `caps.p2p_video=true`；否则 `room.mediaMode.p2p_video=false`，客户端不得发起视频轨（要视频必须 `media_mode=sfu`）。
+- P2P 视频沿用客户端预发布的三条 m-line（audio/camera/screen，mid 0/1/2）：应答方必须先 `SetRemote` 再 `AddTrack`；启停共享只切本地 sender 的 `active` + 停采，并额外发 `media.setMute{source:"screen"}` 同步状态。
+- **H.265 仅 P2P 可用**：需 SDK 以 `rtc_use_h265=true` 编译 + 外部编解码器注入。服务端 SFU 暂不支持 H.265（mediasoup 3.16.6 已移除该编码），含 H.265 的 `sfu.publish` 仍返回 `501`，见 9.2。
+
 ---
 
 ## 8. 发言权（floor.*，talk_mode=ptt/moderated）
+
+- **仅 SFU 模式生效**：`talk_mode` 为 `ptt`/`moderated` 时房间强制 `media_mode=sfu`（见 5.2）；P2P 房间里主持人切到 PTT 会触发 `room.mediaMode{mode:"sfu",reason:"policy"}`。
+- `max_speakers`：同时处于 `resume` 的音频 producer 上限，0=不限；超过时 `floor.request` 排队，`media.setMute{muted:false}` 返回 `429`。
 
 | method | 方向 | data | 说明 |
 |---|---|---|---|
@@ -410,12 +453,13 @@ PTT 的媒体实现：
 
 ### 9.2 视频
 
-当前服务端已实现单层 H.264。Simulcast、VP8、H.265 和选层仍按下面的后续约定，尚未实现。
+当前服务端（SFU）已实现单层 H.264。Simulcast、VP8 和选层仍按下面的后续约定，尚未实现；H.265 只在 P2P 链路上可用。
 
 | 项 | 约定 |
 |---|---|
-| 当前 | 单层 H.264 Constrained Baseline `42e01f`，`packetization-mode=1`。`sfu.publish` 可带视频轨；`media.setMute{source:camera}` 暂停/恢复摄像头。仅含 H.265/HEVC 的 m-line 返回 `501` |
-| 编码优先级（后续） | H.264 > VP8 > H.265（需双方 caps 声明且 SDK 以 `rtc_use_h265=true` 重编） |
+| 当前（SFU） | 单层 H.264 Constrained Baseline `42e01f`，`packetization-mode=1`。`sfu.publish` 可带视频轨；`media.setMute{source:camera|screen}` 暂停/恢复对应的视频 producer。仅含 H.265/HEVC 的 `sfu.publish` 返回 `501` |
+| 当前（P2P） | H.264 / H.265 由两端协商，服务端不参与；H.265 需双方 SDK 以 `rtc_use_h265=true` 编译且 `caps.video.codecs` 声明 |
+| 编码优先级（后续） | SFU：H.264 > VP8（H.265 待 mediasoup 上游 issue #1789 或自维护 worker 补丁，见 6.2） |
 | 发布（后续） | Simulcast 3 层（如 720p/360p/180p，rid `h/m/l`）；RK 端 MPP 硬编不支持多路时保持单层 |
 | 订阅（后续） | 每端最多 `video.max_recv` 路；按渲染尺寸通过 `sfu.consumerLayers` 选层 |
 | 控制 | NACK、PLI/FIR、TWCC 带宽估计；屏幕共享 `source:"screen"` |
@@ -507,5 +551,6 @@ sequenceDiagram
 ## 13. 版本演进规则
 
 - 新增 method / 字段：不升 `v`，接收方忽略未知内容。
+- 已发生的字段扩展（均不升 `v`）：`peerUpdated.video` 从 `{on}` 扩为 `{camera,screen,on}`；`media.setMute.source` 增加 `screen`；`room.mediaMode` 增加 `p2p_video`；新增 `media.producer` 与 `room.subscribeLevels`。
 - 字段语义变化或删除：升 `v`，服务端同时支持 `v` 与 `v-1` 至少一个大版本周期。
 - 客户端在 `session.hello` 上报 `version`，服务端可对过旧版本返回 `426`（升级提示，扩展码）。

@@ -3,6 +3,7 @@ import { buildPolicy, type RoomPolicy, type RoomPolicyInput } from './policy.js'
 
 export type Role = 'host' | 'member';
 export type LeaveReason = 'leave' | 'timeout' | 'kicked' | 'replaced';
+export type VideoSource = 'camera' | 'screen';
 
 export interface Peer {
   uid: string;
@@ -10,7 +11,8 @@ export interface Peer {
   platform: string;
   role: Role;
   audio: { muted: boolean; speaking: boolean };
-  video: { on: boolean };
+  /** on 是 camera || screen 的汇总值，保留给只认 {on} 的旧客端 */
+  video: { camera: boolean; screen: boolean; on: boolean };
 }
 
 export interface Room {
@@ -79,7 +81,7 @@ export class RoomManager {
       platform: input.platform,
       role: created ? 'host' : 'member',
       audio: { muted: input.muted, speaking: false },
-      video: { on: input.videoOn ?? false },
+      video: { camera: input.videoOn ?? false, screen: false, on: input.videoOn ?? false },
     };
     if (created) this.rooms.set(room.id, room);
     room.members.set(peer.uid, peer);
@@ -125,12 +127,13 @@ export class RoomManager {
     return peer;
   }
 
-  /** 摄像头开关。只在状态变化时广播 peerUpdated */
-  setVideo(roomId: string, uid: string, on: boolean): Peer {
+  /** 摄像头/屏幕共享开关（两者独立）。只在状态变化时广播 peerUpdated */
+  setVideoSource(roomId: string, uid: string, source: VideoSource, on: boolean): Peer {
     const peer = this.rooms.get(roomId)?.members.get(uid);
     if (!peer) throw new TalkError(409, 'not in room');
-    if (peer.video.on !== on) {
-      peer.video.on = on;
+    if (peer.video[source] !== on) {
+      peer.video[source] = on;
+      peer.video.on = peer.video.camera || peer.video.screen;
       const room = this.rooms.get(roomId) as Room;
       this.opts.onEvent({ type: 'peerUpdated', room, uid, patch: { video: { ...peer.video } } });
     }

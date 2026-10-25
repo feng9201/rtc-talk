@@ -16,7 +16,10 @@ ExecStart=/opt/node/bin/node dist/index.js
 Restart=always
 RestartSec=2
 TimeoutStopSec=10
-MemoryMax=600M
+# 常驻内存：Node 堆 + 每 worker 约 100~200MB（视频房间更高）。600M 上限在多房间视频时
+# 会触发 cgroup OOM kill，表现为“服务无故重启”，故放宽上限并在 800M 时先回收
+MemoryHigh=800M
+MemoryMax=1536M
 LimitNOFILE=65535
 NoNewPrivileges=true
 PrivateTmp=true

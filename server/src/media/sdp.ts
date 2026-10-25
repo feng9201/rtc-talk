@@ -68,7 +68,7 @@ export function parseSdp(sdp: string): ParsedSdp {
     const rtp = (m.rtp ?? []).find((r) => r.codec.toLowerCase() === wanted);
     if (!rtp) {
       const h265 = (m.rtp ?? []).some((r) => ['h265', 'hev1', 'hvc1'].includes(r.codec.toLowerCase()));
-      if (kind === 'video' && h265) throw new TalkError(501, 'h265 is not supported yet');
+      if (kind === 'video' && h265) throw new TalkError(501, 'h265 is not supported on sfu (p2p only)');
       throw new TalkError(400, `m-line ${mid} has no ${wanted}`);
     }
     const fmtp = (m.fmtp ?? []).find((f) => f.payload === rtp.payload);

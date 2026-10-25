@@ -6,6 +6,7 @@ import { CloseCode, type Connection, type ConnectionHandlers } from './gateway/c
 import { parseData, TalkError, type NotifyMessage, type RequestMessage } from './gateway/protocol.js';
 import type { Logger } from './logger.js';
 import type { MediaNode } from './media/media-node.js';
+import { SFU_VIDEO_CODECS } from './media/codecs.js';
 import type { RecvOffer } from './media/room-media.js';
 import { PolicyInputSchema } from './room/policy.js';
 import { RoomManager, type LeaveReason, type Room, type RoomEvent } from './room/room-manager.js';
@@ -33,6 +34,18 @@ const HelloSchema = z.object({
   resume: z.object({ session_id: z.string().max(64) }).optional(),
 });
 
+/** 只取决策用到的字段，未知字段忽略；解析失败按空 caps 处理，不拒绝 hello */
+const CapsSchema = z
+  .object({
+    p2p: z.boolean().optional(),
+    p2p_video: z.boolean().optional(),
+    video: z
+      .object({ codecs: z.array(z.object({ name: z.string().max(16), hw: z.boolean().optional() })).optional() })
+      .passthrough()
+      .optional(),
+  })
+  .passthrough();
+
 const JoinSchema = z.object({
   room_id: z.string(),
   display: z.string().max(64).optional(),
@@ -52,7 +65,7 @@ const JoinSchema = z.object({
 });
 
 const LeaveSchema = z.object({ room_id: z.string() });
-const SetMuteSchema = z.object({ source: z.enum(['mic', 'camera']), muted: z.boolean() });
+const SetMuteSchema = z.object({ source: z.enum(['mic', 'camera', 'screen']), muted: z.boolean() });
 const PublishSchema = z.object({
   sdp: z.string().min(1),
   tracks: z
@@ -67,6 +80,14 @@ const PublishSchema = z.object({
     .optional(),
 });
 const RestartIceSchema = z.object({ pc: z.enum(['send', 'recv']) });
+/** 客户端每 10s 上报的接收质量；loss 兼容 0~1 与 0~100 两种口径 */
+const ClientStatsSchema = z.object({
+  pc: z.enum(['send', 'recv']).optional(),
+  rtt: z.number().finite().nonnegative().max(60_000).optional(),
+  jitter: z.number().finite().nonnegative().max(60_000).optional(),
+  loss: z.number().finite().min(0).max(100).optional(),
+  bitrate: z.number().finite().nonnegative().max(1e9).optional(),
+});
 
 type Handler = (session: Session, data: unknown, conn: Connection) => unknown;
 
@@ -78,6 +99,10 @@ function supportsP2p(caps: unknown): boolean {
   return typeof caps === 'object' && caps !== null && (caps as { p2p?: unknown }).p2p === true;
 }
 
+function supportsP2pVideo(caps: unknown): boolean {
+  return typeof caps === 'object' && caps !== null && (caps as { p2p_video?: unknown }).p2p_video === true;
+}
+
 export class Signaling {
   readonly sessions: SessionManager;
   readonly rooms: RoomManager;
@@ -85,6 +110,15 @@ export class Signaling {
   private readonly modes: RoomMode;
   private readonly log: Logger;
   private readonly handlers: Record<string, Handler>;
+  private readonly clientStats = {
+    reports: 0,
+    rttSum: 0,
+    rttCount: 0,
+    lossSum: 0,
+    lossCount: 0,
+    bitrateSum: 0,
+    bitrateCount: 0,
+  };
 
   constructor(private readonly opts: SignalingOptions) {
     this.log = opts.logger.child({ mod: 'signaling' });
@@ -114,6 +148,7 @@ export class Signaling {
       p2pTimeoutMs: opts.p2pTimeoutMs,
       room: (roomId) => this.rooms.get(roomId),
       supportsP2p: (uid) => supportsP2p(this.sessions.ofUid(uid)?.caps),
+      supportsP2pVideo: (uid) => supportsP2pVideo(this.sessions.ofUid(uid)?.caps),
       callerOf: (roomId) => this.calls.callerOf(roomId),
       online: (uid) => Boolean(this.sessions.ofUid(uid)?.conn?.isOpen),
       request: (uid, method, data) => this.request(uid, method, data),
@@ -139,7 +174,10 @@ export class Signaling {
       'call.hangup': (s, d) => this.hangup(s, d),
       'sfu.publish': (s, d) => this.publish(s, d),
       'sfu.restartIce': (s, d) => this.restartIce(s, d),
-      'sfu.stats': () => ({}),
+      'sfu.stats': (_s, d) => {
+        this.recordStats(d);
+        return {};
+      },
     };
   }
 
@@ -172,17 +210,63 @@ export class Signaling {
 
   private onNotify(conn: Connection, ntf: NotifyMessage): void {
     const session = this.sessions.ofConn(conn);
-    if (session?.roomId && P2P_NOTIFY.has(ntf.method)) {
+    if (!session) {
+      conn.log.debug({ method: ntf.method }, 'unhandled notify');
+      return;
+    }
+    // 协议 §6.5：sfu.stats 是 notify，不占用 req/res
+    if (ntf.method === 'sfu.stats') {
+      this.recordStats(ntf.data);
+      return;
+    }
+    if (session.roomId && P2P_NOTIFY.has(ntf.method)) {
       this.modes.onNotify(session.uid, session.roomId, ntf.method, ntf.data);
       return;
     }
     conn.log.debug({ method: ntf.method }, 'unhandled notify');
   }
 
+  /** 客户端上报质量的滑动统计（不做高基数标签，只出平均值） */
+  private recordStats(data: unknown): void {
+    const parsed = ClientStatsSchema.safeParse(data);
+    if (!parsed.success) return;
+    const s = this.clientStats;
+    s.reports++;
+    if (parsed.data.rtt !== undefined) {
+      s.rttSum += parsed.data.rtt;
+      s.rttCount++;
+    }
+    if (parsed.data.loss !== undefined) {
+      s.lossSum += parsed.data.loss > 1 ? parsed.data.loss / 100 : parsed.data.loss;
+      s.lossCount++;
+    }
+    if (parsed.data.bitrate !== undefined) {
+      s.bitrateSum += parsed.data.bitrate;
+      s.bitrateCount++;
+    }
+  }
+
+  /** /metrics 用 */
+  statsSnapshot() {
+    const s = this.clientStats;
+    return {
+      reports: s.reports,
+      rtt_avg_ms: s.rttCount > 0 ? s.rttSum / s.rttCount : 0,
+      loss_avg: s.lossCount > 0 ? s.lossSum / s.lossCount : 0,
+      bitrate_avg: s.bitrateCount > 0 ? s.bitrateSum / s.bitrateCount : 0,
+    };
+  }
+
   private async hello(conn: Connection, data: unknown) {
     if (this.sessions.ofConn(conn)) throw new TalkError(409, 'session already established');
     const d = parseData(HelloSchema, data);
-    const { session, resumed, previousConn } = this.sessions.hello(conn, d.client, d.caps, d.resume?.session_id);
+    const caps = CapsSchema.safeParse(d.caps);
+    const { session, resumed, previousConn } = this.sessions.hello(
+      conn,
+      d.client,
+      caps.success ? caps.data : {},
+      d.resume?.session_id,
+    );
     if (previousConn?.isOpen) {
       previousConn.notify('session.kicked', { reason: 'replaced' });
       previousConn.close(CloseCode.replaced, 'replaced');
@@ -250,14 +334,27 @@ export class Signaling {
   private async setMute(s: Session, data: unknown) {
     const d = parseData(SetMuteSchema, data);
     if (!s.roomId) throw new TalkError(409, 'not in room');
-    if (d.source === 'camera') {
-      const peer = this.rooms.setVideo(s.roomId, s.uid, !d.muted);
-      await this.opts.media?.setMuted(s.roomId, s.uid, d.muted, 'camera');
-      return { video: peer.video };
+    const room = this.rooms.get(s.roomId);
+    if (d.source === 'mic') {
+      const peer = this.rooms.setMuted(s.roomId, s.uid, d.muted);
+      await this.announceProducers(room, s.uid, () => this.opts.media?.setMuted(s.roomId!, s.uid, d.muted, 'mic'));
+      return { audio: peer.audio };
     }
-    const peer = this.rooms.setMuted(s.roomId, s.uid, d.muted);
-    await this.opts.media?.setMuted(s.roomId, s.uid, d.muted, 'mic');
-    return { audio: peer.audio };
+    const peer = this.rooms.setVideoSource(s.roomId, s.uid, d.source, !d.muted);
+    await this.announceProducers(room, s.uid, () => this.opts.media?.setMuted(s.roomId!, s.uid, d.muted, d.source));
+    return { video: peer.video };
+  }
+
+  /** 执行媒体侧状态变更并把受影响 producer 广播给其他成员（media.producer） */
+  private async announceProducers(
+    room: Room | undefined,
+    uid: string,
+    run: () =>
+      Promise<{ mid: string; kind: 'audio' | 'video'; source: string; paused: boolean }[] | undefined> | undefined,
+  ): Promise<void> {
+    const states = (await run()) ?? [];
+    if (!room) return;
+    for (const st of states) this.broadcast(room, 'media.producer', { uid, ...st }, uid);
   }
 
   private async publish(s: Session, data: unknown) {
@@ -269,7 +366,9 @@ export class Signaling {
     // （如客户端 sfu.offer handler 注册晚于他人发布，被回 501 后只能等这里恢复）
     this.opts.media.onPeerOnline(s.roomId, s.uid);
     const video = this.rooms.get(s.roomId)?.policy.video;
-    return this.opts.media.publish(s.roomId, s.uid, d.sdp, d.tracks, video);
+    const result = await this.opts.media.publish(s.roomId, s.uid, d.sdp, d.tracks, video);
+    await this.announceProducers(this.rooms.get(s.roomId), s.uid, async () => result.producers);
+    return result;
   }
 
   private async restartIce(s: Session, data: unknown) {
@@ -322,7 +421,7 @@ export class Signaling {
     const snap = this.rooms.snapshot(roomId, uid);
     if (!snap) return undefined;
     const mode: ModeView = await this.modes.sync(roomId, uid);
-    return { ...snap, ...mode };
+    return { ...snap, sfu_video_codecs: [...SFU_VIDEO_CODECS], ...mode };
   }
 
   private notify(uid: string, method: string, data: unknown): void {

@@ -15,7 +15,12 @@ async function main(): Promise<void> {
     announcedAddress: config.mediasoup.announcedAddress,
     port: config.mediasoup.port,
     logger,
-    onWorkerDied: () => setTimeout(() => process.exit(1), 1000),
+    onWorkerDied: (err) => {
+      // worker 挂了所有 Router 都失效，无法原地恢复；延长退出时间，让 /healthz 的 503
+      // 先把流量摘掉，再由 systemd 重启（Restart=always）
+      logger.fatal({ err }, 'mediasoup worker died, restarting in 3s');
+      setTimeout(() => process.exit(1), 3000).unref();
+    },
   });
 
   const app = createApp({
