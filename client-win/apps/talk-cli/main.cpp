@@ -337,6 +337,13 @@ class App {
     if (name == "left") {
       left_ = true;
     }
+    if (name == "media.producer") {
+      // 服务端 producer 状态广播：联调时用来确认停共享是否真的 paused。
+      std::cout << "对端发布状态 uid=" << data.value("uid", std::string())
+                << " kind=" << data.value("kind", std::string())
+                << " source=" << data.value("source", std::string())
+                << " paused=" << data.value("paused", false) << std::endl;
+    }
     if (name == "result" &&
         data.value("method", std::string()) == "media.stats") {
       stats_pending_ = false;

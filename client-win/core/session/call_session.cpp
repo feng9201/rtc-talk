@@ -347,19 +347,16 @@ void CallSession::HandleVideoStart(uint64_t id, const std::string& method,
       events_.Emit("video.state", {{"sharing", true}, {"source", source}});
       Complete(id, method, Response("", started.data));
     };
-    if (!is_camera) {
-      // 屏幕路 producer 在 publish 时就是 resume，启停只靠本地 sender。
-      finish({{"ok", true}});
-      return;
-    }
     if (media_.mode() == MediaController::Mode::kP2p) {
       // P2P 没有服务端 producer，sender 激活即生效。
       finish({{"ok", true}});
       return;
     }
-    // 摄像头路 producer 初始 paused，需要服务端恢复后才会向对端发流。
+    // 摄像头/屏幕各自的 producer 都初始 paused，必须用 source 精确恢复，
+    // 否则服务端不会向对端发流（两路互不牵连）。
     signaling_.Request(
-        "media.setMute", {{"source", "camera"}, {"muted", false}},
+        "media.setMute",
+        {{"source", is_camera ? "camera" : "screen"}, {"muted", false}},
         [finish = std::move(finish)](Json result) mutable {
           finish(std::move(result));
         });
@@ -399,22 +396,21 @@ void CallSession::HandleVideoStop(uint64_t id, const std::string& method,
       return;
     }
     events_.Emit("video.state", {{"sharing", false}, {"source", source}});
-    if (!is_camera) {
-      // 屏幕路 producer 常驻 resume，停采即停流，无需通知服务端。
-      Complete(id, method, Response("", Json::object()));
-      return;
-    }
     if (media_.mode() == MediaController::Mode::kP2p) {
       // P2P 不经过服务端 producer，本地 sender 已关，直接返回。
       Complete(id, method, Response("", Json::object()));
       return;
     }
-    // 摄像头路：本地已停采，服务端暂停失败只告警，对端会停在最后一帧。
+    // 两路各自用 source 精确暂停：停共享会释放 max_publishers 名额，并通过
+    // media.producer 广播让对端立即收画面（不必等 5 秒无帧超时）。
+    const std::string target = is_camera ? "camera" : "screen";
     signaling_.Request(
-        "media.setMute", {{"source", "camera"}, {"muted", true}},
-        [this, id, method](Json result) {
+        "media.setMute", {{"source", target}, {"muted", true}},
+        [this, id, method, target](Json result) {
           if (!result.value("ok", false)) {
-            TALK_LOG_WARN("session", "服务端暂停摄像头失败，对端可能停在最后一帧");
+            TALK_LOG_WARN("session", "服务端暂停视频失败 source={}，对端可能停在"
+                                    "最后一帧",
+                          target);
           }
           Complete(id, method, Response("", Json::object()));
         });
@@ -522,6 +518,9 @@ void CallSession::HandleOpen(uint64_t epoch, uint64_t operation,
       {"caps",
        {{"audio", {{"codecs", Json::array({"opus"})}, {"aec", "webrtc"}}},
         {"p2p", true},
+        // P2P 已预发布两路视频 m-line，服务端据此在 room.mediaMode
+        // 里透出 p2p_video=true，供其它端判断直连能否承载视频。
+        {"p2p_video", true},
         {"sfu_sdp", "unified-plan"}}}};
   if (!session_id_.empty()) {
     hello["resume"] = {{"session_id", session_id_}};
@@ -663,7 +662,10 @@ void CallSession::HandleServerRequest(const std::string& id,
 void CallSession::HandleMediaModeRequest(const std::string& id, Json data) {
   const std::string mode =
       data.value("mode", data.value("media_mode", std::string()));
-  TALK_LOG_INFO("session", "切换媒体模式 mode={}", mode);
+  // p2p_video 是服务端根据双方 caps 算出的能力位（双方都声明才是 true），
+  // 客户端已预发布两路视频 m-line，这里只记录便于核对协商结果。
+  TALK_LOG_INFO("session", "切换媒体模式 mode={} p2p_video={}", mode,
+                data.value("p2p_video", false));
   if (!media_.enabled()) {
     const std::string applied = mode == "p2p" ? "p2p" : "sfu";
     media_.ApplyModeView({{"media_mode", applied}});
@@ -688,14 +690,23 @@ void CallSession::HandleMediaModeRequest(const std::string& id, Json data) {
     EmitModeChanged("sfu");
     media_.SwitchToSfu([this, id] {
       signaling_.Send(Response(id, Json::object()));
-      // P2P 期间摄像头 producer 一直 paused（没有走 setMute），切回 SFU
-      // 重新发布后需显式恢复，否则对端只能看到最后一张画面。
-      if (camera_sharing_) {
+      // P2P 期间两路 producer 都不走 setMute（P2P 没有 producer）：凡是在 P2P
+      // 里停过的采集，切回 SFU 重新发布后 producer 仍是 paused，必须按 source
+      // 逐路显式恢复，否则对端只能看到最后一张画面。
+      const std::string sources[] = {"camera", "screen"};
+      for (const std::string& source : sources) {
+        const bool sharing = source == "camera" ? camera_sharing_
+                                                : video_sharing_;
+        if (!sharing) {
+          continue;
+        }
         signaling_.Request(
-            "media.setMute", {{"source", "camera"}, {"muted", false}},
-            [](Json result) {
+            "media.setMute", {{"source", source}, {"muted", false}},
+            [source](Json result) {
               if (!result.value("ok", false)) {
-                TALK_LOG_WARN("session", "切回 SFU 后恢复摄像头 producer 失败");
+                TALK_LOG_WARN("session",
+                              "切回 SFU 后恢复视频 producer 失败 source={}",
+                              source);
               }
             });
       }

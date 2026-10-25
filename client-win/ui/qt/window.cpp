@@ -21,6 +21,7 @@
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QStackedLayout>
+#include <QStringList>
 #include <QTimer>
 #include <QUrlQuery>
 #include <QVBoxLayout>
@@ -564,6 +565,10 @@ void TalkWindow::HandleEvent(const QString& name, const QJsonObject& data) {
     }
     return;
   }
+  if (name == "media.producer") {
+    HandleProducerState(data);
+    return;
+  }
   if (name == "mode.changed") {
     const QString mode = data["mode"].toString(QStringLiteral("sfu"));
     ApplyMediaMode(mode);
@@ -890,28 +895,68 @@ void TalkWindow::RelayoutVideoGrid() {
                                            : video_placeholder_);
 }
 
+void TalkWindow::RemoveVideoView(const QString& mid, const QString& reason) {
+  const auto it = video_views_.find(mid);
+  if (it == video_views_.end()) {
+    return;
+  }
+  AppendLog(QStringLiteral("移除远端视频 mid=%1：%2").arg(mid, reason));
+  it.value()->deleteLater();
+  video_last_frame_ms_.remove(mid);
+  video_tracks_.remove(mid);
+  video_views_.erase(it);
+  RelayoutVideoGrid();
+}
+
 void TalkWindow::PruneVideoViews() {
-  // 服务端关 producer 后不会有“轨道移除”回调，只能靠无帧超时清画面。
+  // 服务端 close producer 不会有轨道移除回调，media.producer 又可能丢失
+  // （断线重连期间），保留无帧超时作为兜底。
   constexpr qint64 kIdleTimeoutMs = 5000;
   const qint64 now = QDateTime::currentMSecsSinceEpoch();
-  bool changed = false;
-  for (auto it = video_views_.begin(); it != video_views_.end();) {
+  QStringList stale;
+  for (auto it = video_views_.begin(); it != video_views_.end(); ++it) {
     const qint64 last = video_last_frame_ms_.value(it.key(), 0);
-    if (now - last <= kIdleTimeoutMs) {
-      ++it;
-      continue;
+    if (now - last > kIdleTimeoutMs) {
+      stale.append(it.key());
     }
-    AppendLog(QStringLiteral("远端视频 mid=%1 超过 %2 秒无帧，移除画面")
-                  .arg(it.key())
-                  .arg(kIdleTimeoutMs / 1000));
-    it.value()->deleteLater();
-    video_last_frame_ms_.remove(it.key());
-    video_tracks_.remove(it.key());
-    it = video_views_.erase(it);
-    changed = true;
   }
-  if (changed) {
-    RelayoutVideoGrid();
+  const QString reason =
+      QStringLiteral("超过 %1 秒无帧").arg(kIdleTimeoutMs / 1000);
+  for (const QString& mid : stale) {
+    RemoveVideoView(mid, reason);
+  }
+}
+
+// media.producer：{uid, mid, kind, source, paused}。发布方暂停某一路后，
+// 订阅端不必再等 5 秒无帧超时，直接收掉那一路画面；恢复时不主动建视图，
+// 等第一帧到达自然重建。
+void TalkWindow::HandleProducerState(const QJsonObject& data) {
+  const QString uid = data["uid"].toString();
+  const QString kind = data["kind"].toString();
+  const QString source = data["source"].toString();
+  const bool paused = data["paused"].toBool();
+  if (kind != QStringLiteral("video")) {
+    // 音频发布状态不影响画面，直接忽略。
+    return;
+  }
+  const QString source_name = source == "screen" ? QStringLiteral("屏幕共享")
+                                                   : QStringLiteral("摄像头");
+  AppendLog(QStringLiteral("对端 %1 的%2%3")
+                .arg(uid, source_name,
+                     paused ? QStringLiteral("已暂停") : QStringLiteral("已恢复")));
+  if (!paused) {
+    return;
+  }
+  // 通知里带的是发布方 mid，订阅端用的是 consumer mid，只能按 uid+source 匹配。
+  QStringList mids;
+  for (auto it = video_tracks_.begin(); it != video_tracks_.end(); ++it) {
+    if (it.value()["uid"].toString() == uid &&
+        it.value()["source"].toString() == source) {
+      mids.append(it.key());
+    }
+  }
+  for (const QString& mid : mids) {
+    RemoveVideoView(mid, QStringLiteral("对端停止%1").arg(source_name));
   }
 }
 

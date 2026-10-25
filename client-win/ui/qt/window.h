@@ -59,9 +59,12 @@ class TalkWindow : public QWidget {
   void HandleJoined(const QJsonObject& data);
   void HandleResult(const QJsonObject& data);
   void HandleVideoState(const QJsonObject& data);
+  // 服务端 media.producer：对端某一路发布被暂停时立即收掉对应画面。
+  void HandleProducerState(const QJsonObject& data);
   // 多路远端视频：按 mid 建画面、按路数宫格排布，超时无帧自动回收。
   VideoView* EnsureVideoView(const QString& mid);
   void UpdateVideoLabel(const QString& mid);
+  void RemoveVideoView(const QString& mid, const QString& reason);
   void RelayoutVideoGrid();
   void PruneVideoViews();
   void ClearVideoViews();
