@@ -450,6 +450,12 @@ export class PeerMedia {
 
 export class RoomMedia {
   readonly peers = new Map<string, PeerMedia>();
+  private activeObserver?: ms.ActiveSpeakerObserver;
+  private levelObserver?: ms.AudioLevelObserver;
+  /** 主讲人变化（uid），来自 ActiveSpeakerObserver */
+  onActiveSpeaker?: (uid: string) => void;
+  /** 音量（dBFS 归一化 0..1），observer 每 500ms 触发一次 */
+  onAudioLevels?: (entries: { uid: string; level: number }[]) => void;
 
   constructor(
     readonly id: string,
@@ -484,7 +490,33 @@ export class RoomMedia {
     }
   }
 
+  /** 建立主讲人 / 音量观测器（需 Consumer 已存在才会出数据） */
+  async enableObservers(): Promise<void> {
+    if (this.activeObserver) return;
+    const active = await this.router.createActiveSpeakerObserver({ interval: 300 });
+    const levels = await this.router.createAudioLevelObserver({ maxEntries: 24, threshold: -70, interval: 500 });
+
+    active.on('dominantspeaker', ({ producer }) => {
+      const uid = producer.appData.uid;
+      if (typeof uid === 'string') this.onActiveSpeaker?.(uid);
+    });
+    levels.on('volumes', (volumes) => {
+      const entries: { uid: string; level: number }[] = [];
+      for (const { producer, volume } of volumes) {
+        const uid = producer.appData.uid;
+        if (typeof uid !== 'string') continue;
+        // dBFS(-100..0) 归一化到 0..1，保留两位小数
+        entries.push({ uid, level: Math.round(Math.max(0, Math.min(1, (volume + 100) / 100)) * 100) / 100 });
+      }
+      if (entries.length > 0) this.onAudioLevels?.(entries);
+    });
+    this.activeObserver = active;
+    this.levelObserver = levels;
+  }
+
   close(): void {
+    this.activeObserver?.close();
+    this.levelObserver?.close();
     for (const p of this.peers.values()) p.close();
     this.peers.clear();
     this.router.close();

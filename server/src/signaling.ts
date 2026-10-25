@@ -8,6 +8,7 @@ import type { Logger } from './logger.js';
 import type { MediaNode } from './media/media-node.js';
 import { SFU_VIDEO_CODECS } from './media/codecs.js';
 import type { RecvOffer } from './media/room-media.js';
+import { Floor } from './room/floor.js';
 import { PolicyInputSchema } from './room/policy.js';
 import { RoomManager, type LeaveReason, type Room, type RoomEvent } from './room/room-manager.js';
 import { SessionManager, type DestroyReason, type Session } from './session/session-manager.js';
@@ -80,6 +81,10 @@ const PublishSchema = z.object({
     .optional(),
 });
 const RestartIceSchema = z.object({ pc: z.enum(['send', 'recv']) });
+const HostGrantSchema = z.object({ uid: z.string().min(1).max(64), allow: z.boolean() });
+const HostMuteAllSchema = z.object({ except: z.array(z.string().min(1).max(64)).max(64).optional() });
+const HostKickSchema = z.object({ uid: z.string().min(1).max(64) });
+const SubscribeLevelsSchema = z.object({ enabled: z.boolean() });
 /** 客户端每 10s 上报的接收质量；loss 兼容 0~1 与 0~100 两种口径 */
 const ClientStatsSchema = z.object({
   pc: z.enum(['send', 'recv']).optional(),
@@ -108,6 +113,9 @@ export class Signaling {
   readonly rooms: RoomManager;
   private readonly calls: CallManager;
   private readonly modes: RoomMode;
+  private readonly floors: Floor;
+  /** 开启了 room.subscribeLevels 的 uid（会话销毁时清理） */
+  private readonly levelsSubscribers = new Set<string>();
   private readonly log: Logger;
   private readonly handlers: Record<string, Handler>;
   private readonly clientStats = {
@@ -129,6 +137,7 @@ export class Signaling {
         this.log.info({ uid: s.uid, session: s.id, reason }, 'session destroyed');
         if (s.roomId) this.rooms.leave(s.roomId, s.uid, DESTROY_TO_LEAVE[reason]);
         s.roomId = null;
+        this.levelsSubscribers.delete(s.uid);
         this.calls.onUserGone(s.uid);
       },
     });
@@ -154,6 +163,26 @@ export class Signaling {
       request: (uid, method, data) => this.request(uid, method, data),
       notify: (uid, method, data) => this.notify(uid, method, data),
     });
+    this.floors = new Floor({
+      logger: opts.logger,
+      policy: (roomId) => this.rooms.get(roomId)?.policy,
+      members: (roomId) => [...(this.rooms.get(roomId)?.members.keys() ?? [])],
+      isHost: (roomId, uid) => this.rooms.get(roomId)?.members.get(uid)?.role === 'host',
+      setMuted: (roomId, uid, muted) => {
+        this.rooms.setMuted(roomId, uid, muted);
+      },
+      applyMic: (roomId, uid, on) =>
+        this.announceProducers(this.rooms.get(roomId), uid, () => this.opts.media?.setMuted(roomId, uid, !on, 'mic')),
+      notify: (uid, method, data) => this.notify(uid, method, data),
+      broadcast: (roomId, method, data) => {
+        const room = this.rooms.get(roomId);
+        if (room) this.broadcast(room, method, data);
+      },
+    });
+    opts.media?.setAudioObservers({
+      activeSpeaker: (roomId, uid) => this.onActiveSpeaker(roomId, uid),
+      audioLevels: (roomId, entries) => this.onAudioLevels(roomId, entries),
+    });
     this.handlers = {
       'session.ping': () => ({ server_time: Date.now() }),
       'session.refreshIce': (s) => ({ ice_servers: buildIceServers(this.opts.ice, s.uid) }),
@@ -165,6 +194,12 @@ export class Signaling {
       'room.join': (s, d) => this.join(s, d),
       'room.leave': (s, d) => this.leave(s, d),
       'host.setPolicy': (s, d) => this.setPolicy(s, d),
+      'host.grant': (s, d) => this.hostGrant(s, d),
+      'host.muteAll': (s, d) => this.hostMuteAll(s, d),
+      'host.kick': (s, d) => this.hostKick(s, d),
+      'floor.request': (s) => this.floorRequest(s),
+      'floor.release': (s) => this.floorRelease(s),
+      'room.subscribeLevels': (s, d) => this.subscribeLevels(s, d),
       'media.setMute': (s, d) => this.setMute(s, d),
       'call.invite': (s, d) => this.calls.invite(s, d),
       'call.ringing': (s, d) => this.calls.ringing(s.uid, d),
@@ -302,6 +337,10 @@ export class Signaling {
       ...(s.claims.rooms ? { allowedRooms: s.claims.rooms } : {}),
     });
     s.roomId = d.room_id;
+    // ptt/moderated：入房即静音，等 floor 授予才 resume（发言权由服务端控制）
+    if (joined.room.policy.talk_mode !== 'free' && !joined.peer.audio.muted) {
+      this.rooms.setMuted(d.room_id, s.uid, true);
+    }
     await this.opts.media?.addPeer(d.room_id, s.uid, joined.peer.audio.muted, videoOn);
     const view = await this.roomView(d.room_id, s.uid);
     if (!view) throw new TalkError(409, 'not in room');
@@ -336,6 +375,7 @@ export class Signaling {
     if (!s.roomId) throw new TalkError(409, 'not in room');
     const room = this.rooms.get(s.roomId);
     if (d.source === 'mic') {
+      if (!d.muted) this.checkSpeakAllowed(s, room);
       const peer = this.rooms.setMuted(s.roomId, s.uid, d.muted);
       await this.announceProducers(room, s.uid, () => this.opts.media?.setMuted(s.roomId!, s.uid, d.muted, 'mic'));
       return { audio: peer.audio };
@@ -355,6 +395,112 @@ export class Signaling {
     const states = (await run()) ?? [];
     if (!room) return;
     for (const st of states) this.broadcast(room, 'media.producer', { uid, ...st }, uid);
+  }
+
+  /** ptt/moderated 必须有发言权；free 模式受 max_speakers 限制 */
+  private checkSpeakAllowed(s: Session, room: Room | undefined): void {
+    if (!s.roomId || !room) throw new TalkError(409, 'not in room');
+    const { talk_mode, max_speakers } = room.policy;
+    if (talk_mode !== 'free') {
+      if (this.floors.view(s.roomId).holder !== s.uid) throw new TalkError(403, 'floor required');
+      return;
+    }
+    if (max_speakers > 0 && this.opts.media && this.opts.media.resumedAudioCount(s.roomId, s.uid) >= max_speakers) {
+      throw new TalkError(429, 'max_speakers reached');
+    }
+  }
+
+  private async floorRequest(s: Session) {
+    if (!s.roomId) throw new TalkError(409, 'not in room');
+    if (this.modes.current(s.roomId) === 'p2p') throw new TalkError(409, 'room is in p2p mode');
+    return this.floors.request(s.roomId, s.uid);
+  }
+
+  private async floorRelease(s: Session) {
+    if (!s.roomId) throw new TalkError(409, 'not in room');
+    await this.floors.release(s.roomId, s.uid);
+    return { floor: this.floors.view(s.roomId) };
+  }
+
+  private async hostGrant(s: Session, data: unknown) {
+    const d = parseData(HostGrantSchema, data);
+    const room = this.requireHost(s);
+    // free 模式没有发言权概念，避免误用把 floor 状态写进去
+    if (room.policy.talk_mode === 'free') throw new TalkError(409, 'floor is not used in free mode');
+    if (!room.members.has(d.uid)) throw new TalkError(404, 'not in room');
+    if (d.allow) await this.floors.grant(room.id, d.uid);
+    else await this.floors.revoke(room.id, d.uid, 'host');
+    return { floor: this.floors.view(room.id) };
+  }
+
+  /** 主持人全员静音：逐个静音并暂停 producer，同时清空发言权 */
+  private async hostMuteAll(s: Session, data: unknown) {
+    const d = parseData(HostMuteAllSchema, data);
+    const room = this.requireHost(s);
+    const except = new Set(d.except ?? []);
+    const muted: string[] = [];
+    for (const uid of [...room.members.keys()]) {
+      if (except.has(uid)) continue;
+      this.rooms.setMuted(room.id, uid, true);
+      // 先通知本人（UI 提示），再把媒体事实广播给房间
+      this.notify(uid, 'media.forceMute', { source: 'mic', by: s.uid });
+      await this.announceProducers(room, uid, () => this.opts.media?.setMuted(room.id, uid, true, 'mic'));
+      muted.push(uid);
+    }
+    this.floors.reset(room.id);
+    this.broadcast(room, 'floor.state', this.floors.view(room.id));
+    this.log.info({ room: room.id, by: s.uid, muted }, 'host muted all');
+    return { muted };
+  }
+
+  private hostKick(s: Session, data: unknown) {
+    const d = parseData(HostKickSchema, data);
+    const room = this.requireHost(s);
+    if (d.uid === s.uid) throw new TalkError(400, 'cannot kick yourself');
+    if (!room.members.has(d.uid)) throw new TalkError(404, 'not in room');
+    const target = this.sessions.ofUid(d.uid);
+    this.floors.drop(room.id, d.uid);
+    this.rooms.leave(room.id, d.uid, 'kicked');
+    if (target) {
+      target.roomId = null;
+      // 先通知再断开，客户端据此提示“已被移出房间”
+      target.conn?.notify('session.kicked', { reason: 'kicked' });
+      target.conn?.close(CloseCode.kicked, 'kicked');
+    }
+    this.log.info({ room: room.id, by: s.uid, uid: d.uid }, 'peer kicked');
+    return {};
+  }
+
+  private subscribeLevels(s: Session, data: unknown) {
+    if (!s.roomId) throw new TalkError(409, 'not in room');
+    const d = parseData(SubscribeLevelsSchema, data);
+    if (d.enabled) this.levelsSubscribers.add(s.uid);
+    else this.levelsSubscribers.delete(s.uid);
+    return { enabled: d.enabled, media_mode: this.modes.current(s.roomId) };
+  }
+
+  private requireHost(s: Session): Room {
+    const room = s.roomId ? this.rooms.get(s.roomId) : undefined;
+    if (!room) throw new TalkError(409, 'not in room');
+    if (room.members.get(s.uid)?.role !== 'host') throw new TalkError(403, 'host only');
+    return room;
+  }
+
+  /** ActiveSpeakerObserver：仅 SFU 房间推送 */
+  private onActiveSpeaker(roomId: string, uid: string): void {
+    const room = this.rooms.get(roomId);
+    if (!room || this.modes.current(roomId) === 'p2p') return;
+    this.broadcast(room, 'room.activeSpeaker', { uid });
+  }
+
+  /** AudioLevelObserver：只发给开了 room.subscribeLevels 的成员（observer 间隔 500ms） */
+  private onAudioLevels(roomId: string, entries: { uid: string; level: number }[]): void {
+    const room = this.rooms.get(roomId);
+    if (!room || this.levelsSubscribers.size === 0 || this.modes.current(roomId) === 'p2p') return;
+    for (const uid of room.members.keys()) {
+      if (!this.levelsSubscribers.has(uid)) continue;
+      this.notify(uid, 'room.audioLevels', { levels: entries });
+    }
   }
 
   private async publish(s: Session, data: unknown) {
@@ -397,6 +543,7 @@ export class Signaling {
         if (sess?.roomId === ev.room.id) sess.roomId = null;
         this.opts.media?.removePeer(ev.room.id, ev.uid);
         this.broadcast(ev.room, 'room.peerLeft', { uid: ev.uid, reason: ev.reason });
+        this.floors.drop(ev.room.id, ev.uid);
         void this.modes.sync(ev.room.id).catch((err: unknown) => this.log.error({ err }, 'mode sync failed'));
         break;
       }
@@ -406,10 +553,14 @@ export class Signaling {
       case 'policyChanged':
         this.broadcast(ev.room, 'room.policyChanged', ev.policy);
         void this.modes.onPolicy(ev.room.id, ev.policy.media_mode);
+        void this.floors
+          .onPolicy(ev.room.id, ev.policy, ev.previous)
+          .catch((err: unknown) => this.log.error({ err }, 'floor policy sync failed'));
         break;
       case 'roomClosed':
         this.opts.media?.closeRoom(ev.room.id);
         this.modes.onRoomClosed(ev.room.id);
+        this.floors.reset(ev.room.id);
         this.calls.onRoomClosed(ev.room.id);
         for (const uid of ev.uids) this.notify(uid, 'room.closed', { reason: ev.reason });
         this.log.info({ room: ev.room.id, reason: ev.reason }, 'room closed');
@@ -421,7 +572,7 @@ export class Signaling {
     const snap = this.rooms.snapshot(roomId, uid);
     if (!snap) return undefined;
     const mode: ModeView = await this.modes.sync(roomId, uid);
-    return { ...snap, sfu_video_codecs: [...SFU_VIDEO_CODECS], ...mode };
+    return { ...snap, floor: this.floors.view(roomId), sfu_video_codecs: [...SFU_VIDEO_CODECS], ...mode };
   }
 
   private notify(uid: string, method: string, data: unknown): void {
@@ -438,5 +589,6 @@ export class Signaling {
     this.sessions.destroyAll();
     this.calls.close();
     this.modes.close();
+    this.floors.close();
   }
 }

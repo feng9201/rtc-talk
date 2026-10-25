@@ -304,5 +304,69 @@ describe('call and p2p mode', () => {
       { mode: 'sfu', reason: 'policy' },
     ]);
     expect(await a.waitNtf('p2p.close')).toEqual(expect.objectContaining({ session: expect.any(String) }));
+
+    // free 模式没有发言权：request 永远获批，host.grant 明确拒绝
+    expect((await a.req('floor.request', {})).data).toEqual({ granted: true });
+    expect((await a.req('host.grant', { uid: 'bob', allow: true })).error?.code).toBe(409);
+  });
+
+  it('runs ptt floor and host controls', async () => {
+    const base = await start();
+    const a = await open(base, 'alice');
+    const b = await open(base, 'bob');
+
+    // ptt 强制 SFU，且入房即静音（请求里 muted:false 也不生效）
+    const ja = await a.req('room.join', {
+      room_id: 'ptt-1',
+      media: { audio: { muted: false } },
+      policy: { talk_mode: 'ptt' },
+    });
+    expect(ja.data.media_mode).toBe('sfu');
+    expect(ja.data.room.policy.talk_mode).toBe('ptt');
+    expect(ja.data.floor).toEqual({ holder: null, queue: [] });
+
+    const jb = await join(b, 'ptt-1');
+    expect(jb.data.media_mode).toBe('sfu');
+    expect(jb.data.peers).toEqual([
+      expect.objectContaining({ uid: 'alice', audio: expect.objectContaining({ muted: true }) }),
+    ]);
+
+    // 第一个申请获批，第二个排队
+    const stateA = a.waitNtf('floor.state', (d) => d.holder === 'alice');
+    expect((await a.req('floor.request', {})).data).toEqual({ granted: true });
+    expect((await stateA).holder).toBe('alice');
+    const queued = b.req('floor.request', {});
+    expect(await b.waitNtf('floor.state', (d) => d.queue.includes('bob'))).toMatchObject({
+      holder: 'alice',
+      queue: ['bob'],
+    });
+    expect((await queued).data).toEqual({ granted: false, queue_pos: 1 });
+
+    // 无发言权时开麦被拒绝
+    expect((await b.req('media.setMute', { source: 'mic', muted: false })).error?.code).toBe(403);
+
+    // 释放后自动递补给队列里的 bob
+    const stateB = a.waitNtf('floor.state', (d) => d.holder === 'bob');
+    expect((await a.req('floor.release', {})).ok).toBe(true);
+    expect((await stateB).holder).toBe('bob');
+
+    // host.* 只有主持人能用
+    expect((await b.req('host.muteAll', {})).error?.code).toBe(403);
+    expect((await b.req('host.kick', { uid: 'alice' })).error?.code).toBe(403);
+    expect((await b.req('host.setPolicy', { max_speakers: 2 })).error?.code).toBe(403);
+
+    // 主持人静音全员（含自己），并清空发言权
+    const forceMute = b.waitNtf('media.forceMute');
+    const cleared = a.waitNtf('floor.state', (d) => d.holder === null && d.queue.length === 0);
+    expect((await a.req('host.muteAll', {})).data).toEqual({ muted: ['alice', 'bob'] });
+    expect(await forceMute).toEqual({ source: 'mic', by: 'alice' });
+    expect(await cleared).toEqual({ holder: null, queue: [] });
+
+    // 踢人：被踢者收 session.kicked，其余成员收 peerLeft
+    const kicked = b.waitNtf('session.kicked');
+    const left = a.waitNtf('room.peerLeft', (d) => d.uid === 'bob');
+    expect((await a.req('host.kick', { uid: 'bob' })).ok).toBe(true);
+    expect(await kicked).toEqual({ reason: 'kicked' });
+    expect(await left).toEqual({ uid: 'bob', reason: 'kicked' });
   });
 });
