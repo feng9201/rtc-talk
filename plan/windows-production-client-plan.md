@@ -12,7 +12,7 @@
 | 项 | 值 |
 |---|---|
 | 当前分支 | `codex/feat/windows-production-client` |
-| 当前 HEAD | `8b705e3` |
+| P3 实现提交 | `7a2fd85` |
 | 远端 main | `origin/main` = `4a24f30` |
 | 当前分支与 main 的 merge base | `cd3fef2` |
 | 当前工作区 | 干净；UI 原型已保存为基线提交 |
