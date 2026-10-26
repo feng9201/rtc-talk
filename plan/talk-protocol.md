@@ -464,6 +464,7 @@ PTT 的媒体实现：
 - `room.activeSpeaker{uid}`：`ActiveSpeakerObserver`（`interval=300ms`）的 `dominantspeaker` 事件，广播给房间内所有人，不做订阅过滤。
 - `room.audioLevels{levels:[{uid, level}]}`：`AudioLevelObserver`（`maxEntries=24, threshold=-70dBov, interval=500ms`，即 ≤2 次/秒），只推给已订阅的成员；`level` 由 dBFS 映射到 `0..1` 并保留两位小数（`(dB+100)/100` 截断），`0` 表示静音。
 - 上台 `producer.resume()` 的瞬间 observer 才开始产出电平，`paused` 的 producer 不会出现在 `levels` 里，客户端可据此把未上台者置灰。
+- 音量取自 RTP 头扩展 `ssrc-audio-level`（RFC 6464），不是 Opus 能量：发布端 offer 必须带 `a=extmap:<id> urn:ietf:params:rtp-hdrext:ssrc-audio-level` 并在包头写入该扩展（浏览器 / libwebrtc 默认带，自研或模拟器需自己补），否则该端永远不会出现在 `levels` 里；worker 需累计 ≥10 个包且 `-level >= threshold(-70)` 才推送。
 
 ---
 

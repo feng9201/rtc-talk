@@ -7,6 +7,8 @@
 > **第三部分（2026-10-24）· 服务端视频 P1 + S5 第一批**（服务端）：screen 独立静音、`media.producer`、`/metrics`、内存上限。
 > **第四部分（2026-10-25）· 服务端 S4 对讲形态**（服务端）：`floor.*`、`host.*`、主讲人与音量推送。
 > **第五部分（2026-10-25）· 音量/主讲人无数据与 setPolicy 整表重置**（服务端）：线上 `4a24f30` 修复的两个缺陷。
+>
+> 第三～五部分（服务端视角）于 2026-10-26 合并自服务端 wiki，线上 `rev=4a24f30`；客户端侧实现与验证见第二部分第 12/13 节。已被服务端新版本推翻的结论按现况标注，历史行号失效处按符号定位。
 
 ## 第一部分 · 音轨 source 透传改动记录
 
@@ -510,7 +512,7 @@ cd deploy && ./package.sh && ./deploy.sh   # 按现场发布流程执行
 #### 验证（测试服 `47.117.159.193`）
 
 - **P2P 双端（room `p2pvid9`）**：`切换媒体模式 mode=p2p p2p_video=true`（能力位生效）；`video.stop`/`start` 全程无 `media.setMute` 请求，`video.stop` 返回 `ok=true data={}`；`P2P 视频状态 camera_mid=1(有) screen_mid=2(有) 直播中=false/true ok=true/true`。
-- **3 人 SFU（room `sfuscreen2`）**：A 第 12 秒停共享、第 18 秒恢复；A 侧 `send_active.video2` 由 true→false→true、`video_capture.sharing` 同步；B/C 各收到一次 `media.producer{source:"screen",uid:"sa",paused:true}` 与 `paused:false`（后者无 `producer_id`，即 `setMute` 路径的广播），证明屏幕独立暂停/恢复生效，且音频与摄像头 producer 未被牵连。
+- **3 人 SFU（room `sfuscreen2`）**：A 第 12 秒停共享、第 18 秒恢复；A 侧 `send_active.video2` 由 true→false→true、`video_capture.sharing` 同步；B/C 各收到一次 `media.producer{source:"screen",uid:"sa",paused:true}` 与 `paused:false`（两条字段完全一致，`media.producer` 只含 `mid/kind/source/paused`，从未有 `producer_id`），证明屏幕独立暂停/恢复生效，且音频与摄像头 producer 未被牵连。
 - 客户端 `cmake --build --preset windows-x64-release` 通过（仅 websocketpp 既有 C4267 告警）。
 
 #### 遗留
@@ -527,16 +529,16 @@ cd deploy && ./package.sh && ./deploy.sh   # 按现场发布流程执行
 1. **入房不再无条件开麦**（`call_session.cpp` `HandleJoin`）：`policy.talk_mode` 改为读本端配置（`--talk-mode` / Qt 设置项），joined 回调里再用房间真实 `policy` 校正；非 free 时强制 `floor_open_=false`、`gate()->store(true)`、`SetMuted(true)`。
 2. **本地拦截 `media.setMute{false}`**：非 free 且未持麦直接回 `403 需先申请发言权`，不浪费一次往返（服务端同样会拒）。
 3. **发言权会话状态**：新增 `HandleFloorCommand`（`floor.*`/`host.*`/`room.subscribeLevels` 直通）、`ApplyFloor`、`ApplyTalkMode`、`SetFloorMic`、`self_uid_`。`SetFloorMic` 只切本地采集门，**绝不再发 `media.setMute`**——服务端 `floors.hold()` 已经 resume producer（授予即 resume）。
-4. **倒计时换算**：`expires_at` 是服务端 epoch ms，用 `server_offset_ms_ = 本地now - hello.server_time`（心跳 `ping` 响应持续校正）换算成 `expires_in_ms` 再抛给 UI，避免两端时钟不一致把倒计时显示成负数。
-5. **通知分支**：`floor.state`（含 `self`/`talk_mode`/`ptt_queue` 附加字段）、`room.policyChanged`（重算模式并强制关麦）、`floor.revoked`（无论 `timeout`/`preempt`/`host` 一律停发）、`session.kicked`（记 `reason`，`retry_=false`，不当断线重连）、`media.forceMute` 保留。
+4. **倒计时换算**：服务端只推绝对时间 `expires_at`（epoch ms，广播时不会重算剩余量），客户端用 `server_offset_ms_ = 本地now - hello.server_time`（心跳 `ping` 响应持续校正）换算成 `expires_in_ms` 再抛给 UI，避免两端时钟不一致把倒计时显示成负数。
+5. **通知分支**：`floor.state`（服务端只给 `holder` / `queue` / `expires_at`；`self`、`expires_in_ms`、`talk_mode`、`ptt_queue` 是本端派生字段，不是 ntf 内容）、`room.policyChanged`（重算模式并强制关麦）、`floor.revoked`（无论 `timeout`/`preempt`/`host` 一律停发）、`session.kicked`（记 `reason`，`retry_=false`，不当断线重连）、`media.forceMute` 保留。
 6. **Qt UI**（`ui/qt/window.cpp`）：新增“对讲模式”下拉（free/ptt/moderated，落 `app_settings`）、主持人按钮行（仅 `room.role==='host'` 且非 free 时显示 `放行/全体静音/移出`）、发言权标签 + 1 秒倒计时；“开麦”按钮双路——free 走 `clicked`，ptt/moderated 走 `pressed/released` 发 `floor.request/release`；成员列表显示 `[发言]`/`[排队N]` 与 5 格音量条；`HandleAudioLevels` 对缺失 uid 做半衰衰减，避免有人停口后条子一直挂着。
 7. **CLI**：新增 `--talk-mode`、`--ptt-request-at`、`--ptt-release-at`（无人值守联调用）；joined 时才自动 `media.setMute{false}` 且仅 free；打印 `floor.state`/`floor.revoked`/`room.policyChanged`/`room.audioLevels` 摘要。
 
 #### 验证（测试服 `47.117.159.193`，当时 `rev=cd3fef2`）
 
-- **PTT 主链路（`s4ptt3`）**：A `floor.local{open:true}` → `floor.state{holder:"sa",self:true,expires_in_ms:60012}` → `result{floor.request,granted:true}`；松手 `floor.local{open:false}` + `floor.state{holder:null}`。B 在 A 持麦时排队 `queue_pos=1`，A 释放后自动递补 `holder:"sb",self:true`。
-- **主持人链路（`s4host1`，python websockets 充当主持人）**：`host.grant{allow:false}` → A 收 `floor.revoked{reason:"host"}` + 本地门关；`host.muteAll` → A 收 `media.forceMute{source:"mic",by:"shost"}`；`host.kick{uid:"sb"}` → B 收 `session.kicked{reason:"kicked"}` 且 `state:disconnected` 无重连计划；`host.grant{allow:true}` → A **无需按键**即 `floor.local{open:true}`（证实授予即 resume）。
-- **忙线路径（`s4busy2`，房间创建时 `ptt_queue:false`）**：B 在 A 持麦时收到 `{"granted":false}`（无 `queue_pos`）→ UI 走“发言权忙线，请稍后再试”；同时 A 的 `expires_in_ms` 由 60013 降到 49045，证明服务端每次广播都按 `expires_at` 重算。
+- **PTT 主链路（`s4ptt3`）**：A 本地门开（`floor.local`，客户端本地事件）→ 服务端 `floor.state{holder:"sa",queue:[],expires_at:…}`（`self`/`expires_in_ms` 是客户端换算视图）→ `result{floor.request,granted:true}`；松手 `floor.local{open:false}` + `floor.state{holder:null}`。B 在 A 持麦时排队 `queue_pos=1`，A 释放后自动递补 `holder:"sb"`。
+- **主持人链路（`s4host1`，python websockets 充当主持人）**：`host.grant{allow:false}` → A 收 `floor.revoked{reason:"host"}` + 本地门关；`host.muteAll` → A 收 `media.forceMute{source:"mic",by:"shost"}`；`host.kick{uid:"sb"}` → B 收 `session.kicked{reason:"kicked"}` 且 `state:disconnected` 无重连计划；`host.grant{allow:true}` → A **无需按键**即本地门开（`floor.local`，客户端本地事件；证实服务端授予即 resume producer）。
+- **忙线路径（`s4busy2`，房间创建时 `ptt_queue:false`）**：B 在 A 持麦时收到 `{"granted":false}`（无 `queue_pos`）→ UI 走“发言权忙线，请稍后再试”；同时 A 的 `expires_in_ms` 由 60013 降到 49045（服务端推的是固定 `expires_at`，递减由客户端按 `server_offset_ms_` 重算），证明倒计时换算正确。
 - `cmake --build --preset windows-x64-release` 通过（仅 websocketpp 既有 C4267 告警）；`talk-qt.exe` 启动 6 秒冒烟正常。
 
 #### 遗留
@@ -546,8 +548,6 @@ cd deploy && ./package.sh && ./deploy.sh   # 按现场发布流程执行
 - Qt 界面的人工验收未做：主持人按钮可见性、按住说话手感、成员列表 `[发言]`/`[排队N]` 与音量条渲染，需要真人双端/三端过一遍。
 
 ---
-
-> 第三～五部分合并自服务端 wiki（2026-10-26 同步，线上 `rev=4a24f30`），保留服务端视角原文；客户端侧实现与验证见第二部分第 12/13 节。已被服务端新版本推翻的结论按现况标注，历史行号失效处按符号定位。
 
 ## 第三部分 · 服务端视频 P1 + S5 第一批（2026-10-24）
 
@@ -587,7 +587,7 @@ cd deploy && ./package.sh && ./deploy.sh   # 按现场发布流程执行
 - `s3.test.ts`：`p2p_video` 双方/单方声明；`/metrics` 与 `sfu.stats` 聚合；
 - `sfu.int.test.ts`：screen 暂停释放名额 + `media.producer` 广播 + 同 offer 重发复用 producer_id。
 
-### 4. 客户端待配合（Windows / RK）
+### 4. 客户端配合项（Windows 已完成 / RK 待做）
 
 > Windows 端已于 2026-10-25 全部完成（`f3790aa`，见第二部分第 12 节）；RK 端未做，以下保留问题背景。
 
