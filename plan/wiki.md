@@ -546,6 +546,8 @@ cd deploy && ./package.sh && ./deploy.sh   # 按现场发布流程执行
 - ~~音量条拿不到数据~~ → **服务端 `4a24f30` 已修复**（2026-10-25，线上 `/healthz rev=4a24f30`）：根因是 `room-media.ts` 的 `enableObservers()` 从未 `addProducer`，修复细节见第五部分第 1 节。客户端订阅/渲染代码不变，仍待真声卡 + Qt 端复验数值。
 - ~~`host.setPolicy` 把 `talk_mode` 打回 `free`~~ → **服务端 `4a24f30` 已修复**：不只是 `talk_mode`，zod `.partial()` 保留 `.default()` 会把整张策略表回默认；现改为全 optional 的手写 schema + `mergePolicy` 逐字段合并，见第五部分第 2 节。
 - Qt 界面的人工验收未做：主持人按钮可见性、按住说话手感、成员列表 `[发言]`/`[排队N]` 与音量条渲染，需要真人双端/三端过一遍。
+- **free 房间的主持人能力被客户端藏起来了**：Windows 端把主持人按钮行限定为“`room.role==='host'` 且非 free”，但服务端只有 `host.grant` 在 free 下返回 `409`，`host.muteAll` / `host.kick` 与 talk_mode 无关（`hostMuteAll` / `hostKick` 都不校验模式）。结果是 free 房间没有“全体静音 / 移出”入口；需要时把按钮行常显、只在 free 下禁用“放行 / 收回”。
+- **ptt → free 不会自动恢复开麦**：`floors.onPolicy` 切到 free 时只 `reset + publish`，不会 `resume` 任何 producer；客户端此时按“重算模式并强制关麦”处理，用户要再点一次“开麦”才会发 `media.setMute{mic,false}`。这是预期行为，验收时不要按“切到自由通话却说不了话”报缺陷。
 
 ---
 
