@@ -1,15 +1,20 @@
 #include "pages/room_page.h"
 
+#include "dialogs/room_policy_dialog.h"
 #include "theme/theme.h"
 #include "widgets/control_button.h"
+#include "widgets/member_row.h"
 #include "widgets/pill.h"
 #include "widgets/segmented_control.h"
 
+#include <QDateTime>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QPushButton>
 #include <QResizeEvent>
 #include <QScrollArea>
+#include <QStyle>
 #include <QTimer>
 #include <QVBoxLayout>
 
@@ -61,6 +66,16 @@ RoomPage::RoomPage(QWidget* parent) : QWidget(parent) {
   UpdateHeader();
   UpdateControls();
   RebuildSidePanel();
+
+  floor_timer_ = new QTimer(this);
+  floor_timer_->setInterval(1000);
+  connect(floor_timer_, &QTimer::timeout, this, [this] {
+    UpdateHeader();
+    if (tabs_ != nullptr && tabs_->currentId() == QStringLiteral("members")) {
+      UpdateMemberPanel();
+    }
+  });
+  floor_timer_->start();
 }
 
 QWidget* RoomPage::BuildHeader() {
@@ -181,7 +196,7 @@ QWidget* RoomPage::BuildControlBar() {
   layout->addWidget(share_);
   layout->addStretch(1);
   control_hint_ = Label(
-      QStringLiteral("P1 生产界面骨架 · 控制命令将在 P4 接入"),
+      QStringLiteral("控制操作会直接作用于当前房间"),
       QStringLiteral("ControlHint"), bar);
   layout->addWidget(control_hint_);
   layout->addStretch(1);
@@ -195,7 +210,15 @@ QWidget* RoomPage::BuildControlBar() {
   layout->addWidget(settings_);
   layout->addWidget(leave_);
 
-  connect(mic_, &ControlButton::clicked, this, &RoomPage::micToggleRequested);
+  connect(mic_, &ControlButton::clicked, this, [this] {
+    if (state_.talkMode == TalkMode::Free) emit micToggleRequested();
+  });
+  connect(mic_, &ControlButton::pressed, this, [this] {
+    if (state_.talkMode != TalkMode::Free) emit micFloorPressed();
+  });
+  connect(mic_, &ControlButton::released, this, [this] {
+    if (state_.talkMode != TalkMode::Free) emit micFloorReleased();
+  });
   connect(camera_, &ControlButton::clicked, this,
           &RoomPage::cameraToggleRequested);
   connect(share_, &ControlButton::clicked, this,
@@ -203,7 +226,7 @@ QWidget* RoomPage::BuildControlBar() {
   connect(listen_, &ControlButton::clicked, this,
           &RoomPage::deafenToggleRequested);
   connect(settings_, &ControlButton::clicked, this,
-          &RoomPage::settingsRequested);
+          &RoomPage::OpenPolicyDialog);
   connect(leave_, &ControlButton::clicked, this, &RoomPage::leaveRequested);
   return bar;
 }
@@ -253,31 +276,18 @@ QWidget* RoomPage::BuildSidebar() {
   return side;
 }
 
-QWidget* RoomPage::BuildMemberPlaceholder() {
-  auto* frame = Theme::card(this, QStringLiteral("SubtleCard"));
-  auto* layout = new QVBoxLayout(frame);
-  layout->setContentsMargins(16, 18, 16, 18);
-  layout->setSpacing(8);
-  layout->addWidget(Label(QStringLiteral("尚无房间成员"),
-                          QStringLiteral("TitleSmall"), frame));
-  layout->addWidget(Label(
-      QStringLiteral("P2 接入真实 SessionStore 后显示成员、角色和音量状态。"),
-      QStringLiteral("Hint"), frame));
-  return frame;
-}
-
 void RoomPage::SetSessionState(const SessionSnapshot& state) {
   state_ = state;
   UpdateHeader();
   UpdateControls();
-  RebuildSidePanel();
+  RefreshSidePanel();
 }
 
 void RoomPage::SetPreviewMode(bool preview) {
   preview_mode_ = preview;
   UpdateHeader();
   UpdateControls();
-  RebuildSidePanel();
+  RefreshSidePanel();
 }
 
 void RoomPage::SetBusy(bool busy) {
@@ -306,11 +316,27 @@ void RoomPage::UpdateHeader() {
                            : state_.mediaMode.toUpper());
   member_count_->setText(QStringLiteral("%1 人").arg(state_.peers.size() + 1));
   clock_->setText(QStringLiteral("00:00:00"));
-  floor_->setText(state_.talkMode == TalkMode::Free
-                      ? QStringLiteral("自由发言")
-                      : state_.floor.holderUid.isEmpty()
-                            ? QStringLiteral("等待发言")
-                            : QStringLiteral("发言中"));
+  if (state_.talkMode == TalkMode::Free) {
+    floor_->setText(QStringLiteral("自由发言"));
+    floor_->setTone(QStringLiteral("default"));
+  } else if (state_.floor.holderUid.isEmpty()) {
+    floor_->setText(QStringLiteral("等待发言"));
+    floor_->setTone(QStringLiteral("default"));
+  } else {
+    const QString holder =
+        state_.floor.selfHasFloor ? QStringLiteral("我") : state_.floor.holderUid;
+    const qint64 left =
+        state_.floor.deadlineEpochMs > 0
+            ? qMax<qint64>(0, state_.floor.deadlineEpochMs -
+                                  QDateTime::currentMSecsSinceEpoch())
+            : 0;
+    floor_->setText(left > 0
+                        ? QStringLiteral("发言：%1 · %2s")
+                              .arg(holder)
+                              .arg((left + 999) / 1000)
+                        : QStringLiteral("发言：%1").arg(holder));
+    floor_->setTone(QStringLiteral("ok"));
+  }
   if (preview_mode_ && !state_.joined) {
     room_title_->setText(QStringLiteral("房间页面预览"));
     room_id_->setText(QStringLiteral("P1 架构骨架"));
@@ -320,17 +346,34 @@ void RoomPage::UpdateHeader() {
 }
 
 void RoomPage::UpdateControls() {
-  const bool joined = state_.joined || preview_mode_;
-  for (ControlButton* control : {mic_, camera_, share_, listen_, settings_}) {
-    if (control != nullptr) control->setEnabledState(false);
-  }
+  const bool joined = state_.joined;
+  const bool media = joined && state_.mediaEnabled;
+  const bool host = state_.selfRole == QStringLiteral("host");
+  if (mic_ != nullptr) mic_->setEnabledState(joined && !busy_);
+  if (camera_ != nullptr) camera_->setEnabledState(media && !busy_);
+  if (share_ != nullptr) share_->setEnabledState(media && !busy_);
+  if (listen_ != nullptr) listen_->setEnabledState(media && !busy_);
+  if (settings_ != nullptr) settings_->setEnabledState(joined && host && !busy_);
   if (leave_ != nullptr) leave_->setEnabledState(joined && !busy_);
+
   if (mic_ != nullptr) {
-    mic_->setIcon(state_.micMuted ? Theme::Icon::MicOff : Theme::Icon::Mic);
-    mic_->setText(state_.micMuted ? QStringLiteral("闭麦")
-                                  : QStringLiteral("麦克风"));
-    mic_->setTone(state_.micMuted ? QStringLiteral("muted")
-                                  : QStringLiteral("active"));
+    if (state_.talkMode == TalkMode::Free) {
+      mic_->setIcon(state_.micMuted ? Theme::Icon::MicOff : Theme::Icon::Mic);
+      mic_->setText(state_.micMuted ? QStringLiteral("闭麦")
+                                    : QStringLiteral("麦克风"));
+      mic_->setTone(state_.micMuted ? QStringLiteral("muted")
+                                    : QStringLiteral("active"));
+    } else {
+      mic_->setIcon(state_.floor.selfHasFloor ? Theme::Icon::Mic
+                                              : Theme::Icon::MicOff);
+      mic_->setText(
+          state_.floor.selfHasFloor
+              ? QStringLiteral("正在发言")
+              : state_.talkMode == TalkMode::Ptt ? QStringLiteral("按住说话")
+                                                 : QStringLiteral("申请发言"));
+      mic_->setTone(state_.floor.selfHasFloor ? QStringLiteral("active")
+                                              : QStringLiteral("default"));
+    }
   }
   if (camera_ != nullptr) {
     camera_->setIcon(state_.cameraOn ? Theme::Icon::Camera
@@ -352,8 +395,27 @@ void RoomPage::UpdateControls() {
     listen_->setText(state_.deafen ? QStringLiteral("已静音")
                                    : QStringLiteral("收听"));
   }
-  if (filter_ != nullptr) filter_->setEnabled(joined);
-  if (layout_ != nullptr) layout_->setEnabled(joined && !state_.sharing);
+  if (control_hint_ != nullptr) {
+    if (preview_mode_) {
+      control_hint_->setText(QStringLiteral("房间页面生产骨架预览"));
+    } else if (state_.talkMode == TalkMode::Free) {
+      control_hint_->setText(
+          QStringLiteral("自由发言 · 点击麦克风切换闭麦状态"));
+    } else if (!state_.floor.holderUid.isEmpty()) {
+      const int queue_pos = state_.floor.queue.indexOf(state_.selfUid);
+      control_hint_->setText(
+          queue_pos >= 0
+              ? QStringLiteral("发言权排队中，第 %1 位").arg(queue_pos + 1)
+              : QStringLiteral("发言中：%1").arg(state_.floor.holderUid));
+    } else {
+      control_hint_->setText(
+          state_.talkMode == TalkMode::Ptt
+              ? QStringLiteral("按住麦克风申请并占用发言权")
+              : QStringLiteral("按住麦克风申请发言，等待主持人放行"));
+    }
+  }
+  if (filter_ != nullptr) filter_->setEnabled(false);
+  if (layout_ != nullptr) layout_->setEnabled(false);
   if (stage_empty_ != nullptr) {
     stage_empty_->setText(preview_mode_
                               ? QStringLiteral("房间页面预览")
@@ -374,16 +436,180 @@ void RoomPage::RebuildSidePanel() {
     }
     delete item;
   }
+  member_panel_ = nullptr;
+  member_summary_ = nullptr;
+  member_floor_ = nullptr;
+  mute_all_ = nullptr;
+  member_rows_layout_ = nullptr;
+  member_rows_.clear();
+  member_order_.clear();
 
   const QString tab = tabs_ != nullptr ? tabs_->currentId()
                                         : QStringLiteral("members");
-  side_layout_->addWidget(
-      Label(tab == QStringLiteral("devices") ? QStringLiteral("设备面板")
-            : tab == QStringLiteral("status") ? QStringLiteral("连接与媒体")
-                                              : QStringLiteral("房间成员"),
-            QStringLiteral("PanelHead"), side_body_));
-  side_layout_->addWidget(BuildMemberPlaceholder());
+  if (tab != QStringLiteral("members")) {
+    side_layout_->addWidget(
+        Label(tab == QStringLiteral("devices") ? QStringLiteral("设备面板")
+                                               : QStringLiteral("连接与媒体"),
+              QStringLiteral("PanelHead"), side_body_));
+    auto* placeholder = Theme::card(this, QStringLiteral("SubtleCard"));
+    auto* placeholder_layout = new QVBoxLayout(placeholder);
+    placeholder_layout->setContentsMargins(16, 18, 16, 18);
+    placeholder_layout->addWidget(
+        Label(tab == QStringLiteral("devices")
+                  ? QStringLiteral("设备管理将在 P5/P6 完善")
+                  : QStringLiteral("媒体统计将在 P6 接入"),
+              QStringLiteral("TitleSmall"), placeholder));
+    placeholder_layout->addWidget(
+        Label(QStringLiteral("当前模块边界已预留"), QStringLiteral("Hint"),
+              placeholder));
+    side_layout_->addWidget(placeholder);
+    side_layout_->addStretch(1);
+    return;
+  }
+
+  member_panel_ = new QWidget(side_body_);
+  auto* panel_layout = new QVBoxLayout(member_panel_);
+  panel_layout->setContentsMargins(0, 0, 0, 0);
+  panel_layout->setSpacing(8);
+
+  auto* head = new QWidget(member_panel_);
+  auto* head_layout = new QHBoxLayout(head);
+  head_layout->setContentsMargins(0, 0, 0, 0);
+  member_summary_ = Label(QString(), QStringLiteral("PanelHead"), head);
+  head_layout->addWidget(member_summary_, 1);
+  mute_all_ = Theme::button(QStringLiteral("全员静音"),
+                            QStringLiteral("danger"), head);
+  mute_all_->setMinimumHeight(30);
+  head_layout->addWidget(mute_all_);
+  panel_layout->addWidget(head);
+
+  member_floor_ = Label(QString(), QStringLiteral("FloorLine"), member_panel_);
+  panel_layout->addWidget(member_floor_);
+
+  auto* rows = new QWidget(member_panel_);
+  member_rows_layout_ = new QVBoxLayout(rows);
+  member_rows_layout_->setContentsMargins(0, 0, 0, 0);
+  member_rows_layout_->setSpacing(7);
+  panel_layout->addWidget(rows);
+  side_layout_->addWidget(member_panel_);
   side_layout_->addStretch(1);
+
+  connect(mute_all_, &QPushButton::clicked, this, &RoomPage::muteAllRequested);
+  UpdateMemberPanel();
+}
+
+void RoomPage::RefreshSidePanel() {
+  if (tabs_ == nullptr || tabs_->currentId() != QStringLiteral("members")) {
+    RebuildSidePanel();
+    return;
+  }
+
+  QStringList ids;
+  ids << state_.selfUid;
+  for (const PeerSnapshot& peer : state_.peers) ids << peer.uid;
+  bool same_ids = ids.size() == member_order_.size();
+  if (same_ids) {
+    for (int i = 0; i < ids.size(); ++i) {
+      if (ids.at(i) != member_order_.at(i)) {
+        same_ids = false;
+        break;
+      }
+    }
+  }
+  if (member_panel_ == nullptr || !same_ids) {
+    RebuildSidePanel();
+  } else {
+    UpdateMemberPanel();
+  }
+}
+
+PeerSnapshot RoomPage::SelfPeer() const {
+  PeerSnapshot self;
+  self.uid = state_.selfUid;
+  self.displayName = state_.selfDisplayName;
+  self.role = state_.selfRole;
+  self.audioMuted = state_.micMuted;
+  self.speaking = state_.floor.selfHasFloor;
+  self.cameraOn = state_.cameraOn;
+  self.screenOn = state_.sharing;
+  self.audioLevel = state_.selfAudioLevel;
+  return self;
+}
+
+void RoomPage::UpdateMemberPanel() {
+  if (member_panel_ == nullptr || member_rows_layout_ == nullptr) return;
+  const bool host = state_.selfRole == QStringLiteral("host");
+  member_summary_->setText(
+      QStringLiteral("房间成员 · %1").arg(state_.peers.size() + 1));
+  if (mute_all_ != nullptr) mute_all_->setVisible(host);
+
+  QString floor_text;
+  if (state_.talkMode == TalkMode::Free) {
+    floor_text = QStringLiteral("自由发言（全双工）");
+  } else if (state_.floor.holderUid.isEmpty()) {
+    floor_text = QStringLiteral("发言权：未授予");
+  } else {
+    floor_text = QStringLiteral("发言权：%1")
+                     .arg(state_.floor.selfHasFloor ? QStringLiteral("我")
+                                                    : state_.floor.holderUid);
+    if (!state_.floor.queue.isEmpty()) {
+      floor_text += QStringLiteral(" · 排队 %1 人")
+                        .arg(state_.floor.queue.size());
+    }
+  }
+  member_floor_->setText(floor_text);
+
+  if (member_rows_layout_->count() == 0) {
+    member_order_.clear();
+    const PeerSnapshot self = SelfPeer();
+    member_order_ << self.uid;
+    auto* self_row = new MemberRow(member_panel_);
+    member_rows_.insert(self.uid, self_row);
+    member_rows_layout_->addWidget(self_row);
+    connect(self_row, &MemberRow::memberSelected, this,
+            &RoomPage::memberSelected);
+    for (const PeerSnapshot& peer : state_.peers) {
+      member_order_ << peer.uid;
+      auto* row = new MemberRow(member_panel_);
+      member_rows_.insert(peer.uid, row);
+      member_rows_layout_->addWidget(row);
+      connect(row, &MemberRow::memberSelected, this,
+              &RoomPage::memberSelected);
+      connect(row, &MemberRow::grantRequested, this,
+              &RoomPage::grantFloorRequested);
+      connect(row, &MemberRow::kickRequested, this,
+              &RoomPage::kickMemberRequested);
+    }
+  }
+
+  const PeerSnapshot self = SelfPeer();
+  for (auto it = member_rows_.begin(); it != member_rows_.end(); ++it) {
+    const bool is_self = it.key() == state_.selfUid;
+    PeerSnapshot peer = is_self ? self : PeerSnapshot{};
+    if (!is_self) {
+      for (const PeerSnapshot& candidate : state_.peers) {
+        if (candidate.uid == it.key()) {
+          peer = candidate;
+          break;
+        }
+      }
+    }
+    it.value()->SetMember(peer, is_self, state_.selfRole, host,
+                          state_.talkMode, state_.floor,
+                          state_.selectedUid == peer.uid);
+  }
+}
+
+void RoomPage::OpenPolicyDialog() {
+  if (state_.selfRole != QStringLiteral("host")) return;
+  if (policy_dialog_ == nullptr) {
+    policy_dialog_ = new RoomPolicyDialog(this);
+  }
+  policy_dialog_->SetPolicy(state_.policy);
+  emit settingsRequested();
+  if (policy_dialog_->exec() == QDialog::Accepted) {
+    emit policyUpdateRequested(policy_dialog_->policy());
+  }
 }
 
 void RoomPage::resizeEvent(QResizeEvent* event) {

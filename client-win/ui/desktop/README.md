@@ -6,9 +6,9 @@
 It is separate from the legacy `talk-qt` diagnostic UI and the visual-only
 `qt-ui-prototype` project.
 
-## P1-P3 boundary
+## P1-P4 boundary
 
-The current P1-P3 deliverable is a production session shell:
+The current P1-P4 deliverable is a production session and room-control shell:
 
 - production executable target and CMake structure
 - frameless window and window controls
@@ -23,10 +23,15 @@ The current P1-P3 deliverable is a production session shell:
 - real dev-token, connect, join and leave lifecycle
 - settings persistence without storing the token
 - reconnect, kicked and error state propagation
+- real member rows with role, audio/video state and audio level
+- microphone, camera, screen-share and deafen controls
+- PTT/moderated floor request, release, queue and countdown
+- host grant/kick, mute-all and room-policy editor
+- toast feedback for control and host actions
 - screenshot and smoke-test command line modes
 
-The production pages are connected to `SessionStore`. Media controls remain
-disabled until P4 wires their commands and result handling.
+The stage still shows a placeholder until the P5 video stream registry and
+rendering surface are connected.
 
 ## Layers
 
@@ -78,6 +83,13 @@ build/windows-x64/bin/Release/talk-desktop.exe
 ```
 
 The smoke obtains a development token, connects, joins, leaves and exits.
+The P4 smoke additionally validates camera, screen share, PTT, policy update
+and mute-all across two real clients:
+
+```powershell
+.\build\windows-x64\bin\Release\desktop_p4_smoke.exe
+```
+
 For UI-level verification:
 
 ```powershell

@@ -85,6 +85,10 @@ struct FloorStateEvent {
   FloorSnapshot floor;
 };
 
+struct FloorLocalEvent {
+  bool open = false;
+};
+
 struct PolicyChangedEvent {
   RoomPolicy policy;
 };
@@ -134,7 +138,8 @@ struct UnknownEvent {
 using CoreEventPayload = std::variant<
     StateEvent, ReadyEvent, PeerUpdatedEvent, PeerJoinedEvent, PeerLeftEvent,
     JoinedEvent, LeftEvent, ModeChangedEvent, P2pStateEvent, VideoStateEvent,
-    VideoTrackEvent, ProducerStateEvent, FloorStateEvent, PolicyChangedEvent,
+    VideoTrackEvent, ProducerStateEvent, FloorStateEvent, FloorLocalEvent,
+    PolicyChangedEvent,
     AudioLevelsEvent, ActiveSpeakerEvent, MutedEvent, KickedEvent, ErrorEvent,
     ResultEvent, UnknownEvent>;
 

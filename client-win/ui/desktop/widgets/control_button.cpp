@@ -19,6 +19,8 @@ ControlButton::ControlButton(Theme::Icon icon, const QString &text, QWidget *par
     m_label->setObjectName(QStringLiteral("ControlLabel"));
     layout->addWidget(m_label);
     connect(m_button, &IconButton::clicked, this, &ControlButton::clicked);
+    connect(m_button, &IconButton::pressed, this, &ControlButton::pressed);
+    connect(m_button, &IconButton::released, this, &ControlButton::released);
 }
 
 void ControlButton::setIcon(Theme::Icon icon) { m_button->setIcon(icon); }

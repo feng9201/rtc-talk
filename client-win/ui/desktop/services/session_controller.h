@@ -25,6 +25,17 @@ class SessionController final : public QObject {
   void ConnectAndJoin(const PrejoinOptions& options);
   void LeaveRoom();
   void Disconnect();
+  void SetMicEnabled(bool enabled);
+  void ToggleCamera();
+  void ToggleShare();
+  void ToggleDeafen();
+  void RequestFloor();
+  void ReleaseFloor();
+  void SelectPeer(const QString& uid);
+  void GrantFloor(const QString& uid, bool allow);
+  void MuteAll();
+  void KickMember(const QString& uid);
+  void UpdatePolicy(const RoomPolicy& policy);
 
  signals:
   void StateChanged(const talk::desktop::SessionSnapshot& snapshot);
@@ -33,6 +44,7 @@ class SessionController final : public QObject {
   void Kicked(const QString& reason);
   void ErrorOccurred(const QString& message, const QString& detail);
   void BusyChanged(bool busy, const QString& message);
+  void Notice(const QString& message, const QString& tone);
 
  private:
   void HandleCoreEvent(const CoreEvent& event);

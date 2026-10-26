@@ -2,17 +2,22 @@
 
 #include "domain/app_types.h"
 
+#include <QHash>
 #include <QWidget>
 
 class QLabel;
+class QPushButton;
 class QScrollArea;
+class QTimer;
 class QVBoxLayout;
 
 namespace talk::desktop {
 
 class ControlButton;
 class IconButton;
+class MemberRow;
 class Pill;
+class RoomPolicyDialog;
 class SegmentedControl;
 
 class RoomPage final : public QWidget {
@@ -24,16 +29,24 @@ class RoomPage final : public QWidget {
   void SetSessionState(const SessionSnapshot& state);
   void SetPreviewMode(bool preview);
   void SetBusy(bool busy);
+  void OpenPolicyDialog();
   const SessionSnapshot& state() const { return state_; }
 
  signals:
   void micToggleRequested();
+  void micFloorPressed();
+  void micFloorReleased();
   void cameraToggleRequested();
   void shareToggleRequested();
   void deafenToggleRequested();
   void settingsRequested();
   void leaveRequested();
   void panelTabRequested(PanelTab tab);
+  void memberSelected(const QString& uid);
+  void grantFloorRequested(const QString& uid, bool allow);
+  void kickMemberRequested(const QString& uid);
+  void muteAllRequested();
+  void policyUpdateRequested(const RoomPolicy& policy);
 
  protected:
   void resizeEvent(QResizeEvent* event) override;
@@ -43,10 +56,12 @@ class RoomPage final : public QWidget {
   QWidget* BuildStage();
   QWidget* BuildControlBar();
   QWidget* BuildSidebar();
-  QWidget* BuildMemberPlaceholder();
   void UpdateHeader();
   void UpdateControls();
   void RebuildSidePanel();
+  void RefreshSidePanel();
+  void UpdateMemberPanel();
+  PeerSnapshot SelfPeer() const;
 
   SessionSnapshot state_;
   bool preview_mode_ = false;
@@ -74,6 +89,15 @@ class RoomPage final : public QWidget {
   QScrollArea* side_scroll_ = nullptr;
   QWidget* side_body_ = nullptr;
   QVBoxLayout* side_layout_ = nullptr;
+  QWidget* member_panel_ = nullptr;
+  QLabel* member_summary_ = nullptr;
+  QLabel* member_floor_ = nullptr;
+  QPushButton* mute_all_ = nullptr;
+  QVBoxLayout* member_rows_layout_ = nullptr;
+  QHash<QString, MemberRow*> member_rows_;
+  QStringList member_order_;
+  QTimer* floor_timer_ = nullptr;
+  RoomPolicyDialog* policy_dialog_ = nullptr;
 };
 
 }  // namespace talk::desktop

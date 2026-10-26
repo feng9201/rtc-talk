@@ -125,6 +125,9 @@ void TestSessionStore() {
       QJsonObject{{QStringLiteral("uid"), QStringLiteral("u1")},
                   {QStringLiteral("display"), QStringLiteral("张三")},
                   {QStringLiteral("role"), QStringLiteral("member")}}));
+  store.SetSelectedPeer(QStringLiteral("u1"));
+  Check(store.snapshot().selectedUid == QStringLiteral("u1"),
+        "selected peer update");
   store.ApplyEvent(EventMapper::Map(
       QStringLiteral("room.audioLevels"),
       QJsonObject{{QStringLiteral("levels"),
@@ -133,6 +136,17 @@ void TestSessionStore() {
   Check(store.snapshot().peers.size() == 1 &&
             store.snapshot().peers.first().audioLevel > 0.7,
         "peer and audio level update");
+
+  store.ApplyEvent(EventMapper::Map(
+      QStringLiteral("floor.local"),
+      QJsonObject{{QStringLiteral("open"), true}}));
+  Check(!store.snapshot().micMuted &&
+            store.snapshot().floor.selfHasFloor,
+        "local floor opens microphone");
+  store.ApplyEvent(EventMapper::Map(
+      QStringLiteral("floor.local"),
+      QJsonObject{{QStringLiteral("open"), false}}));
+  Check(store.snapshot().micMuted, "local floor closes microphone");
 
   store.ApplyEvent(EventMapper::Map(
       QStringLiteral("video.track"),

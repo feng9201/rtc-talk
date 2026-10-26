@@ -23,6 +23,7 @@ class MainWindow final : public FramelessWindow {
   explicit MainWindow(QWidget* parent = nullptr);
 
   void BeginJoin(const PrejoinOptions& options);
+  void OpenRoomPolicyDialog();
   void ShowRoomPreview();
   void SetLogPath(const QString& path);
 

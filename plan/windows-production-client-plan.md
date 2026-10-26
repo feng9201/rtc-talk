@@ -1,6 +1,6 @@
 # Windows 生产客户端集成开发计划
 
-> 状态：P3 已完成，等待确认进入 P4；其他分支只允许只读参考
+> 状态：P4 已完成，等待确认进入 P5；其他分支只允许只读参考
 > 计划日期：2026-10-26  
 > 目标：把 `client-win` 的真实媒体/信令能力与 `qt-ui-prototype` 的 UI 组合为面向生产的 Windows 桌面客户端  
 > 建议分支：`codex/feat/windows-production-client`
@@ -771,3 +771,45 @@ P2 不包含：
 - 当前 `talk_core` WebSocket 客户端仅支持 `ws://`，P3 明确拒绝 `wss://`
 - 媒体控制按钮在 P3 保持禁用，P4 接入命令和结果回滚
 - 成员列表仍为占位内容，P4 接入真实成员交互
+
+### P4 执行结果（2026-10-26）
+
+已完成：
+
+- 真实成员列表、当前选择、角色、麦克风和视频状态
+- 成员音量条、发言人与排队标记
+- 主持人成员菜单：授予/收回发言权、移出房间
+- 麦克风开关、摄像头开关、屏幕共享、静音收听
+- PTT/moderated 按住申请、松开释放、排队和发言倒计时
+- `host.setPolicy` 房间策略弹窗
+- 全员静音
+- 操作 Toast 和失败反馈
+- 新增 `desktop_p4_smoke` 双端真实联调工具
+
+验证：
+
+- Release 构建：通过
+- 本地回归测试：6/6 通过
+- 双端真实联调：
+  - 摄像头开启/关闭状态同步
+  - 屏幕共享开启/关闭状态同步
+  - PTT 发言权获取与释放
+  - `host.setPolicy` 局部策略更新
+  - 全员静音
+  - 双端离房
+  - 退出码 0
+
+截图：
+
+```text
+client-win/build/windows-x64/desktop-shots/p4-members.png
+client-win/build/windows-x64/desktop-shots/p4-ptt-host.png
+client-win/build/windows-x64/desktop-shots/p4-host-members.png
+client-win/build/windows-x64/desktop-shots/p4-policy-dialog.png
+```
+
+P4 不包含：
+
+- 远端视频画面渲染
+- 本地摄像头预览
+- 设备面板和状态面板的完整接入

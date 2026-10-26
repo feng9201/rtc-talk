@@ -23,6 +23,8 @@ public:
 
 signals:
     void clicked();
+    void pressed();
+    void released();
 
 private:
     IconButton *m_button;

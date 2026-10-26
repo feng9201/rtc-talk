@@ -69,6 +69,15 @@ SessionController::SessionController(QObject* parent)
           [this] { emit StateChanged(store_.snapshot()); });
   connect(&store_, &SessionStore::Joined, this, [this] {
     joining_ = false;
+    const bool media_enabled = options_.audioBackend != AudioBackend::None;
+    store_.SetMediaEnabled(media_enabled);
+    if (media_enabled) {
+      core_.Submit(QStringLiteral("audio.volume"),
+                   QJsonObject{{QStringLiteral("gain"),
+                                options_.volume / 100.0}});
+      core_.Submit(QStringLiteral("room.subscribeLevels"),
+                   QJsonObject{{QStringLiteral("enabled"), true}});
+    }
     SetBusy(false, QStringLiteral("已进入房间"));
     emit Joined();
   });
@@ -172,6 +181,106 @@ void SessionController::Disconnect() {
   SetBusy(false, QStringLiteral("已断开连接"));
 }
 
+void SessionController::SetMicEnabled(bool enabled) {
+  if (!store_.snapshot().joined || store_.snapshot().talkMode != TalkMode::Free) {
+    return;
+  }
+  core_.Submit(QStringLiteral("media.setMute"),
+               QJsonObject{{QStringLiteral("muted"), !enabled}});
+}
+
+void SessionController::ToggleCamera() {
+  if (!store_.snapshot().joined || !store_.snapshot().mediaEnabled) return;
+  const bool enabled = store_.snapshot().cameraOn;
+  core_.Submit(enabled ? QStringLiteral("video.stop")
+                       : QStringLiteral("video.start"),
+               QJsonObject{{QStringLiteral("source"),
+                            QStringLiteral("camera")}});
+}
+
+void SessionController::ToggleShare() {
+  if (!store_.snapshot().joined || !store_.snapshot().mediaEnabled) return;
+  const bool sharing = store_.snapshot().sharing;
+  core_.Submit(sharing ? QStringLiteral("video.stop")
+                       : QStringLiteral("video.start"),
+               QJsonObject{{QStringLiteral("source"),
+                            QStringLiteral("screen")}});
+}
+
+void SessionController::ToggleDeafen() {
+  if (!store_.snapshot().joined) return;
+  const bool deafen = !store_.snapshot().deafen;
+  store_.SetDeafen(deafen);
+  if (store_.snapshot().mediaEnabled) {
+    core_.Submit(QStringLiteral("audio.volume"),
+                 QJsonObject{{QStringLiteral("gain"),
+                              deafen ? 0.0 : options_.volume / 100.0}});
+  }
+  emit Notice(deafen ? QStringLiteral("已静音收听")
+                     : QStringLiteral("已恢复收听"),
+              deafen ? QStringLiteral("warn") : QStringLiteral("ok"));
+}
+
+void SessionController::RequestFloor() {
+  if (!store_.snapshot().joined ||
+      store_.snapshot().talkMode == TalkMode::Free) {
+    return;
+  }
+  core_.Submit(QStringLiteral("floor.request"));
+}
+
+void SessionController::ReleaseFloor() {
+  if (!store_.snapshot().joined ||
+      store_.snapshot().talkMode == TalkMode::Free) {
+    return;
+  }
+  core_.Submit(QStringLiteral("floor.release"));
+}
+
+void SessionController::SelectPeer(const QString& uid) {
+  store_.SetSelectedPeer(uid);
+}
+
+void SessionController::GrantFloor(const QString& uid, bool allow) {
+  if (uid.isEmpty() || store_.snapshot().selfRole != QStringLiteral("host") ||
+      store_.snapshot().talkMode == TalkMode::Free) {
+    return;
+  }
+  core_.Submit(QStringLiteral("host.grant"),
+               QJsonObject{{QStringLiteral("uid"), uid},
+                           {QStringLiteral("allow"), allow}});
+}
+
+void SessionController::MuteAll() {
+  if (store_.snapshot().selfRole != QStringLiteral("host")) return;
+  core_.Submit(QStringLiteral("host.muteAll"), QJsonObject{});
+}
+
+void SessionController::KickMember(const QString& uid) {
+  if (uid.isEmpty() || store_.snapshot().selfRole != QStringLiteral("host")) {
+    return;
+  }
+  core_.Submit(QStringLiteral("host.kick"),
+               QJsonObject{{QStringLiteral("uid"), uid}});
+}
+
+void SessionController::UpdatePolicy(const RoomPolicy& policy) {
+  if (store_.snapshot().selfRole != QStringLiteral("host")) return;
+  const QJsonObject patch{
+      {QStringLiteral("talk_mode"), TalkModeValue(policy.talkMode)},
+      {QStringLiteral("max_speakers"), policy.maxSpeakers},
+      {QStringLiteral("ptt_max_hold_sec"), policy.pttMaxHoldSeconds},
+      {QStringLiteral("ptt_queue"), policy.pttQueue},
+      {QStringLiteral("media_mode"), MediaModeValue(policy.mediaMode)},
+      {QStringLiteral("p2p_allow_relay"), policy.p2pAllowRelay},
+      {QStringLiteral("max_peers"), policy.maxPeers},
+      {QStringLiteral("video"),
+       QJsonObject{{QStringLiteral("enabled"), policy.videoEnabled},
+                   {QStringLiteral("max_publishers"),
+                    policy.videoMaxPublishers}}}};
+  core_.Submit(QStringLiteral("host.setPolicy"), patch);
+}
+
 void SessionController::HandleCoreEvent(const CoreEvent& event) {
   store_.ApplyEvent(event);
 
@@ -192,7 +301,32 @@ void SessionController::HandleCoreEvent(const CoreEvent& event) {
 }
 
 void SessionController::HandleCommandCompleted(const CommandResult& result) {
-  if (result.ok) return;
+  if (result.ok) {
+    if (result.method == QStringLiteral("floor.request")) {
+      const bool granted =
+          result.data.value(QStringLiteral("granted")).toBool(false);
+      const int queue_pos =
+          result.data.value(QStringLiteral("queue_pos")).toInt(0);
+      if (granted) {
+        emit Notice(QStringLiteral("已获得发言权"), QStringLiteral("ok"));
+      } else if (queue_pos > 0) {
+        emit Notice(QStringLiteral("已排队，当前第 %1 位").arg(queue_pos),
+                    QStringLiteral("info"));
+      } else {
+        emit Notice(QStringLiteral("发言权忙线，请稍后重试"),
+                    QStringLiteral("warn"));
+      }
+    } else if (result.method == QStringLiteral("host.grant")) {
+      emit Notice(QStringLiteral("发言权状态已更新"), QStringLiteral("ok"));
+    } else if (result.method == QStringLiteral("host.muteAll")) {
+      emit Notice(QStringLiteral("已执行全员静音"), QStringLiteral("warn"));
+    } else if (result.method == QStringLiteral("host.kick")) {
+      emit Notice(QStringLiteral("成员已移出房间"), QStringLiteral("warn"));
+    } else if (result.method == QStringLiteral("host.setPolicy")) {
+      emit Notice(QStringLiteral("房间策略已更新"), QStringLiteral("ok"));
+    }
+    return;
+  }
   if (result.method == QStringLiteral("connect") ||
       result.method == QStringLiteral("room.join") ||
       result.method == QStringLiteral("room.leave")) {

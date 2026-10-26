@@ -440,6 +440,55 @@ QFrame#WarningBox {
 QFrame#MemberRow[poor="true"] {
     border-color: #664d28;
 }
+QFrame#MemberRow[speaking="true"] {
+    border-color: #2f9c74;
+    background: #10231e;
+}
+QLabel#MemberFloorBadge {
+    color: #66e4a3;
+    background: rgba(53, 208, 127, 24);
+    border: 1px solid rgba(53, 208, 127, 72);
+    border-radius: 6px;
+    padding: 2px 6px;
+    font-size: 10px;
+    font-weight: 600;
+}
+QProgressBar#MemberLevel {
+    background: #22313e;
+    border: 0;
+    border-radius: 2px;
+}
+QProgressBar#MemberLevel::chunk {
+    background: #55c2ff;
+    border-radius: 2px;
+}
+QFrame#Toast {
+    border-radius: 11px;
+}
+QFrame#Toast[tone="ok"] {
+    background: #12271d;
+    border: 1px solid #2e5a43;
+}
+QFrame#Toast[tone="warn"] {
+    background: #2b2114;
+    border: 1px solid #5d4725;
+}
+QFrame#Toast[tone="error"] {
+    background: #2a1717;
+    border: 1px solid #6a3535;
+}
+QFrame#Toast[tone="info"] {
+    background: #18222b;
+    border: 1px solid #34495c;
+}
+QFrame#Toast QLabel {
+    color: #e8edf2;
+    font-weight: 600;
+}
+QDialog#RoomPolicyDialog {
+    background: #0d1319;
+    border: 1px solid #2d3d4d;
+}
 
 QComboBox {
     padding-right: 32px;

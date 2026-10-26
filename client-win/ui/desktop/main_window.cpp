@@ -4,6 +4,7 @@
 #include "pages/room_page.h"
 #include "services/app_settings_service.h"
 #include "services/session_controller.h"
+#include "widgets/toast.h"
 #include "widgets/window_controls.h"
 
 #include <QResizeEvent>
@@ -55,13 +56,41 @@ void MainWindow::ConnectSignals() {
           });
   connect(room_page_, &RoomPage::leaveRequested, controller_,
           &SessionController::LeaveRoom);
+  connect(room_page_, &RoomPage::micToggleRequested, this,
+          [this] {
+            controller_->SetMicEnabled(controller_->snapshot().micMuted);
+          });
+  connect(room_page_, &RoomPage::micFloorPressed, controller_,
+          &SessionController::RequestFloor);
+  connect(room_page_, &RoomPage::micFloorReleased, controller_,
+          &SessionController::ReleaseFloor);
+  connect(room_page_, &RoomPage::cameraToggleRequested, controller_,
+          &SessionController::ToggleCamera);
+  connect(room_page_, &RoomPage::shareToggleRequested, controller_,
+          &SessionController::ToggleShare);
+  connect(room_page_, &RoomPage::deafenToggleRequested, controller_,
+          &SessionController::ToggleDeafen);
+  connect(room_page_, &RoomPage::memberSelected, controller_,
+          &SessionController::SelectPeer);
+  connect(room_page_, &RoomPage::grantFloorRequested, controller_,
+          &SessionController::GrantFloor);
+  connect(room_page_, &RoomPage::kickMemberRequested, controller_,
+          &SessionController::KickMember);
+  connect(room_page_, &RoomPage::muteAllRequested, controller_,
+          &SessionController::MuteAll);
+  connect(room_page_, &RoomPage::policyUpdateRequested, controller_,
+          &SessionController::UpdatePolicy);
 
   connect(controller_, &SessionController::StateChanged, this,
           [this](const SessionSnapshot& state) {
             room_page_->SetSessionState(state);
           });
   connect(controller_, &SessionController::Joined, this,
-          &MainWindow::ShowRoomPage);
+          [this] {
+            ShowRoomPage();
+            Toast::Show(this, QStringLiteral("已进入房间"),
+                        QStringLiteral("ok"));
+          });
   connect(controller_, &SessionController::Left, this, [this] {
     ShowPrejoinPage();
     prejoin_page_->setJoinEnabled(true);
@@ -91,10 +120,17 @@ void MainWindow::ConnectSignals() {
   connect(controller_, &SessionController::ErrorOccurred, this,
           [this](const QString& message, const QString& detail) {
             prejoin_page_->setJoinEnabled(true);
-            UpdatePrejoinStatus(
+            const QString text =
                 detail.isEmpty() ? message
-                                 : QStringLiteral("%1：%2").arg(message, detail),
-                QStringLiteral("danger"));
+                                 : QStringLiteral("%1：%2").arg(message, detail);
+            UpdatePrejoinStatus(text, QStringLiteral("danger"));
+            if (controller_->snapshot().joined) {
+              Toast::Show(this, text, QStringLiteral("error"));
+            }
+          });
+  connect(controller_, &SessionController::Notice, this,
+          [this](const QString& message, const QString& tone) {
+            Toast::Show(this, message, tone);
           });
 }
 
@@ -104,6 +140,10 @@ void MainWindow::BeginJoin(const PrejoinOptions& options) {
   UpdatePrejoinStatus(QStringLiteral("正在建立会话…"),
                       QStringLiteral("info"));
   controller_->ConnectAndJoin(options);
+}
+
+void MainWindow::OpenRoomPolicyDialog() {
+  if (controller_->snapshot().joined) room_page_->OpenPolicyDialog();
 }
 
 void MainWindow::ShowPrejoinPage() {

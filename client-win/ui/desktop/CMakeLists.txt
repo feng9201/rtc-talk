@@ -36,6 +36,8 @@ set_target_properties(talk_desktop_core PROPERTIES
 add_library(talk_desktop_ui STATIC
   base/frameless_window.cpp
   base/frameless_window.h
+  dialogs/room_policy_dialog.cpp
+  dialogs/room_policy_dialog.h
   domain/app_types.h
   main_window.cpp
   main_window.h
@@ -47,12 +49,18 @@ add_library(talk_desktop_ui STATIC
   theme/theme.h
   widgets/control_button.cpp
   widgets/control_button.h
+  widgets/avatar.cpp
+  widgets/avatar.h
   widgets/icon_button.cpp
   widgets/icon_button.h
+  widgets/member_row.cpp
+  widgets/member_row.h
   widgets/pill.cpp
   widgets/pill.h
   widgets/segmented_control.cpp
   widgets/segmented_control.h
+  widgets/toast.cpp
+  widgets/toast.h
   widgets/window_controls.cpp
   widgets/window_controls.h
 )

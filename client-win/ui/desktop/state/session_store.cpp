@@ -29,6 +29,24 @@ void SessionStore::SetLocalIdentity(const QString& uid,
                                     const QString& display_name) {
   snapshot_.selfUid = uid;
   snapshot_.selfDisplayName = display_name;
+  if (snapshot_.selectedUid.isEmpty()) snapshot_.selectedUid = uid;
+  NotifyChanged();
+}
+
+void SessionStore::SetMediaEnabled(bool enabled) {
+  snapshot_.mediaEnabled = enabled;
+  NotifyChanged();
+}
+
+void SessionStore::SetSelectedPeer(const QString& uid) {
+  if (uid.isEmpty()) return;
+  if (uid != snapshot_.selfUid && FindPeer(uid) == nullptr) return;
+  snapshot_.selectedUid = uid;
+  NotifyChanged();
+}
+
+void SessionStore::SetDeafen(bool deafen) {
+  snapshot_.deafen = deafen;
   NotifyChanged();
 }
 
@@ -82,6 +100,9 @@ void SessionStore::ApplyEvent(const CoreEvent& event) {
   } else if (const auto* floor =
                  std::get_if<FloorStateEvent>(&event.payload)) {
     ApplyFloorState(*floor);
+  } else if (const auto* local =
+                 std::get_if<FloorLocalEvent>(&event.payload)) {
+    ApplyFloorLocal(*local);
   } else if (const auto* policy =
                  std::get_if<PolicyChangedEvent>(&event.payload)) {
     ApplyPolicyChanged(*policy);
@@ -91,6 +112,9 @@ void SessionStore::ApplyEvent(const CoreEvent& event) {
   } else if (const auto* speaker =
                  std::get_if<ActiveSpeakerEvent>(&event.payload)) {
     snapshot_.activeSpeakerUid = speaker->uid;
+    for (PeerSnapshot& peer : snapshot_.peers) {
+      peer.speaking = peer.uid == speaker->uid;
+    }
     NotifyChanged();
   } else if (const auto* muted =
                  std::get_if<MutedEvent>(&event.payload)) {
@@ -140,6 +164,10 @@ void SessionStore::ApplyJoined(const JoinedEvent& event) {
   snapshot_.selfRole = event.role;
   snapshot_.policy = event.policy;
   snapshot_.talkMode = event.policy.talkMode;
+  if (snapshot_.selectedUid.isEmpty()) {
+    snapshot_.selectedUid =
+        event.peers.isEmpty() ? snapshot_.selfUid : event.peers.first().uid;
+  }
   snapshot_.floor = event.floor;
   if (snapshot_.floor.expiresInMs > 0) {
     snapshot_.floor.deadlineEpochMs =
@@ -164,6 +192,7 @@ void SessionStore::ApplyPeerUpdated(const PeerUpdatedEvent& event) {
   if (event.display_name.has_value()) peer->displayName = *event.display_name;
   if (event.role.has_value()) peer->role = *event.role;
   if (event.audio_muted.has_value()) peer->audioMuted = *event.audio_muted;
+  if (event.audio_speaking.has_value()) peer->speaking = *event.audio_speaking;
   if (event.camera_on.has_value()) peer->cameraOn = *event.camera_on;
   if (event.screen_on.has_value()) peer->screenOn = *event.screen_on;
   NotifyChanged();
@@ -221,6 +250,12 @@ void SessionStore::ApplyFloorState(const FloorStateEvent& event) {
   NotifyChanged();
 }
 
+void SessionStore::ApplyFloorLocal(const FloorLocalEvent& event) {
+  snapshot_.micMuted = !event.open;
+  snapshot_.floor.selfHasFloor = event.open;
+  NotifyChanged();
+}
+
 void SessionStore::ApplyPolicyChanged(const PolicyChangedEvent& event) {
   snapshot_.policy = event.policy;
   snapshot_.talkMode = event.policy.talkMode;
@@ -233,6 +268,10 @@ void SessionStore::ApplyPolicyChanged(const PolicyChangedEvent& event) {
 void SessionStore::ApplyAudioLevels(const AudioLevelsEvent& event) {
   for (PeerSnapshot& peer : snapshot_.peers) peer.audioLevel = 0.0;
   for (const AudioLevelEntry& entry : event.levels) {
+    if (entry.uid == snapshot_.selfUid) {
+      snapshot_.selfAudioLevel = entry.level;
+      continue;
+    }
     if (PeerSnapshot* peer = FindPeer(entry.uid)) {
       peer->audioLevel = entry.level;
     }
@@ -269,6 +308,7 @@ void SessionStore::ClearRoomState() {
   snapshot_.joined = false;
   snapshot_.roomId.clear();
   snapshot_.selfRole.clear();
+  snapshot_.selectedUid.clear();
   snapshot_.mediaMode.clear();
   snapshot_.activeSpeakerUid.clear();
   snapshot_.talkMode = TalkMode::Free;
@@ -280,6 +320,8 @@ void SessionStore::ClearRoomState() {
   snapshot_.cameraOn = false;
   snapshot_.sharing = false;
   snapshot_.deafen = false;
+  snapshot_.mediaEnabled = false;
+  snapshot_.selfAudioLevel = 0.0;
 }
 
 PeerSnapshot* SessionStore::FindPeer(const QString& uid) {

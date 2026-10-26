@@ -14,6 +14,9 @@ class SessionStore final : public QObject {
 
   const SessionSnapshot& snapshot() const { return snapshot_; }
   void SetLocalIdentity(const QString& uid, const QString& display_name);
+  void SetMediaEnabled(bool enabled);
+  void SetSelectedPeer(const QString& uid);
+  void SetDeafen(bool deafen);
   void Reset();
   void ApplyEvent(const CoreEvent& event);
 
@@ -34,6 +37,7 @@ class SessionStore final : public QObject {
   void ApplyVideoTrack(const VideoTrackEvent& event);
   void ApplyProducerState(const ProducerStateEvent& event);
   void ApplyFloorState(const FloorStateEvent& event);
+  void ApplyFloorLocal(const FloorLocalEvent& event);
   void ApplyPolicyChanged(const PolicyChangedEvent& event);
   void ApplyAudioLevels(const AudioLevelsEvent& event);
   void ApplyMuted(const MutedEvent& event);

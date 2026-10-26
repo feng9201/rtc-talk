@@ -6,6 +6,7 @@
 #include <QCommandLineParser>
 #include <QDir>
 #include <QFileInfo>
+#include <QScreen>
 #include <QTimer>
 
 #include <string>
@@ -53,6 +54,17 @@ int main(int argc, char** argv) {
   parser.addOption(
       {"auto-join-dev-token", "联调：自动使用 /dev/token"});
   parser.addOption(
+      {"auto-join-backend", "联调：音频后端 none|fake|wasapi", "name",
+       "fake"});
+  parser.addOption(
+      {"auto-join-media-mode", "联调：媒体模式 auto|sfu|p2p", "name",
+       "sfu"});
+  parser.addOption(
+      {"auto-join-talk-mode", "联调：对讲模式 free|ptt|moderated", "name",
+       "free"});
+  parser.addOption(
+      {"show-policy-after-ms", "联调：入房后自动打开主持人策略弹窗", "ms"});
+  parser.addOption(
       {"log-file", "日志文件路径", "path"});
   parser.addOption(
       {"log-level", "文件日志级别", "level"});
@@ -97,10 +109,37 @@ int main(int argc, char** argv) {
     options.roomId = parser.value("auto-join-room");
     options.userId = parser.value("auto-join-uid");
     options.fetchDevToken = parser.isSet("auto-join-dev-token");
-    options.audioBackend = talk::desktop::AudioBackend::None;
+    const QString backend = parser.value("auto-join-backend").toLower();
+    options.audioBackend = backend == QStringLiteral("none")
+                               ? talk::desktop::AudioBackend::None
+                               : backend == QStringLiteral("wasapi")
+                                     ? talk::desktop::AudioBackend::Wasapi
+                                     : talk::desktop::AudioBackend::Fake;
+    const QString media_mode =
+        parser.value("auto-join-media-mode").toLower();
+    options.mediaMode = media_mode == QStringLiteral("p2p")
+                            ? talk::desktop::MediaModePreference::P2p
+                            : media_mode == QStringLiteral("auto")
+                                  ? talk::desktop::MediaModePreference::Auto
+                                  : talk::desktop::MediaModePreference::Sfu;
+    const QString talk_mode =
+        parser.value("auto-join-talk-mode").toLower();
+    options.talkMode = talk_mode == QStringLiteral("ptt")
+                           ? talk::desktop::TalkMode::Ptt
+                           : talk_mode == QStringLiteral("moderated")
+                                 ? talk::desktop::TalkMode::Moderated
+                                 : talk::desktop::TalkMode::Free;
     QTimer::singleShot(0, &window, [&window, options] {
       window.BeginJoin(options);
     });
+    if (parser.isSet("show-policy-after-ms")) {
+      bool policy_ok = false;
+      const int delay = parser.value("show-policy-after-ms").toInt(&policy_ok);
+      if (policy_ok && delay >= 0) {
+        QTimer::singleShot(delay, &window,
+                           &talk::desktop::MainWindow::OpenRoomPolicyDialog);
+      }
+    }
   }
 
   const QString screenshot = parser.value("screenshot").trimmed();
@@ -111,7 +150,17 @@ int main(int argc, char** argv) {
                        [&app, &window, screenshot] {
       const QString path = QFileInfo(screenshot).absoluteFilePath();
       QDir().mkpath(QFileInfo(path).absolutePath());
-      const bool saved = window.grab().save(path);
+      QPixmap capture;
+      if (QWidget* modal = QApplication::activeModalWidget()) {
+        const QRect area =
+            window.frameGeometry().united(modal->frameGeometry());
+        if (QScreen* current_screen = window.screen()) {
+          capture = current_screen->grabWindow(
+              0, area.x(), area.y(), area.width(), area.height());
+        }
+      }
+      if (capture.isNull()) capture = window.grab();
+      const bool saved = capture.save(path);
       app.exit(saved ? 0 : 3);
     });
   } else if (parser.isSet("smoke-seconds")) {

@@ -70,6 +70,7 @@ struct PeerSnapshot {
   QString displayName;
   QString role;
   bool audioMuted = true;
+  bool speaking = false;
   bool cameraOn = false;
   bool screenOn = false;
   double audioLevel = 0.0;
@@ -109,6 +110,7 @@ struct SessionSnapshot {
   QString selfUid;
   QString selfDisplayName;
   QString selfRole;
+  QString selectedUid;
   QString mediaMode;
   QString activeSpeakerUid;
   TalkMode talkMode = TalkMode::Free;
@@ -120,6 +122,8 @@ struct SessionSnapshot {
   bool cameraOn = false;
   bool sharing = false;
   bool deafen = false;
+  bool mediaEnabled = false;
+  double selfAudioLevel = 0.0;
   int lastErrorCode = 0;
   QString lastError;
 };
@@ -129,3 +133,4 @@ struct SessionSnapshot {
 Q_DECLARE_METATYPE(talk::desktop::PrejoinOptions)
 Q_DECLARE_METATYPE(talk::desktop::SessionSnapshot)
 Q_DECLARE_METATYPE(talk::desktop::PanelTab)
+Q_DECLARE_METATYPE(talk::desktop::RoomPolicy)

@@ -58,6 +58,7 @@ PeerSnapshot ParsePeer(const QJsonObject& peer) {
   result.role = peer.value(QStringLiteral("role")).toString(QStringLiteral("member"));
   const QJsonObject audio = peer.value(QStringLiteral("audio")).toObject();
   result.audioMuted = audio.value(QStringLiteral("muted")).toBool(true);
+  result.speaking = audio.value(QStringLiteral("speaking")).toBool(false);
   const QJsonObject video = peer.value(QStringLiteral("video")).toObject();
   result.cameraOn = video.value(QStringLiteral("camera")).toBool(false);
   result.screenOn = video.value(QStringLiteral("screen")).toBool(
@@ -189,6 +190,10 @@ CoreEvent EventMapper::Map(const QString& name, const QJsonObject& data) {
   }
   if (name == QStringLiteral("floor.state")) {
     return {name, FloorStateEvent{ParseFloor(data)}};
+  }
+  if (name == QStringLiteral("floor.local")) {
+    return {name, FloorLocalEvent{
+                      data.value(QStringLiteral("open")).toBool(false)}};
   }
   if (name == QStringLiteral("room.policyChanged")) {
     const QJsonObject policy = data.contains(QStringLiteral("policy"))
