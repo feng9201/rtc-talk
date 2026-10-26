@@ -1,6 +1,6 @@
 # Windows 生产客户端集成开发计划
 
-> 状态：待确认，尚未开始生产化开发  
+> 状态：P0 已完成，等待确认进入 P1；其他分支只允许只读参考  
 > 计划日期：2026-10-26  
 > 目标：把 `client-win` 的真实媒体/信令能力与 `qt-ui-prototype` 的 UI 组合为面向生产的 Windows 桌面客户端  
 > 建议分支：`codex/feat/windows-production-client`
@@ -11,15 +11,15 @@
 
 | 项 | 值 |
 |---|---|
-| 当前分支 | `feat/windows-client` |
-| 当前 HEAD | `df22708` |
+| 当前分支 | `codex/feat/windows-production-client` |
+| 当前 HEAD | `8b705e3` |
 | 远端 main | `origin/main` = `4a24f30` |
 | 当前分支与 main 的 merge base | `cd3fef2` |
-| 当前工作区 | `client-win/qt-ui-prototype` 有未提交 UI 原型改动 |
+| 当前工作区 | 干净；UI 原型已保存为基线提交 |
 
-`main` 已经是**纯服务端分支**，其最新差异会删除 `client-win` 目录。不能直接把 `main` 当作 Windows 客户端主分支继续开发。
+`main` 已经是**纯服务端分支**，其最新差异会删除 `client-win` 目录。所有其他分支只做只读参考，禁止在 `main` 或其他分支上提交、合并、cherry-pick 或改写历史。当前生产开发只在 `codex/feat/windows-production-client` 上进行。
 
-### 1.2 必须同步的最新服务端修复
+### 1.2 只读参考的最新服务端修复
 
 `origin/main` 新增 `4a24f30`，包含两项会直接影响客户端体验的修复：
 
@@ -34,7 +34,7 @@
    - `setPolicy` 使用字段级合并，不再重置未提交字段
    - 结果：生产 UI 可以安全实现“只修改一个策略字段”的主持人设置面板
 
-生产客户端必须基于包含 `4a24f30` 的服务端协议和测试服务进行验收。
+生产客户端联调时必须记录并验证服务端版本 `origin/main@4a24f30`，但客户端分支不合并 `main` 代码。服务端升级与部署由服务端分支独立完成。
 
 ## 2. 现有客户端能力调研
 
@@ -375,17 +375,18 @@ WebRTC media thread
 
 - 将当前 UI 原型未提交改动保存为基线提交
 - 新建 `codex/feat/windows-production-client`
-- merge `origin/main`（`4a24f30`）
-- 保持 `client-win` 目录不被 main 的删除动作移除
+- 只读 fetch/检查 `origin/main@4a24f30`，记录为联调服务端版本
+- **不 merge、不 cherry-pick、不修改其他分支**
 - 构建 talk_core、talk-cli、talk-qt，跑 ctest
 - 冻结 qt-ui-prototype 作为视觉参考
 
 验收：
 
-- 新分支包含最新服务端修复
+- 生产分支从客户端分支建立
+- `client-win` 完整保留
 - C API 和 demo 构建通过
 - 现有测试通过
-
+- 联调服务端版本已记录
 ### P1：生产 UI 骨架（1 天）
 
 任务：
@@ -587,7 +588,7 @@ WebRTC media thread
 
 | 风险 | 处理 |
 |---|---|
-| main 删除 client-win | 新分支合并后显式保留 client-win，CI 校验关键文件存在 |
+| main 删除 client-win | `main` 只读；生产分支保留 client-win，CI 校验关键文件存在 |
 | `/MT` core 与 `/MD` UI CRT 冲突 | 只通过 C ABI 链接，不暴露 C++ 对象 |
 | 视频回调线程 | 只传 QImage，queued connection 回 UI 线程 |
 | 本地预览未实现 | 一期补 C API 本地帧回调 |
@@ -597,27 +598,28 @@ WebRTC media thread
 | PTT 操作复杂 | 用状态机模块和单元测试隔离 |
 | 多路视频缩放 | Surface 只保留最新帧，按 30fps 合并 |
 
-### 11.2 需要你确认的边界
+### 11.2 已确认的边界
 
-1. 是否接受首版使用“直接加入房间”的 1v1，不包含 call.invite 呼叫弹窗。
-2. 是否把本地预览回调与摄像头设备选择列为 P5 必做项。
-3. 是否把主持人策略面板作为一期必做项。
-4. 是否允许把 `talk-cli.exe` 放入安装包作为现场诊断工具。
+1. 首版 1v1 使用“直接加入房间”，不包含 call.invite 呼叫弹窗。
+2. 本地预览回调与摄像头设备选择列为 P5 必做项。
+3. 主持人策略面板作为一期必做项。
+4. `talk-cli.exe` 单独作为诊断包，不放入主安装目录。
 
 ## 12. Git 与交付方式
 
-确认后执行：
+执行规则：
 
 ```text
-1. 新建 codex/feat/windows-production-client
-2. 提交当前 UI 原型基线
-3. merge origin/main (4a24f30)
-4. 按 P0–P7 分批实现
-5. 每个阶段构建 + 测试 + 截图
-6. 每阶段暂停等待确认
+1. 生产开发只在 codex/feat/windows-production-client
+2. main 和其他分支只读
+3. 需要服务端能力时，记录 origin/main 提交号并请服务端分支独立发布
+4. 需要协议文档时，手工同步文档内容，不合并其他分支
+5. 按 P0–P7 分批实现
+6. 每个阶段构建 + 测试 + 截图
+7. 每阶段暂停等待确认
 ```
 
-不会在用户确认前创建生产分支，也不会重写或丢弃当前未提交 UI 改动。
+禁止修改、合并或消费其他分支作为可写来源；如发现其他分支逻辑问题，只在评审意见和本文档中记录。
 
 ## 13. 完成定义
 
@@ -633,3 +635,35 @@ WebRTC media thread
 - 安装包可在干净 Windows 环境运行
 - 单元、集成和 UI 回归通过
 - 文档和故障排查手册齐全
+
+### P0 执行结果（2026-10-26）
+
+- 生产分支：`codex/feat/windows-production-client`
+- 分支基线提交：`8b705e3`
+- 当前生产分支 HEAD：`8b705e3`
+- 服务端只读参考版本：`origin/main@4a24f30`
+- `main` 本地版本保持 `566cba9`，未修改
+- `feat/windows-client` 保持 `df22708`，未修改
+
+构建：
+
+- `cmake --build --preset windows-x64-release --parallel`：通过
+- `talk_core.dll`：通过
+- `talk-cli.exe`：通过
+- `talk-qt.exe`：通过
+- UI 原型 `rtc_talk_qt_ui.exe`：通过
+
+测试：
+
+- `api_test`：通过
+- `protocol_test`：通过
+- `signaling_test`：通过
+- `video_codec_test`：通过
+- `camera_probe`：通过
+- 合计 5/5 通过
+
+说明：
+
+- P0 不修改 `main` 或其他分支
+- P0 不合并服务端分支
+- 计划文档修改仅保存在当前生产分支工作区，尚未提交
