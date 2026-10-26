@@ -1,6 +1,6 @@
 # Windows 生产客户端集成开发计划
 
-> 状态：P0 已完成，等待确认进入 P1；其他分支只允许只读参考  
+> 状态：P1 已完成，等待确认进入 P2；其他分支只允许只读参考  
 > 计划日期：2026-10-26  
 > 目标：把 `client-win` 的真实媒体/信令能力与 `qt-ui-prototype` 的 UI 组合为面向生产的 Windows 桌面客户端  
 > 建议分支：`codex/feat/windows-production-client`
@@ -667,3 +667,45 @@ WebRTC media thread
 - P0 不修改 `main` 或其他分支
 - P0 不合并服务端分支
 - 计划文档修改仅保存在当前生产分支工作区，尚未提交
+
+### P1 执行结果（2026-10-26）
+
+已完成：
+
+- 新增生产目标 `talk-desktop`
+- 新增生产 UI 静态库 `talk_desktop_ui`
+- 新增 `ui/desktop` 分层目录
+- 迁移主题、无边框窗口、Pill、IconButton、ControlButton、SegmentedControl、WindowControls
+- 新增生产用 PrejoinPage 和 RoomPage 骨架
+- 新增领域状态类型 `app_types.h`
+- 新增 `TALK_BUILD_DESKTOP` 和 `TALK_BUILD_LEGACY_QT_DEMO` 构建开关
+- 新增 `talk-desktop` 版本资源和日志初始化
+- 新增 `--show-room-preview`、`--screenshot`、`--smoke-seconds`、`--size` 验证入口
+
+构建：
+
+- Release 构建：通过
+- `talk-desktop.exe`：生成成功
+
+运行验证：
+
+- 默认入房页启动：通过，退出码 0
+- 房间页骨架预览：通过，退出码 0
+- `--smoke-seconds 2`：通过，约 2.47 秒退出
+- 1100×720：通过
+- 核心回归测试：5/5 通过
+
+截图：
+
+```text
+client-win/build/windows-x64/desktop-shots/p1-prejoin.png
+client-win/build/windows-x64/desktop-shots/p1-room-preview.png
+client-win/build/windows-x64/desktop-shots/p1-minimum-1100.png
+```
+
+P1 不包含：
+
+- 真实 talk_core 连接
+- 真实成员或设备数据
+- 真实视频帧
+- 业务 mock 数据

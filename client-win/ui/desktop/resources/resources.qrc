@@ -1,0 +1,6 @@
+<RCC>
+    <qresource prefix="/desktop">
+        <file>theme.qss</file>
+        <file>icons/chevron-down.png</file>
+    </qresource>
+</RCC>

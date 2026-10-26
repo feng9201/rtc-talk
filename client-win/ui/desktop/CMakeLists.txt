@@ -1,0 +1,37 @@
+add_library(talk_desktop_ui STATIC
+  base/frameless_window.cpp
+  base/frameless_window.h
+  domain/app_types.h
+  main_window.cpp
+  main_window.h
+  pages/prejoin_page.cpp
+  pages/prejoin_page.h
+  pages/room_page.cpp
+  pages/room_page.h
+  theme/theme.cpp
+  theme/theme.h
+  widgets/control_button.cpp
+  widgets/control_button.h
+  widgets/icon_button.cpp
+  widgets/icon_button.h
+  widgets/pill.cpp
+  widgets/pill.h
+  widgets/segmented_control.cpp
+  widgets/segmented_control.h
+  widgets/window_controls.cpp
+  widgets/window_controls.h
+)
+
+target_include_directories(talk_desktop_ui PUBLIC
+  "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+target_link_libraries(talk_desktop_ui PUBLIC Qt5::Widgets)
+target_compile_options(talk_desktop_ui PRIVATE
+  $<$<CXX_COMPILER_ID:MSVC>:/utf-8 /EHsc /GR /W3>
+)
+set_target_properties(talk_desktop_ui PROPERTIES
+  CXX_STANDARD 17
+  CXX_STANDARD_REQUIRED ON
+  AUTOMOC ON
+  MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
+)
