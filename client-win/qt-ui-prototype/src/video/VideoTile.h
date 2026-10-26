@@ -19,6 +19,7 @@ public:
     QString memberId() const { return m_memberId; }
     bool isSelf() const { return m_self; }
     void setCompact(bool compact);
+    void setPresentation(bool presentation);
 
 signals:
     void selected(const QString &id);
@@ -43,6 +44,7 @@ private:
     bool m_activeShare = false;
     bool m_selected = false;
     bool m_compact = false;
+    bool m_presentation = false;
     bool m_hovered = false;
 
     MockVideoSurface *m_surface = nullptr;

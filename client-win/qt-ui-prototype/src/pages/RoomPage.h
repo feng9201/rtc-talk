@@ -7,6 +7,7 @@
 #include <QWidget>
 
 class ControlButton;
+class QCheckBox;
 class QComboBox;
 class Pill;
 class QDialog;
@@ -26,9 +27,11 @@ public:
     explicit RoomPage(QWidget *parent = nullptr);
 
     void setState(const UiState &state);
+    void setElapsed(int seconds);
     void setStatsJson(const QString &json);
     void setDiagnosticsOpen(bool open);
     void showLeaveConfirmation();
+    void showSettingsDialog();
 
 signals:
     void micToggleRequested();
@@ -80,6 +83,7 @@ private:
     void updateDiagnostics();
     void syncSettingsControls();
     void positionOverlays();
+    void centerDialog(QDialog *dialog);
 
     UiState m_state;
     QString m_statsJson;
@@ -118,6 +122,7 @@ private:
     QVBoxLayout *m_sideFootLayout = nullptr;
 
     QWidget *m_diagnosticsOverlay = nullptr;
+    QWidget *m_diagnosticsDrawer = nullptr;
     QTextEdit *m_diagnosticsLog = nullptr;
     QTextEdit *m_diagnosticsStats = nullptr;
 
@@ -128,6 +133,13 @@ private:
     QComboBox *m_settingsCamera = nullptr;
     QSlider *m_settingsVolume = nullptr;
     QLabel *m_settingsVolumeValue = nullptr;
+    QComboBox *m_panelMic = nullptr;
+    QComboBox *m_panelPlayout = nullptr;
+    QComboBox *m_panelCamera = nullptr;
+    QSlider *m_panelVolume = nullptr;
+    QLabel *m_panelVolumeValue = nullptr;
+    QCheckBox *m_panelPreview = nullptr;
+    QLabel *m_statusElapsed = nullptr;
 
     QDialog *m_leaveDialog = nullptr;
 };

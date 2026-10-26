@@ -410,14 +410,18 @@ QString UiController::statsJson() const
     self.insert(QStringLiteral("deafen"), m_state.deafen);
     root.insert(QStringLiteral("self"), self);
 
+    const MemberInfo *selected = selectedMember();
+    const bool selectedVideo = selected ? selected->camera : m_state.cameraOn;
     QJsonObject stats;
     stats.insert(QStringLiteral("transport"), m_state.mediaMode == QStringLiteral("p2p") ? QStringLiteral("p2p") : QStringLiteral("sfu"));
     stats.insert(QStringLiteral("rtt_ms"), m_state.mediaMode == QStringLiteral("p2p") ? 18 : 36);
     stats.insert(QStringLiteral("jitter_ms"), 2.4);
     stats.insert(QStringLiteral("packet_loss_pct"), 0.12);
     stats.insert(QStringLiteral("audio_bitrate_kbps"), 32);
-    stats.insert(QStringLiteral("video_width"), m_state.cameraOn ? 1280 : 0);
-    stats.insert(QStringLiteral("video_height"), m_state.cameraOn ? 720 : 0);
+    stats.insert(QStringLiteral("video_width"), selectedVideo ? 1280 : 0);
+    stats.insert(QStringLiteral("video_height"), selectedVideo ? 720 : 0);
+    stats.insert(QStringLiteral("video_fps"), selectedVideo ? 30 : 0);
+    stats.insert(QStringLiteral("video_bitrate_kbps"), selectedVideo ? 720 : 0);
     root.insert(QStringLiteral("selected_stream"), stats);
     return QString::fromUtf8(QJsonDocument(root).toJson(QJsonDocument::Indented));
 }

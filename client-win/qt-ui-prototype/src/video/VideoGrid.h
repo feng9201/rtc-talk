@@ -38,6 +38,7 @@ private:
 
     QVector<MemberInfo> m_members;
     QHash<QString, VideoTile *> m_tiles;
+    VideoTile *m_shareTile = nullptr;
     QString m_selfId;
     QString m_selectedId;
     StageLayout m_layout = StageLayout::Grid;

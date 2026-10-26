@@ -9,6 +9,7 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QResizeEvent>
+#include <QTimer>
 
 VideoTile::VideoTile(QWidget *parent)
     : QWidget(parent)
@@ -19,6 +20,7 @@ VideoTile::VideoTile(QWidget *parent)
     setMinimumSize(160, 110);
 
     m_surface = new MockVideoSurface(this);
+    m_surface->setAttribute(Qt::WA_TransparentForMouseEvents, true);
 
     const auto makeLabel = [this](const QString &name) {
         auto *label = new QLabel(this);
@@ -77,6 +79,7 @@ void VideoTile::setMember(const MemberInfo &member, bool self, bool sharing, boo
     m_crown->setVisible(member.role == QStringLiteral("host"));
     rebuildStatusIcons();
     positionOverlays();
+    QTimer::singleShot(0, this, &VideoTile::positionOverlays);
     if (identityChanged) update();
 }
 
@@ -90,18 +93,38 @@ void VideoTile::setSelected(bool selected)
 void VideoTile::setCompact(bool compact)
 {
     m_compact = compact;
+    setMinimumSize(compact ? QSize(96, 64) : QSize(160, 110));
     m_surface->setCompact(compact);
+    rebuildStatusIcons();
     positionOverlays();
+}
+
+void VideoTile::setPresentation(bool presentation)
+{
+    if (m_presentation == presentation) return;
+    m_presentation = presentation;
+    rebuildStatusIcons();
+    positionOverlays();
+    update();
 }
 
 void VideoTile::rebuildStatusIcons()
 {
+    if (m_presentation) {
+        m_mic->hide();
+        m_camera->hide();
+        m_crown->hide();
+        m_primaryBadge->hide();
+        m_secondaryBadge->hide();
+        return;
+    }
+
     const QColor muted(QStringLiteral("#ff7b7b"));
     const QColor normal(QStringLiteral("#d5e0e7"));
-    m_mic->setPixmap(Theme::pixmap(m_member.mic ? Theme::Icon::Mic : Theme::Icon::MicOff, m_compact ? 14 : 16,
-                                   m_member.mic ? normal : muted));
+    m_mic->setPixmap(Theme::pixmap(m_member.mic ? Theme::Icon::Mic : Theme::Icon::MicOff,
+                                   m_compact ? 14 : 16, m_member.mic ? normal : muted));
     m_camera->setPixmap(Theme::pixmap(m_member.camera ? Theme::Icon::Camera : Theme::Icon::CameraOff,
-                                     m_compact ? 14 : 16, m_member.camera ? normal : muted));
+                                      m_compact ? 14 : 16, m_member.camera ? normal : muted));
     m_mic->show();
     m_camera->show();
 
@@ -165,6 +188,7 @@ void VideoTile::paintEvent(QPaintEvent *event)
     painter.fillPath(path, QColor(QStringLiteral("#10171d")));
     QColor border(QStringLiteral("#22313e"));
     if (m_hovered) border = QColor(QStringLiteral("#355165"));
+    if (m_member.speaking) border = QColor(QStringLiteral("#55c2ff"));
     if (m_selected) border = QColor(QStringLiteral("#43d9a5"));
     painter.setPen(QPen(border, m_selected ? 2.0 : 1.0));
     painter.setBrush(Qt::NoBrush);
@@ -179,13 +203,13 @@ void VideoTile::resizeEvent(QResizeEvent *event)
 
 void VideoTile::mousePressEvent(QMouseEvent *event)
 {
-    if (event->button() == Qt::LeftButton) emit selected(m_memberId);
+    if (!m_presentation && event->button() == Qt::LeftButton) emit selected(m_memberId);
     QWidget::mousePressEvent(event);
 }
 
 void VideoTile::mouseDoubleClickEvent(QMouseEvent *event)
 {
-    if (event->button() == Qt::LeftButton) emit focusRequested(m_memberId);
+    if (!m_presentation && event->button() == Qt::LeftButton) emit focusRequested(m_memberId);
     QWidget::mouseDoubleClickEvent(event);
 }
 

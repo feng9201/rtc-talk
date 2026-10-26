@@ -18,6 +18,7 @@ FramelessWindow::FramelessWindow(QWidget *parent)
 {
     setWindowFlags(Qt::Window | Qt::FramelessWindowHint | Qt::WindowMinMaxButtonsHint);
     setAttribute(Qt::WA_NativeWindow);
+    setAttribute(Qt::WA_StyledBackground, true);
     setMouseTracking(true);
     setMinimumSize(1100, 720);
     resize(1440, 900);

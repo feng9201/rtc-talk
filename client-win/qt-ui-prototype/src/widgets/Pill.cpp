@@ -23,9 +23,10 @@ void Pill::setClickable(bool clickable)
 QSize Pill::sizeHint() const
 {
     const QFontMetrics metrics(font());
-    return QSize(metrics.horizontalAdvance(m_text) + (m_hasIcon ? 35 : 22), 28);
+    // Icon occupies 14 px plus a 5 px gap; keep extra room for glyph overhang
+    // and font fallback so values such as "6 人" and "3/9" are never clipped.
+    return QSize(metrics.horizontalAdvance(m_text) + (m_hasIcon ? 43 : 24), 28);
 }
-
 void Pill::paintEvent(QPaintEvent *event)
 {
     Q_UNUSED(event)
@@ -42,9 +43,17 @@ void Pill::paintEvent(QPaintEvent *event)
         background = QColor(255, 180, 84, 24); border = QColor(255, 180, 84, 88); text = QColor(QStringLiteral("#ffc477"));
     } else if (m_tone == QStringLiteral("danger")) {
         background = QColor(255, 107, 107, 24); border = QColor(255, 107, 107, 86); text = QColor(QStringLiteral("#ff9292"));
+    } else if (m_tone == QStringLiteral("step")) {
+        background = QColor(QStringLiteral("#0f151b")); border = QColor(QStringLiteral("#263442")); text = QColor(QStringLiteral("#8a9aa8"));
+    } else if (m_tone == QStringLiteral("stepActive")) {
+        background = QColor(85, 194, 255, 26); border = QColor(85, 194, 255, 100); text = QColor(QStringLiteral("#70d5ff"));
     } else if (m_tone == QStringLiteral("strong")) {
         text = QColor(QStringLiteral("#e8edf2"));
         background = QColor(QStringLiteral("#121920"));
+    }
+    if (m_clickable && m_hovered) {
+        background = background.lighter(118);
+        border = border.lighter(125);
     }
     painter.setPen(QPen(border, 1));
     painter.setBrush(background);
@@ -60,6 +69,19 @@ void Pill::paintEvent(QPaintEvent *event)
     painter.drawText(content, Qt::AlignVCenter | Qt::AlignLeft, m_text);
 }
 
+void Pill::enterEvent(QEvent *event)
+{
+    m_hovered = true;
+    update();
+    QWidget::enterEvent(event);
+}
+
+void Pill::leaveEvent(QEvent *event)
+{
+    m_hovered = false;
+    update();
+    QWidget::leaveEvent(event);
+}
 void Pill::mouseReleaseEvent(QMouseEvent *event)
 {
     if (m_clickable && event->button() == Qt::LeftButton && rect().contains(event->pos())) {

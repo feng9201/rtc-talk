@@ -1,8 +1,10 @@
 #include "video/VideoGrid.h"
 
+#include "base/Theme.h"
 #include "video/VideoTile.h"
 
 #include <QPainter>
+#include <QPainterPath>
 #include <QResizeEvent>
 
 #include <algorithm>
@@ -43,6 +45,7 @@ void VideoGrid::setFilter(StageFilter filter)
     if (m_filter == filter) return;
     m_filter = filter;
     recalculate();
+    update();
 }
 
 void VideoGrid::setSharing(bool sharing)
@@ -51,6 +54,7 @@ void VideoGrid::setSharing(bool sharing)
     m_sharing = sharing;
     syncTiles();
     recalculate();
+    update();
 }
 
 VideoTile *VideoGrid::tileFor(const QString &id) const
@@ -73,8 +77,7 @@ void VideoGrid::syncTiles()
             });
         }
         const bool self = member.id == m_selfId || member.isSelf;
-        tile->setMember(member, self, m_sharing, m_sharing && self);
-        tile->show();
+        tile->setMember(member, self, false, false);
         used.insert(member.id, true);
     }
 
@@ -86,6 +89,31 @@ void VideoGrid::syncTiles()
             ++it;
         }
     }
+
+    if (m_sharing) {
+        if (!m_shareTile) {
+            m_shareTile = new VideoTile(this);
+            m_shareTile->setCursor(Qt::ArrowCursor);
+            m_shareTile->setPresentation(true);
+        }
+        MemberInfo screen;
+        screen.id = QStringLiteral("__screen__");
+        screen.name = QStringLiteral("我的屏幕共享");
+        screen.camera = true;
+        screen.source = QStringLiteral("screen");
+        for (const MemberInfo &member : m_members) {
+            if (member.id == m_selfId || member.isSelf) {
+                screen.source = member.source;
+                break;
+            }
+        }
+        m_shareTile->setMember(screen, false, true, true);
+        m_shareTile->show();
+    } else if (m_shareTile) {
+        m_shareTile->hide();
+        m_shareTile->deleteLater();
+        m_shareTile = nullptr;
+    }
 }
 
 QVector<MemberInfo> VideoGrid::visibleMembers() const
@@ -95,74 +123,70 @@ QVector<MemberInfo> VideoGrid::visibleMembers() const
         if (m_filter == StageFilter::VideoOnly && !member.camera) continue;
         result.append(member);
     }
-    if (result.isEmpty() && !m_members.isEmpty()) result.append(m_members.first());
     return result;
 }
 
 void VideoGrid::recalculate()
 {
     if (width() <= 0 || height() <= 0) return;
+
     for (VideoTile *tile : m_tiles) tile->hide();
+    if (m_shareTile) m_shareTile->hide();
 
     const QVector<MemberInfo> members = visibleMembers();
-    if (members.isEmpty()) return;
+    const QRect content = rect().adjusted(1, 1, -1, -1);
+    const int gap = 10;
 
-    for (const MemberInfo &member : members) {
-        VideoTile *tile = tileFor(member.id);
-        if (!tile) continue;
-        tile->show();
-        tile->setSelected(member.id == m_selectedId);
-    }
-
-    const int gap = 12;
-    const QRect content = rect().adjusted(0, 0, -1, -1);
-
-    const auto place = [gap](VideoTile *tile, const QRect &r, bool compact) {
+    const auto place = [](VideoTile *tile, const QRect &rect, bool compact) {
         tile->setCompact(compact);
-        tile->setGeometry(r);
+        tile->setGeometry(rect);
+        tile->show();
+    };
+
+    const auto layoutFilmstrip = [&](const QVector<MemberInfo> &people, const QRect &strip) {
+        if (people.isEmpty()) return;
+        const int count = people.size();
+        const int itemGap = 8;
+        const int available = strip.width() - itemGap * (count - 1);
+        const int itemWidth = std::clamp(available / qMax(1, count), 96, 172);
+        for (int i = 0; i < count; ++i) {
+            VideoTile *tile = tileFor(people.at(i).id);
+            if (!tile) continue;
+            tile->setSelected(people.at(i).id == m_selectedId);
+            place(tile, QRect(strip.left() + i * (itemWidth + itemGap), strip.top(),
+                              itemWidth, strip.height()), true);
+        }
     };
 
     if (m_sharing) {
-        const int sideWidth = std::clamp(qRound(content.width() * 0.255), 220, 350);
-        QRect big(content.left(), content.top(), content.width() - sideWidth - gap, content.height());
-        VideoTile *share = tileFor(m_selfId);
-        if (!share) share = tileFor(members.first().id);
-        if (share) {
-            share->setCompact(false);
-            share->setGeometry(big);
-            share->show();
-            share->raise();
-        }
-
-        QVector<VideoTile *> thumbs;
-        for (const MemberInfo &member : members) {
-            if (share && member.id == share->memberId()) continue;
-            if (VideoTile *tile = tileFor(member.id)) thumbs.append(tile);
-        }
-        const int sideX = big.right() + gap + 1;
-        const int cols = sideWidth >= 220 ? 2 : 1;
-        const int rows = qMax(1, static_cast<int>(std::ceil(thumbs.size() / static_cast<qreal>(cols))));
-        const int thumbGap = 8;
-        const int tw = (sideWidth - thumbGap * (cols - 1)) / cols;
-        const int th = (content.height() - thumbGap * (rows - 1)) / qMax(1, rows);
-        for (int i = 0; i < thumbs.size(); ++i) {
-            const int col = i % cols;
-            const int row = i / cols;
-            place(thumbs[i], QRect(sideX + col * (tw + thumbGap), content.top() + row * (th + thumbGap), tw, th), true);
-        }
+        if (!m_shareTile) return;
+        const int stripHeight = std::clamp(qRound(content.height() * 0.15), 82, 104);
+        const QRect mainRect(content.left(), content.top(), content.width(),
+                             content.height() - stripHeight - gap);
+        const QRect stripRect(content.left(), mainRect.bottom() + gap + 1,
+                              content.width(), stripHeight);
+        place(m_shareTile, mainRect, false);
+        m_shareTile->raise();
+        layoutFilmstrip(m_members, stripRect);
+        update();
         return;
     }
 
-    if (members.size() == 2 && m_layout == StageLayout::Grid) {
-        const MemberInfo *remote = nullptr;
+    if (members.isEmpty()) {
+        update();
+        return;
+    }
+
+    for (const MemberInfo &member : members) {
+        if (VideoTile *tile = tileFor(member.id)) tile->setSelected(member.id == m_selectedId);
+    }
+
+    if (m_members.size() == 2 && members.size() == 2 && m_layout == StageLayout::Grid) {
         VideoTile *remoteTile = nullptr;
         VideoTile *selfTile = nullptr;
         for (const MemberInfo &member : members) {
             if (member.id == m_selfId || member.isSelf) selfTile = tileFor(member.id);
-            else {
-                remote = &member;
-                remoteTile = tileFor(member.id);
-            }
+            else remoteTile = tileFor(member.id);
         }
         if (remoteTile) {
             remoteTile->setCompact(false);
@@ -171,16 +195,17 @@ void VideoGrid::recalculate()
             remoteTile->raise();
         }
         if (selfTile) {
-            const int pipW = std::clamp(qRound(content.width() * 0.27), 250, 390);
-            const int pipH = std::clamp(qRound(content.height() * 0.38), 170, 310);
-            const int margin = 20;
+            const int pipWidth = std::clamp(qRound(content.width() * 0.24), 180, 270);
+            const int pipHeight = qRound(pipWidth * 9.0 / 16.0);
+            const int margin = 14;
             selfTile->setCompact(true);
-            selfTile->setGeometry(QRect(content.right() - pipW - margin,
-                                       content.bottom() - pipH - margin, pipW, pipH));
+            selfTile->setGeometry(QRect(content.right() - pipWidth - margin,
+                                        content.bottom() - pipHeight - margin,
+                                        pipWidth, pipHeight));
             selfTile->show();
             selfTile->raise();
         }
-        Q_UNUSED(remote)
+        update();
         return;
     }
 
@@ -193,48 +218,44 @@ void VideoGrid::recalculate()
             }
         }
         if (!focusMember) focusMember = &members.first();
+
         VideoTile *focusTile = tileFor(focusMember->id);
-        const int sideWidth = std::clamp(qRound(content.width() * 0.27), 240, 370);
-        const QRect big(content.left(), content.top(), content.width() - sideWidth - gap, content.height());
+        const int stripHeight = std::clamp(qRound(content.height() * 0.15), 82, 104);
+        const QRect mainRect(content.left(), content.top(), content.width(),
+                             content.height() - stripHeight - gap);
+        const QRect stripRect(content.left(), mainRect.bottom() + gap + 1,
+                              content.width(), stripHeight);
         if (focusTile) {
-            focusTile->setCompact(false);
-            focusTile->setGeometry(big);
+            place(focusTile, mainRect, false);
             focusTile->raise();
         }
 
-        QVector<VideoTile *> thumbs;
+        QVector<MemberInfo> thumbs;
         for (const MemberInfo &member : members) {
-            if (member.id == focusMember->id) continue;
-            if (VideoTile *tile = tileFor(member.id)) thumbs.append(tile);
+            if (member.id != focusMember->id) thumbs.append(member);
         }
-        const int sideX = big.right() + gap + 1;
-        const int cols = sideWidth >= 260 ? 2 : 1;
-        const int rows = qMax(1, static_cast<int>(std::ceil(thumbs.size() / static_cast<qreal>(cols))));
-        const int thumbGap = 8;
-        const int tw = (sideWidth - thumbGap * (cols - 1)) / cols;
-        const int th = (content.height() - thumbGap * (rows - 1)) / qMax(1, rows);
-        for (int i = 0; i < thumbs.size(); ++i) {
-            const int col = i % cols;
-            const int row = i / cols;
-            place(thumbs[i], QRect(sideX + col * (tw + thumbGap), content.top() + row * (th + thumbGap), tw, th), true);
-        }
+        layoutFilmstrip(thumbs, stripRect);
+        update();
         return;
     }
 
-    int cols = 1;
-    if (members.size() >= 7) cols = 3;
-    else if (members.size() >= 3) cols = members.size() == 4 ? 2 : 3;
-    else if (members.size() == 2) cols = 2;
-    const int rows = static_cast<int>(std::ceil(members.size() / static_cast<qreal>(cols)));
-    const int tw = (content.width() - gap * (cols - 1)) / cols;
-    const int th = (content.height() - gap * (rows - 1)) / rows;
+    int columns = 1;
+    if (members.size() > 1 && members.size() <= 4) columns = 2;
+    else if (members.size() > 4) columns = 3;
+    const int rows = static_cast<int>(std::ceil(members.size() / static_cast<qreal>(columns)));
+    const int tileWidth = (content.width() - gap * (columns - 1)) / columns;
+    const int tileHeight = (content.height() - gap * (rows - 1)) / rows;
+    const bool compact = members.size() > 4;
     for (int i = 0; i < members.size(); ++i) {
-        VideoTile *tile = tileFor(members[i].id);
+        VideoTile *tile = tileFor(members.at(i).id);
         if (!tile) continue;
-        const int col = i % cols;
-        const int row = i / cols;
-        place(tile, QRect(content.left() + col * (tw + gap), content.top() + row * (th + gap), tw, th), members.size() > 4);
+        const int column = i % columns;
+        const int row = i / columns;
+        place(tile, QRect(content.left() + column * (tileWidth + gap),
+                          content.top() + row * (tileHeight + gap),
+                          tileWidth, tileHeight), compact);
     }
+    update();
 }
 
 void VideoGrid::resizeEvent(QResizeEvent *event)
@@ -246,8 +267,34 @@ void VideoGrid::resizeEvent(QResizeEvent *event)
 void VideoGrid::paintEvent(QPaintEvent *event)
 {
     Q_UNUSED(event)
-    if (!m_tiles.isEmpty()) return;
+    if (m_sharing || !visibleMembers().isEmpty()) return;
+
     QPainter painter(this);
-    painter.setPen(QColor(QStringLiteral("#5c6b79")));
-    painter.drawText(rect(), Qt::AlignCenter, QStringLiteral("暂无成员画面"));
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    const QRectF box = QRectF(rect()).adjusted(12, 12, -12, -12);
+    QPainterPath path;
+    path.addRoundedRect(box, 14, 14);
+    painter.setPen(QPen(QColor(QStringLiteral("#2d3d4d")), 1, Qt::DashLine));
+    painter.setBrush(QColor(15, 20, 26, 115));
+    painter.drawPath(path);
+
+    Theme::drawIcon(painter, Theme::Icon::CameraOff,
+                    QRectF(width() / 2.0 - 20, height() / 2.0 - 70, 40, 40),
+                    QColor(QStringLiteral("#5c6b79")), 1.6);
+    QFont titleFont = painter.font();
+    titleFont.setPixelSize(15);
+    titleFont.setWeight(QFont::DemiBold);
+    painter.setFont(titleFont);
+    painter.setPen(QColor(QStringLiteral("#e8edf2")));
+    painter.drawText(QRect(0, height() / 2 - 20, width(), 28), Qt::AlignCenter,
+                     m_members.isEmpty() ? QStringLiteral("等待成员加入")
+                                         : QStringLiteral("暂无视频成员"));
+    QFont hintFont = painter.font();
+    hintFont.setPixelSize(12);
+    hintFont.setWeight(QFont::Normal);
+    painter.setFont(hintFont);
+    painter.setPen(QColor(QStringLiteral("#8a9aa8")));
+    painter.drawText(QRect(0, height() / 2 + 10, width(), 48), Qt::AlignHCenter | Qt::TextWordWrap,
+                     m_members.isEmpty() ? QStringLiteral("有成员加入后将在这里显示画面")
+                                         : QStringLiteral("当前为音频模式，可切回“全部成员”查看头像"));
 }
