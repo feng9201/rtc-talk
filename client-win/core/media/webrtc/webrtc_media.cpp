@@ -23,10 +23,12 @@ constexpr int kVideoFps = 15;
 }  // namespace
 
 WebRtcMedia::WebRtcMedia(const Json& config, const Json& ice_servers,
-                         MuteGate gate, Event event, VideoFrameSink video_sink)
+                         MuteGate gate, Event event, VideoFrameSink video_sink,
+                         VideoFrameSink local_video_sink)
     : config_(config),
       event_(std::move(event)),
-      video_sink_(std::move(video_sink)) {
+      video_sink_(std::move(video_sink)),
+      local_video_sink_(std::move(local_video_sink)) {
   if (config_.contains("camera_index") && config_["camera_index"].is_number()) {
     camera_index_ = config_["camera_index"].get<int>();
   }
@@ -177,6 +179,8 @@ Json WebRtcMedia::StartP2p(bool offerer) {
   }
   // 新的分配可能晚于旧会话的 p2p.close，先清掉残留 PC。
   p2p_->Close();
+  // OnTrack 在远端 SDP 落地时同步触发，sink 必须在建连前挂好。
+  p2p_->SetVideoSink(video_sink_);
   if (!p2p_->Create(environment_->factory(), environment_->rtc_config())) {
     Fail("创建 PeerConnection 失败");
     return Failed();
@@ -211,6 +215,7 @@ Json WebRtcMedia::AnswerP2p(const std::string& sdp) {
       !EnsureVideoTracks()) {
     return Failed();
   }
+  p2p_->SetVideoSink(video_sink_);
   if (!p2p_->Create(environment_->factory(), environment_->rtc_config())) {
     Fail("创建 PeerConnection 失败");
     return Failed();
@@ -384,6 +389,9 @@ Json WebRtcMedia::StartVideo(const std::string& source) {
   if (!EnsureVideoTracks()) {
     return Failed();
   }
+  if (is_camera) {
+    camera_source_->SetLocalFrameSink(local_video_sink_);
+  }
   std::string error;
   const bool started = is_camera ? camera_source_->Start(&error)
                                  : video_source_->Start(&error);
@@ -411,6 +419,9 @@ Json WebRtcMedia::StartVideo(const std::string& source) {
     return Failed();
   }
   sharing = true;
+  if (is_camera) {
+    preview_running_ = true;
+  }
   Json out = {{"sharing", true},
               {"source", source},
               {"send_state",
@@ -433,6 +444,7 @@ Json WebRtcMedia::StopVideo(const std::string& source) {
       camera_source_->Stop();
     }
     camera_sharing_ = false;
+    preview_running_ = false;
   } else {
     if (video_source_) {
       video_source_->Stop();
@@ -446,6 +458,73 @@ Json WebRtcMedia::StopVideo(const std::string& source) {
     p2p_->SetSenderActive(TrackKind::kVideo, is_camera ? 0 : 1, false);
   }
   return {{"sharing", false}, {"source", source}};
+}
+
+Json WebRtcMedia::StartCameraPreview(int device_index) {
+  if (!environment_) {
+    return Failed();
+  }
+  if (camera_sharing_) {
+    return {{"preview", true},
+            {"device", camera_source_ ? camera_source_->device_name()
+                                      : std::string()},
+            {"camera_index", camera_index_}};
+  }
+  if (preview_running_ && camera_index_ == device_index) {
+    return {{"preview", true},
+            {"device", camera_source_ ? camera_source_->device_name()
+                                      : std::string()},
+            {"camera_index", camera_index_}};
+  }
+  if (preview_running_) {
+    preview_running_ = false;
+    camera_source_->Stop();
+  }
+  if (camera_source_ && camera_index_ != device_index) {
+    TALK_LOG_INFO("media", "切换摄像头预览设备 old={} new={}", camera_index_,
+                  device_index);
+    camera_source_->Stop();
+    camera_source_->SetLocalFrameSink({});
+    camera_source_ = nullptr;
+    camera_track_ = nullptr;
+  }
+  camera_index_ = device_index;
+  if (!EnsureVideoTracks()) {
+    return Failed();
+  }
+  camera_source_->SetLocalFrameSink(local_video_sink_);
+  std::string error;
+  if (!camera_source_->Start(&error)) {
+    Fail(error.empty() ? "启动摄像头预览失败" : error);
+    return Failed();
+  }
+  preview_running_ = true;
+  return {{"preview", true},
+          {"device", camera_source_->device_name()},
+          {"camera_index", camera_index_},
+          {"width", camera_source_->video_width()},
+          {"height", camera_source_->video_height()},
+          {"fps", camera_source_->video_fps()}};
+}
+
+Json WebRtcMedia::StopCameraPreview() {
+  if (!preview_running_) {
+    return {{"preview", false}};
+  }
+  preview_running_ = false;
+  // 摄像头已经作为房间视频在发送时，预览开关不能中断正式上行。
+  if (!camera_sharing_ && camera_source_) {
+    camera_source_->Stop();
+  }
+  return {{"preview", false}};
+}
+
+Json WebRtcMedia::GetCameras() {
+  Json cameras = Json::array();
+  for (const auto& camera : camera::MFAPICapture::EnumerateDevices()) {
+    cameras.push_back({{"index", camera.index}, {"name", camera.name}});
+  }
+  return {{"cameras", std::move(cameras)}};
 }
 
 void WebRtcMedia::SetVideoSink(VideoFrameSink sink) {
@@ -607,11 +686,13 @@ std::unique_ptr<talk::Media> talk::MakeMedia(const Json& config,
                                              const Json& ice_servers,
                                              MuteGate gate,
                                              Media::Event event,
-                                             VideoFrameSink video_sink) {
+                                             VideoFrameSink video_sink,
+                                             VideoFrameSink local_video_sink) {
   auto media = std::make_unique<WebRtcMedia>(config, ice_servers,
                                              std::move(gate),
                                              std::move(event),
-                                             std::move(video_sink));
+                                             std::move(video_sink),
+                                             std::move(local_video_sink));
   if (!media->ok()) {
     return nullptr;
   }

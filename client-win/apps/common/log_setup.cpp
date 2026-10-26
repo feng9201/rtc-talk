@@ -142,7 +142,14 @@ LoggingGuard::LoggingGuard(const LogOptions& options) {
   config.file_level = ParseLevel(level, w_log_cpp::Level::Debug);
   // 文件日志不能反压业务线程；突发日志宁可丢弃最旧记录。
   config.overflow = w_log_cpp::Overflow::OverrunOldest;
-  if (!w_log_cpp::init(config)) {
+  bool initialized = false;
+  try {
+    initialized = w_log_cpp::init(config);
+  } catch (...) {
+    // 日志是诊断能力，不能在启动阶段因目录权限或磁盘异常终止客户端。
+    initialized = false;
+  }
+  if (!initialized) {
     return;
   }
   w_log_cpp::setFlushOn(w_log_cpp::Level::Warn);

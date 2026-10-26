@@ -111,6 +111,8 @@ PrejoinOptions AppSettingsService::Load() const {
       storage->value(QStringLiteral("audio/playout_device")).toString();
   options.cameraDevice =
       storage->value(QStringLiteral("video/camera_device")).toString();
+  options.cameraIndex =
+      storage->value(QStringLiteral("video/camera_index"), -1).toInt();
   options.token.clear();
   return options;
 }
@@ -139,6 +141,8 @@ void AppSettingsService::Save(const PrejoinOptions& options) const {
                     options.playoutDevice);
   storage->setValue(QStringLiteral("video/camera_device"),
                     options.cameraDevice);
+  storage->setValue(QStringLiteral("video/camera_index"),
+                    options.cameraIndex);
   storage->remove(QStringLiteral("connection/token"));
   storage->sync();
 }

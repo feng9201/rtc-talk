@@ -1,6 +1,7 @@
 #pragma once
 
 #include "domain/app_types.h"
+#include "state/video_stream_registry.h"
 
 #include <QHash>
 #include <QWidget>
@@ -19,6 +20,7 @@ class MemberRow;
 class Pill;
 class RoomPolicyDialog;
 class SegmentedControl;
+class VideoGrid;
 
 class RoomPage final : public QWidget {
   Q_OBJECT
@@ -27,6 +29,10 @@ class RoomPage final : public QWidget {
   explicit RoomPage(QWidget* parent = nullptr);
 
   void SetSessionState(const SessionSnapshot& state);
+  void SetVideoStreams(const QVector<VideoStreamView>& streams);
+  void SetVideoFrame(const QString& mid, const QImage& frame);
+  void ClearVideoFrame(const QString& mid);
+  void SetLocalFrame(const QImage& frame);
   void SetPreviewMode(bool preview);
   void SetBusy(bool busy);
   void OpenPolicyDialog();
@@ -78,7 +84,7 @@ class RoomPage final : public QWidget {
   SegmentedControl* filter_ = nullptr;
   SegmentedControl* layout_ = nullptr;
   SegmentedControl* tabs_ = nullptr;
-  QLabel* stage_empty_ = nullptr;
+  VideoGrid* video_grid_ = nullptr;
   ControlButton* mic_ = nullptr;
   ControlButton* camera_ = nullptr;
   ControlButton* share_ = nullptr;
@@ -98,6 +104,8 @@ class RoomPage final : public QWidget {
   QStringList member_order_;
   QTimer* floor_timer_ = nullptr;
   RoomPolicyDialog* policy_dialog_ = nullptr;
+  QVector<VideoStreamView> streams_;
+  qint64 joined_at_ms_ = 0;
 };
 
 }  // namespace talk::desktop

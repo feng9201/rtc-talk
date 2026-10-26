@@ -100,6 +100,15 @@ void talk_set_video_frame_callback(talk_handle* handle,
   handle->client->SetVideoFrameCallback(callback, userdata);
 }
 
+void talk_set_local_video_frame_callback(
+    talk_handle* handle, talk_local_video_frame_fn callback, void* userdata) {
+  if (handle == nullptr || handle->client == nullptr) {
+    TALK_LOG_WARN("capi", "注册本地视频帧回调被拒绝：句柄为空");
+    return;
+  }
+  handle->client->SetLocalVideoFrameCallback(callback, userdata);
+}
+
 void talk_destroy(talk_handle* handle) {
   TALK_LOG_DEBUG("capi", "销毁客户端");
   delete handle;

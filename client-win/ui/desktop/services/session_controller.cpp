@@ -1,5 +1,6 @@
 #include "services/session_controller.h"
 
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QNetworkAccessManager>
@@ -94,10 +95,67 @@ SessionController::SessionController(QObject* parent)
           &SessionController::HandleKicked);
   connect(&store_, &SessionStore::ErrorOccurred, this,
           &SessionController::HandleStoreError);
+  connect(&core_, &TalkCoreClient::VideoFrameReceived, &video_streams_,
+          &VideoStreamRegistry::FrameReceived);
+  connect(&core_, &TalkCoreClient::LocalVideoFrameReceived, this,
+          [this](const QImage& frame, const QString&) {
+            local_frame_ = frame;
+            emit LocalVideoFrameReceived(frame);
+          });
+  connect(&video_streams_, &VideoStreamRegistry::StreamsChanged, this,
+          &SessionController::VideoStreamsChanged);
+  connect(&video_streams_, &VideoStreamRegistry::FrameReady, this,
+          &SessionController::VideoFrameReady);
+  connect(&video_streams_, &VideoStreamRegistry::FrameCleared, this,
+          &SessionController::VideoFrameCleared);
+}
+
+void SessionController::PrepareLocalMedia(const PrejoinOptions& options) {
+  if (store_.snapshot().joined || busy_) return;
+  options_ = options;
+  if (!core_.IsRunning()) {
+    StartCore(options_);
+  }
+}
+
+void SessionController::EnumerateCameras() {
+  if (!core_.IsRunning() && !StartCore(options_)) {
+    emit ErrorOccurred(QStringLiteral("无法枚举摄像头"),
+                       QStringLiteral("本地媒体核心启动失败"));
+    return;
+  }
+  if (core_.Submit(QStringLiteral("camera.devices")) == 0) {
+    emit ErrorOccurred(QStringLiteral("无法枚举摄像头"),
+                       QStringLiteral("命令提交失败"));
+  }
+}
+
+void SessionController::StartCameraPreview(int camera_index) {
+  if (store_.snapshot().joined) return;
+  if (!core_.IsRunning() && !StartCore(options_)) {
+    emit ErrorOccurred(QStringLiteral("无法启动本地预览"),
+                       QStringLiteral("本地媒体核心启动失败"));
+    return;
+  }
+  const quint64 id = core_.Submit(
+      QStringLiteral("video.previewStart"),
+      QJsonObject{{QStringLiteral("camera_index"), camera_index}});
+  if (id == 0) {
+    emit ErrorOccurred(QStringLiteral("无法启动本地预览"),
+                       QStringLiteral("命令提交失败"));
+  }
+}
+
+void SessionController::StopCameraPreview() {
+  if (!core_.IsRunning()) return;
+  core_.Submit(QStringLiteral("video.previewStop"), QJsonObject(), 5000);
 }
 
 void SessionController::ConnectAndJoin(const PrejoinOptions& options) {
   if (busy_) return;
+  if (camera_preview_active_) {
+    core_.Submit(QStringLiteral("video.previewStop"), QJsonObject(), 5000);
+  }
   options_ = options;
   options_.token = options.token.trimmed();
   ResetSession();
@@ -282,6 +340,7 @@ void SessionController::UpdatePolicy(const RoomPolicy& policy) {
 }
 
 void SessionController::HandleCoreEvent(const CoreEvent& event) {
+  video_streams_.ApplyEvent(event);
   store_.ApplyEvent(event);
 
   if (const auto* ready = std::get_if<ReadyEvent>(&event.payload)) {
@@ -302,7 +361,34 @@ void SessionController::HandleCoreEvent(const CoreEvent& event) {
 
 void SessionController::HandleCommandCompleted(const CommandResult& result) {
   if (result.ok) {
-    if (result.method == QStringLiteral("floor.request")) {
+    if (result.method == QStringLiteral("camera.devices")) {
+      QVector<CameraDevice> devices;
+      for (const QJsonValue& value :
+           result.data.value(QStringLiteral("cameras")).toArray()) {
+        const QJsonObject camera = value.toObject();
+        CameraDevice device;
+        device.index = camera.value(QStringLiteral("index")).toInt(-1);
+        device.name = camera.value(QStringLiteral("name")).toString();
+        if (device.index >= 0 && !device.name.isEmpty()) {
+          devices.append(device);
+        }
+      }
+      emit CameraDevicesChanged(devices);
+    } else if (result.method == QStringLiteral("video.previewStart")) {
+      camera_preview_active_ = true;
+      const QString device =
+          result.data.value(QStringLiteral("device")).toString();
+      emit CameraPreviewChanged(true, device);
+      emit Notice(device.isEmpty()
+                      ? QStringLiteral("本地预览已启动")
+                      : QStringLiteral("本地预览：%1").arg(device),
+                  QStringLiteral("ok"));
+    } else if (result.method == QStringLiteral("video.previewStop")) {
+      camera_preview_active_ = false;
+      local_frame_ = QImage();
+      emit CameraPreviewChanged(false, QString());
+      emit Notice(QStringLiteral("本地预览已关闭"), QStringLiteral("info"));
+    } else if (result.method == QStringLiteral("floor.request")) {
       const bool granted =
           result.data.value(QStringLiteral("granted")).toBool(false);
       const int queue_pos =
@@ -326,6 +412,10 @@ void SessionController::HandleCommandCompleted(const CommandResult& result) {
       emit Notice(QStringLiteral("房间策略已更新"), QStringLiteral("ok"));
     }
     return;
+  }
+  if (result.method == QStringLiteral("video.previewStart")) {
+    camera_preview_active_ = false;
+    emit CameraPreviewChanged(false, QString());
   }
   if (result.method == QStringLiteral("connect") ||
       result.method == QStringLiteral("room.join") ||
@@ -395,8 +485,12 @@ bool SessionController::StartCore(const PrejoinOptions& options) {
       {QStringLiteral("talk_mode"), TalkModeValue(options.talkMode)},
       {QStringLiteral("recording_device"), options.recordingDevice},
       {QStringLiteral("playout_device"), options.playoutDevice},
-      {QStringLiteral("camera_device"), options.cameraDevice}};
-  return core_.Start(config);
+      {QStringLiteral("camera_device"), options.cameraDevice},
+      {QStringLiteral("camera_index"), options.cameraIndex}};
+  if (!core_.Start(config)) return false;
+  core_.SetVideoCallback(true);
+  core_.SetLocalVideoCallback(true);
+  return true;
 }
 
 void SessionController::SetBusy(bool busy, const QString& message) {
@@ -416,6 +510,9 @@ void SessionController::Fail(const QString& message, const QString& detail) {
 void SessionController::ResetSession() {
   core_.Stop();
   store_.Reset();
+  video_streams_.Clear();
+  local_frame_ = QImage();
+  camera_preview_active_ = false;
 }
 
 }  // namespace talk::desktop

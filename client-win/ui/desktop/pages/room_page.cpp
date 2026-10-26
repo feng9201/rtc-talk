@@ -2,6 +2,7 @@
 
 #include "dialogs/room_policy_dialog.h"
 #include "theme/theme.h"
+#include "video/video_grid.h"
 #include "widgets/control_button.h"
 #include "widgets/member_row.h"
 #include "widgets/pill.h"
@@ -143,7 +144,6 @@ QWidget* RoomPage::BuildStage() {
   filter_ = new SegmentedControl(true, bar);
   filter_->addItem(QStringLiteral("all"), QStringLiteral("全部成员"));
   filter_->addItem(QStringLiteral("video"), QStringLiteral("仅视频成员"));
-  filter_->setEnabled(false);
   bar_layout->addWidget(filter_);
   bar_layout->addStretch(1);
   floor_ = new Pill(QStringLiteral("等待入房"), QStringLiteral("default"), bar);
@@ -151,29 +151,38 @@ QWidget* RoomPage::BuildStage() {
   layout_ = new SegmentedControl(true, bar);
   layout_->addItem(QStringLiteral("grid"), QStringLiteral("宫格"));
   layout_->addItem(QStringLiteral("focus"), QStringLiteral("聚焦"));
-  layout_->setEnabled(false);
   bar_layout->addWidget(layout_);
   layout->addWidget(bar);
 
-  auto* empty = new QFrame(stage);
-  empty->setObjectName(QStringLiteral("StageEmpty"));
-  auto* empty_layout = new QVBoxLayout(empty);
-  empty_layout->setAlignment(Qt::AlignCenter);
-  empty_layout->setSpacing(10);
-  auto* icon = new QLabel(empty);
-  icon->setPixmap(Theme::pixmap(Theme::Icon::CameraOff, 46,
-                                QColor(QStringLiteral("#5c6b79"))));
-  icon->setAlignment(Qt::AlignCenter);
-  empty_layout->addWidget(icon);
-  stage_empty_ = Label(QStringLiteral("核心接入后显示真实远端视频"),
-                       QStringLiteral("Muted"), empty);
-  stage_empty_->setAlignment(Qt::AlignCenter);
-  empty_layout->addWidget(stage_empty_);
-  empty_layout->addWidget(
-      Label(QStringLiteral("P5 将接入 mid 级视频流注册表和渲染 Surface"),
-            QStringLiteral("Hint"), empty),
-      0, Qt::AlignHCenter);
-  layout->addWidget(empty, 1);
+  video_grid_ = new VideoGrid(&CreateImageVideoSurface, this);
+  layout->addWidget(video_grid_, 1);
+
+  connect(filter_, &SegmentedControl::currentIdChanged, this,
+          [this](const QString& id) {
+            if (video_grid_ == nullptr) return;
+            video_grid_->SetFilterMode(
+                id == QStringLiteral("video") ? VideoFilterMode::VideoOnly
+                                               : VideoFilterMode::All);
+          });
+  connect(layout_, &SegmentedControl::currentIdChanged, this,
+          [this](const QString& id) {
+            if (video_grid_ == nullptr) return;
+            video_grid_->SetLayoutMode(
+                id == QStringLiteral("focus") ? VideoLayoutMode::Focus
+                                               : VideoLayoutMode::Grid);
+          });
+  connect(video_grid_, &VideoGrid::memberSelected, this,
+          &RoomPage::memberSelected);
+  connect(video_grid_, &VideoGrid::memberFocusRequested, this,
+          [this](const QString& uid) {
+            if (layout_ != nullptr) {
+              layout_->setCurrentId(QStringLiteral("focus"));
+            }
+            if (video_grid_ != nullptr) {
+              video_grid_->SetLayoutMode(VideoLayoutMode::Focus);
+            }
+            emit memberSelected(uid);
+          });
   return stage;
 }
 
@@ -277,10 +286,36 @@ QWidget* RoomPage::BuildSidebar() {
 }
 
 void RoomPage::SetSessionState(const SessionSnapshot& state) {
+  const bool was_joined = state_.joined;
   state_ = state;
+  if (state_.joined && !was_joined) {
+    joined_at_ms_ = QDateTime::currentMSecsSinceEpoch();
+  } else if (!state_.joined) {
+    joined_at_ms_ = 0;
+  }
+  if (video_grid_ != nullptr) {
+    video_grid_->SetState(state_, streams_);
+  }
   UpdateHeader();
   UpdateControls();
   RefreshSidePanel();
+}
+
+void RoomPage::SetVideoStreams(const QVector<VideoStreamView>& streams) {
+  streams_ = streams;
+  if (video_grid_ != nullptr) video_grid_->SetStreams(streams_);
+}
+
+void RoomPage::SetVideoFrame(const QString& mid, const QImage& frame) {
+  if (video_grid_ != nullptr) video_grid_->FrameReady(mid, frame);
+}
+
+void RoomPage::ClearVideoFrame(const QString& mid) {
+  if (video_grid_ != nullptr) video_grid_->FrameCleared(mid);
+}
+
+void RoomPage::SetLocalFrame(const QImage& frame) {
+  if (video_grid_ != nullptr) video_grid_->SetLocalFrame(frame);
 }
 
 void RoomPage::SetPreviewMode(bool preview) {
@@ -315,7 +350,13 @@ void RoomPage::UpdateHeader() {
                            ? QStringLiteral("模式 —")
                            : state_.mediaMode.toUpper());
   member_count_->setText(QStringLiteral("%1 人").arg(state_.peers.size() + 1));
-  clock_->setText(QStringLiteral("00:00:00"));
+  const int elapsed_seconds =
+      joined_at_ms_ > 0
+          ? static_cast<int>((QDateTime::currentMSecsSinceEpoch() -
+                              joined_at_ms_) /
+                             1000)
+          : 0;
+  clock_->setText(Theme::formatDuration(elapsed_seconds));
   if (state_.talkMode == TalkMode::Free) {
     floor_->setText(QStringLiteral("自由发言"));
     floor_->setTone(QStringLiteral("default"));
@@ -339,7 +380,7 @@ void RoomPage::UpdateHeader() {
   }
   if (preview_mode_ && !state_.joined) {
     room_title_->setText(QStringLiteral("房间页面预览"));
-    room_id_->setText(QStringLiteral("P1 架构骨架"));
+    room_id_->setText(QStringLiteral("P5 视频布局"));
     connection_->setText(QStringLiteral("预览模式"));
     connection_->setTone(QStringLiteral("accent"));
   }
@@ -414,13 +455,8 @@ void RoomPage::UpdateControls() {
               : QStringLiteral("按住麦克风申请发言，等待主持人放行"));
     }
   }
-  if (filter_ != nullptr) filter_->setEnabled(false);
-  if (layout_ != nullptr) layout_->setEnabled(false);
-  if (stage_empty_ != nullptr) {
-    stage_empty_->setText(preview_mode_
-                              ? QStringLiteral("房间页面预览")
-                              : QStringLiteral("核心接入后显示真实远端视频"));
-  }
+  if (filter_ != nullptr) filter_->setEnabled(joined);
+  if (layout_ != nullptr) layout_->setEnabled(joined);
 }
 
 void RoomPage::RebuildSidePanel() {

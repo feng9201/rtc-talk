@@ -6,9 +6,10 @@
 It is separate from the legacy `talk-qt` diagnostic UI and the visual-only
 `qt-ui-prototype` project.
 
-## P1-P4 boundary
+## P1-P5 boundary
 
-The current P1-P4 deliverable is a production session and room-control shell:
+The current P1-P5 deliverable is a production session, room-control and video
+shell:
 
 - production executable target and CMake structure
 - frameless window and window controls
@@ -28,10 +29,13 @@ The current P1-P4 deliverable is a production session and room-control shell:
 - PTT/moderated floor request, release, queue and countdown
 - host grant/kick, mute-all and room-policy editor
 - toast feedback for control and host actions
+- camera enumeration and device selection on the prejoin page
+- local camera preview through the C ABI frame callback
+- `mid`-keyed remote video registration and 33ms frame coalescing
+- immediate producer-pause clearing and 5-second no-frame recycling
+- grid, focus, 1v1 picture-in-picture and screen-share layouts
+- real `QImage` video surfaces with injectable surface factory
 - screenshot and smoke-test command line modes
-
-The stage still shows a placeholder until the P5 video stream registry and
-rendering surface are connected.
 
 ## Layers
 
@@ -43,7 +47,10 @@ ui/desktop
   base/       frameless window
   domain/     production state types
   pages/      prejoin and room pages
+  services/   settings and session controller
+  state/      session store and video stream registry
   theme/      icons, colors and QSS entry point
+  video/      video surface, tile and layout engine
   widgets/    reusable production widgets
   resources/  QSS and image resources
 ```
@@ -67,12 +74,11 @@ build/windows-x64/bin/Release/talk-desktop.exe
 .\build\windows-x64\bin\Release\talk-desktop.exe --smoke-seconds 2
 .\build\windows-x64\bin\Release\talk-desktop.exe --screenshot build\windows-x64\desktop-shots\prejoin.png
 .\build\windows-x64\bin\Release\talk-desktop.exe --show-room-preview --screenshot build\windows-x64\desktop-shots\room.png
+.\build\windows-x64\bin\Release\talk-desktop.exe --start-camera-preview --screenshot-delay-ms 7000 --screenshot build\windows-x64\desktop-shots\preview.png
 ```
 
 ## Next integration phases
 
-- P4: members, controls, PTT and host policy
-- P5: real video stream registry and local preview
 - P6: stats, diagnostics and error handling
 - P7: packaging and release verification
 
@@ -90,6 +96,13 @@ and mute-all across two real clients:
 .\build\windows-x64\bin\Release\desktop_p4_smoke.exe
 ```
 
+The P5 smoke validates remote screen-share registration, a real decoded frame,
+producer-pause clearing and the local-preview command:
+
+```powershell
+.\build\windows-x64\bin\Release\desktop_p5_smoke.exe
+```
+
 For UI-level verification:
 
 ```powershell
@@ -101,3 +114,7 @@ For UI-level verification:
   --screenshot-delay-ms 2500 `
   --screenshot build\windows-x64\desktop-shots\connected-room.png
 ```
+
+For a two-client video UI check, start one client with
+`--auto-start-share-ms 5000` and another with a screenshot delay of at least
+10 seconds. `--auto-start-camera-ms` is also available for camera testing.

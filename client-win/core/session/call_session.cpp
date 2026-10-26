@@ -73,7 +73,9 @@ void CallSession::Command(uint64_t id, std::string method, Json data) {
     return;
   }
   if (method == "media.stats" || method == "audio.devices" ||
-      method == "audio.volume" || method == "audio.setSource") {
+      method == "audio.volume" || method == "audio.setSource" ||
+      method == "camera.devices" || method == "video.previewStart" ||
+      method == "video.previewStop") {
     HandleMediaCommand(id, method, std::move(data));
     return;
   }
@@ -175,6 +177,21 @@ void CallSession::HandleMediaCommand(uint64_t id, const std::string& method,
                                      Json data) {
   if (method == "media.stats") {
     media_.GetStats([this, id, method](MediaResult result) {
+      Complete(id, method, ToResponse(result));
+    });
+  } else if (method == "camera.devices") {
+    media_.GetCameras([this, id, method](MediaResult result) {
+      Complete(id, method, ToResponse(result));
+    });
+  } else if (method == "video.previewStart") {
+    const int camera_index =
+        data.value("camera_index", -1);
+    media_.StartCameraPreview(
+        camera_index, [this, id, method](MediaResult result) {
+          Complete(id, method, ToResponse(result));
+        });
+  } else if (method == "video.previewStop") {
+    media_.StopCameraPreview([this, id, method](MediaResult result) {
       Complete(id, method, ToResponse(result));
     });
   } else if (method == "audio.devices") {

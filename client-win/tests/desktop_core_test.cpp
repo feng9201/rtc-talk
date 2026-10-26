@@ -5,11 +5,14 @@
 #include "services/app_settings_service.h"
 #include "services/session_controller.h"
 #include "state/session_store.h"
+#include "state/video_stream_registry.h"
 
 #include <QCoreApplication>
+#include <QEventLoop>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QTemporaryDir>
+#include <QTimer>
 
 #include <iostream>
 
@@ -23,6 +26,12 @@ void Check(bool condition, const char* message) {
   ++failures;
 }
 
+void ProcessFor(int milliseconds) {
+  QEventLoop loop;
+  QTimer::singleShot(milliseconds, &loop, &QEventLoop::quit);
+  loop.exec();
+}
+
 void TestTalkCoreClientHandle() {
   using namespace talk::desktop;
   TalkCoreClient client;
@@ -31,6 +40,10 @@ void TestTalkCoreClientHandle() {
   Check(started && client.IsRunning(), "talk core bridge start");
   const quint64 command_id = client.Submit(QStringLiteral("audio.devices"));
   Check(command_id != 0, "talk core bridge submit");
+  const quint64 camera_id = client.Submit(QStringLiteral("camera.devices"));
+  Check(camera_id != 0, "talk core camera command");
+  client.SetLocalVideoCallback(true);
+  client.SetLocalVideoCallback(false);
   client.Stop();
   Check(!client.IsRunning(), "talk core bridge stop");
 }
@@ -233,6 +246,8 @@ void TestAppSettings() {
   saved.volume = 73;
   saved.recordingDevice = QStringLiteral("mic-id");
   saved.playoutDevice = QStringLiteral("speaker-id");
+  saved.cameraDevice = QStringLiteral("2");
+  saved.cameraIndex = 2;
   settings.Save(saved);
 
   const PrejoinOptions loaded = settings.Load();
@@ -244,7 +259,9 @@ void TestAppSettings() {
             loaded.audioSource == AudioSource::System &&
             loaded.volume == 73 &&
             loaded.recordingDevice == saved.recordingDevice &&
-            loaded.playoutDevice == saved.playoutDevice,
+            loaded.playoutDevice == saved.playoutDevice &&
+            loaded.cameraDevice == saved.cameraDevice &&
+            loaded.cameraIndex == saved.cameraIndex,
         "settings round trip");
   Check(loaded.token.isEmpty(), "token is not persisted");
 }
@@ -274,6 +291,57 @@ void TestSessionControllerValidation() {
   Q_UNUSED(busy);
 }
 
+void TestVideoStreamRegistry() {
+  using namespace talk::desktop;
+  VideoStreamRegistry registry(nullptr, 80);
+  QStringList emitted_mids;
+  QStringList cleared_mids;
+  QObject::connect(&registry, &VideoStreamRegistry::FrameReady,
+                   [&emitted_mids](const QString& mid, const QImage& frame) {
+                     if (!frame.isNull()) emitted_mids.append(mid);
+                   });
+  QObject::connect(&registry, &VideoStreamRegistry::FrameCleared,
+                   [&cleared_mids](const QString& mid) {
+                     cleared_mids.append(mid);
+                   });
+
+  registry.ApplyEvent(EventMapper::Map(
+      QStringLiteral("video.track"),
+      QJsonObject{{QStringLiteral("mid"), QStringLiteral("2")},
+                  {QStringLiteral("uid"), QStringLiteral("u1")},
+                  {QStringLiteral("source"), QStringLiteral("camera")}}));
+  registry.FrameReceived(QImage(16, 9, QImage::Format_ARGB32), QStringLiteral("2"));
+  ProcessFor(60);
+  Check(emitted_mids.contains(QStringLiteral("2")),
+        "video registry frame coalescing");
+  Check(registry.streams().size() == 1 && registry.streams().first().receiving,
+        "video registry receives stream");
+
+  registry.ApplyEvent(EventMapper::Map(
+      QStringLiteral("media.producer"),
+      QJsonObject{{QStringLiteral("uid"), QStringLiteral("u1")},
+                  {QStringLiteral("mid"), QStringLiteral("2")},
+                  {QStringLiteral("kind"), QStringLiteral("video")},
+                  {QStringLiteral("source"), QStringLiteral("camera")},
+                  {QStringLiteral("paused"), true}}));
+  Check(cleared_mids.contains(QStringLiteral("2")) &&
+            registry.streams().first().paused &&
+            registry.streams().first().frame.isNull(),
+        "producer pause clears frame immediately");
+
+  registry.ApplyEvent(EventMapper::Map(
+      QStringLiteral("media.producer"),
+      QJsonObject{{QStringLiteral("uid"), QStringLiteral("u1")},
+                  {QStringLiteral("mid"), QStringLiteral("2")},
+                  {QStringLiteral("kind"), QStringLiteral("video")},
+                  {QStringLiteral("source"), QStringLiteral("camera")},
+                  {QStringLiteral("paused"), false}}));
+  registry.FrameReceived(QImage(16, 9, QImage::Format_ARGB32), QStringLiteral("2"));
+  ProcessFor(180);
+  Check(!registry.streams().first().receiving,
+        "video registry recycles stale stream");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -284,6 +352,7 @@ int main(int argc, char** argv) {
   TestCommandCorrelator();
   TestAppSettings();
   TestSessionControllerValidation();
+  TestVideoStreamRegistry();
   if (failures != 0) {
     std::cerr << failures << " test(s) failed\n";
     return 1;

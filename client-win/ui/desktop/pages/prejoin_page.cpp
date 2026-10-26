@@ -1,6 +1,7 @@
 #include "pages/prejoin_page.h"
 
 #include "theme/theme.h"
+#include "video/video_surface.h"
 #include "widgets/pill.h"
 #include "widgets/segmented_control.h"
 
@@ -14,6 +15,7 @@
 #include <QLineEdit>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QSignalBlocker>
 #include <QSlider>
 #include <QStyle>
 #include <QVBoxLayout>
@@ -102,10 +104,10 @@ QWidget* PrejoinPage::BuildFormCard() {
   titles->addWidget(Label(QStringLiteral("连接与入房"),
                           QStringLiteral("Title"), card));
   titles->addWidget(Label(
-      QStringLiteral("连接真实 talk-core；P1 仅搭建生产 UI 骨架。"),
+      QStringLiteral("连接真实 talk-core，支持摄像头选择与入房前本地预览。"),
       QStringLiteral("Subtitle"), card));
   title_row->addLayout(titles, 1);
-  title_row->addWidget(new Pill(QStringLiteral("P1 SCAFFOLD"),
+  title_row->addWidget(new Pill(QStringLiteral("P5 MEDIA"),
                                 QStringLiteral("accent"), card),
                        0, Qt::AlignTop);
   layout->addLayout(title_row);
@@ -162,15 +164,23 @@ QWidget* PrejoinPage::BuildFormCard() {
   playout_device_->addItem(QStringLiteral("默认播放设备"), QString());
   playout_device_->setEnabled(false);
   camera_device_ = new QComboBox(card);
-  camera_device_->addItem(QStringLiteral("默认摄像头"), QString());
+  camera_device_->addItem(QStringLiteral("正在扫描摄像头…"), -1);
   camera_device_->setEnabled(false);
   layout->addWidget(MakePair(
       MakeField(QStringLiteral("麦克风设备"), recording_device_,
-                QStringLiteral("设备枚举在 P2/P5 接入")),
+                QStringLiteral("音频设备完整枚举在 P6 接入")),
       MakeField(QStringLiteral("播放设备"), playout_device_,
-                QStringLiteral("设备枚举在 P2 接入"))));
-  layout->addWidget(MakeField(QStringLiteral("摄像头"), camera_device_,
-                              QStringLiteral("设备枚举在 P5 接入")));
+                QStringLiteral("音频设备完整枚举在 P6 接入"))));
+  auto* camera_row = new QWidget(card);
+  auto* camera_row_layout = new QHBoxLayout(camera_row);
+  camera_row_layout->setContentsMargins(0, 0, 0, 0);
+  camera_row_layout->setSpacing(8);
+  camera_row_layout->addWidget(camera_device_, 1);
+  auto* rescan = Theme::button(QStringLiteral("重新扫描"),
+                               QStringLiteral("ghost"), camera_row);
+  camera_row_layout->addWidget(rescan);
+  layout->addWidget(MakeField(QStringLiteral("摄像头"), camera_row,
+                              QStringLiteral("设备索引会随入房配置传给媒体核心")));
 
   auto* volume_row = new QHBoxLayout;
   volume_row->setContentsMargins(0, 0, 0, 0);
@@ -213,6 +223,15 @@ QWidget* PrejoinPage::BuildFormCard() {
           [this](const QString&) { RefreshSummary(); });
   connect(talk_mode_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
           [this] { RefreshSummary(); });
+  connect(rescan, &QPushButton::clicked, this,
+          &PrejoinPage::cameraRefreshRequested);
+  connect(camera_device_,
+          QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+          [this] {
+            if (preview_active_) {
+              emit cameraPreviewRequested(camera_device_->currentData().toInt());
+            }
+          });
   return card;
 }
 
@@ -228,34 +247,28 @@ QWidget* PrejoinPage::BuildPreviewColumn() {
   preview_layout->setContentsMargins(14, 14, 14, 14);
   preview_layout->setSpacing(12);
 
-  auto* placeholder = new QFrame(preview_card);
-  placeholder->setObjectName(QStringLiteral("PreviewPlaceholder"));
-  placeholder->setMinimumHeight(310);
-  auto* placeholder_layout = new QVBoxLayout(placeholder);
-  placeholder_layout->setAlignment(Qt::AlignCenter);
-  auto* icon = new QLabel(placeholder);
-  icon->setPixmap(Theme::pixmap(Theme::Icon::CameraOff, 42,
-                                QColor(QStringLiteral("#5c6b79"))));
-  icon->setAlignment(Qt::AlignCenter);
-  placeholder_layout->addWidget(icon);
-  placeholder_layout->addWidget(
-      Label(QStringLiteral("本机视频预览将在 P5 接入"),
-            QStringLiteral("Muted"), placeholder),
-      0, Qt::AlignHCenter);
-  preview_layout->addWidget(placeholder, 1);
+  preview_surface_ = CreateImageVideoSurface(preview_card);
+  preview_surface_->setObjectName(QStringLiteral("PreviewSurface"));
+  preview_surface_->setMinimumHeight(310);
+  if (auto* image = qobject_cast<ImageVideoSurface*>(preview_surface_)) {
+    image->SetMirrored(true);
+    image->SetPlaceholder(QStringLiteral("摄像头预览已关闭"));
+  }
+  preview_layout->addWidget(preview_surface_, 1);
 
   auto* identity = new QHBoxLayout;
   auto* identity_text = new QVBoxLayout;
   identity_text->setSpacing(2);
   identity_text->addWidget(Label(QStringLiteral("本机身份"),
                                  QStringLiteral("TitleSmall"), preview_card));
-  identity_text->addWidget(Label(QStringLiteral("尚未连接核心"),
-                                 QStringLiteral("Hint"), preview_card));
+  preview_device_ = Label(QStringLiteral("选择摄像头后可启动预览"),
+                          QStringLiteral("Hint"), preview_card);
+  identity_text->addWidget(preview_device_);
   identity->addLayout(identity_text, 1);
-  auto* preview = Theme::button(QStringLiteral("本地预览"),
-                                QStringLiteral("default"), preview_card);
-  preview->setEnabled(false);
-  identity->addWidget(preview);
+  preview_ = Theme::button(QStringLiteral("启动本地预览"),
+                           QStringLiteral("default"), preview_card);
+  preview_->setEnabled(false);
+  identity->addWidget(preview_);
   preview_layout->addLayout(identity);
   layout->addWidget(preview_card, 1);
 
@@ -279,11 +292,13 @@ QWidget* PrejoinPage::BuildPreviewColumn() {
   summary_audio_ = add_summary(QStringLiteral("音频"));
   summary_video_ = add_summary(QStringLiteral("视频"));
   summary_policy_ = add_summary(QStringLiteral("房间模式"));
-  status_ = Label(QStringLiteral("P1 生产骨架已就绪；真实核心接入从 P2 开始。"),
+  status_ = Label(QStringLiteral("正在枚举媒体设备…"),
                   QStringLiteral("Hint"), summary);
   status_->setWordWrap(true);
   summary_layout->addWidget(status_);
   layout->addWidget(summary);
+  connect(preview_, &QPushButton::clicked, this,
+          &PrejoinPage::previewToggleRequested);
   return column;
 }
 
@@ -344,6 +359,7 @@ PrejoinOptions PrejoinPage::options() const {
   result.recordingDevice = recording_device_->currentData().toString();
   result.playoutDevice = playout_device_->currentData().toString();
   result.cameraDevice = camera_device_->currentData().toString();
+  result.cameraIndex = camera_device_->currentData().toInt();
   return result;
 }
 
@@ -380,6 +396,9 @@ void PrejoinPage::SetOptions(const PrejoinOptions& options) {
                                   ? QStringLiteral("system")
                                   : QStringLiteral("mic"));
   volume_->setValue(options.volume);
+  preferred_camera_index_ = options.cameraIndex;
+  const int camera_index = camera_device_->findData(options.cameraIndex);
+  if (camera_index >= 0) camera_device_->setCurrentIndex(camera_index);
   RefreshSummary();
 }
 
@@ -395,6 +414,60 @@ void PrejoinPage::setStatusMessage(const QString& text, const QString& tone) {
   status_->style()->polish(status_);
 }
 
+void PrejoinPage::SetCameraDevices(const QVector<CameraDevice>& devices) {
+  if (camera_device_ == nullptr) return;
+  const QSignalBlocker blocker(camera_device_);
+  const int current =
+      preferred_camera_index_ >= 0
+          ? preferred_camera_index_
+          : camera_device_->currentData().toInt();
+  camera_device_->clear();
+  if (devices.isEmpty()) {
+    camera_device_->addItem(QStringLiteral("未找到可用摄像头"), -1);
+    camera_device_->setEnabled(false);
+    preview_->setEnabled(false);
+    preview_device_->setText(QStringLiteral("未找到可用摄像头"));
+    return;
+  }
+  for (const CameraDevice& device : devices) {
+    camera_device_->addItem(device.name, device.index);
+  }
+  int index = camera_device_->findData(current);
+  if (index < 0) {
+    index = camera_device_->findData(preferred_camera_index_);
+  }
+  if (index < 0) index = 0;
+  camera_device_->setCurrentIndex(index);
+  camera_device_->setEnabled(true);
+  if (preview_ != nullptr) preview_->setEnabled(true);
+  if (preview_device_ != nullptr && !preview_active_) {
+    preview_device_->setText(camera_device_->currentText());
+  }
+}
+
+void PrejoinPage::SetPreviewFrame(const QImage& frame) {
+  if (preview_surface_ == nullptr) return;
+  if (frame.isNull()) {
+    preview_surface_->ClearFrame();
+  } else {
+    preview_surface_->SetFrame(frame);
+  }
+}
+
+void PrejoinPage::SetPreviewActive(bool active, const QString& device) {
+  preview_active_ = active;
+  if (preview_ != nullptr) {
+    preview_->setText(active ? QStringLiteral("关闭本地预览")
+                             : QStringLiteral("启动本地预览"));
+  }
+  if (preview_device_ != nullptr) {
+    preview_device_->setText(
+        active && !device.isEmpty() ? device
+                                   : camera_device_->currentText());
+  }
+  if (!active) SetPreviewFrame(QImage());
+}
+
 void PrejoinPage::RefreshSummary() {
   if (summary_connection_ == nullptr) return;
   summary_connection_->setText(QStringLiteral("未连接"));
@@ -403,7 +476,7 @@ void PrejoinPage::RefreshSummary() {
           .arg(audio_source_->currentId() == QStringLiteral("system")
                    ? QStringLiteral("系统音")
                    : QStringLiteral("麦克风")));
-  summary_video_->setText(QStringLiteral("H.264 · 默认关闭"));
+  summary_video_->setText(QStringLiteral("H.264 · 支持本地预览"));
   summary_policy_->setText(talk_mode_->currentText());
 }
 

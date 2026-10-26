@@ -21,7 +21,10 @@ TalkClient::TalkClient(talk_event_fn callback, void* userdata, Json config)
     : events_(callback, userdata),
       config_(std::move(config)),
       media_(runtime_.io(), config_, events_,
-             [this](const VideoFrameView& view) { DeliverVideoFrame(view); }),
+             [this](const VideoFrameView& view) { DeliverVideoFrame(view); },
+             [this](const VideoFrameView& view) {
+               DeliverLocalVideoFrame(view);
+             }),
       signaling_(runtime_.io()),
       session_(runtime_.io(), config_, events_, signaling_, media_) {
   media_.SetSignaling(MediaSignaling{
@@ -101,6 +104,15 @@ void TalkClient::SetVideoFrameCallback(talk_video_frame_fn callback,
   TALK_LOG_INFO("app", "视频帧回调已{}", callback != nullptr ? "注册" : "取消");
 }
 
+void TalkClient::SetLocalVideoFrameCallback(
+    talk_local_video_frame_fn callback, void* userdata) {
+  std::lock_guard<std::mutex> lock(video_mutex_);
+  local_video_callback_ = callback;
+  local_video_userdata_ = callback != nullptr ? userdata : nullptr;
+  TALK_LOG_INFO("app", "本地视频帧回调已{}",
+                callback != nullptr ? "注册" : "取消");
+}
+
 void TalkClient::DeliverVideoFrame(const VideoFrameView& view) {
   // 媒体线程：回调期间 bgra/mid 有效，必须先取副本再放锁，避免与替换回调互等。
   talk_video_frame_fn callback = nullptr;
@@ -125,6 +137,23 @@ void TalkClient::DeliverVideoFrame(const VideoFrameView& view) {
     TALK_LOG_INFO("app", "首个远端视频帧 mid={} {}x{} stride={}", mid,
                   view.width, view.height, view.stride);
   }
+  callback(userdata, mid.c_str(), view.bgra, view.width, view.height,
+           view.stride, view.timestamp_us);
+}
+
+void TalkClient::DeliverLocalVideoFrame(const VideoFrameView& view) {
+  talk_local_video_frame_fn callback = nullptr;
+  void* userdata = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(video_mutex_);
+    callback = local_video_callback_;
+    userdata = local_video_userdata_;
+  }
+  if (callback == nullptr || view.bgra == nullptr || view.width <= 0 ||
+      view.height <= 0) {
+    return;
+  }
+  const std::string mid = view.mid != nullptr ? view.mid : "local:camera";
   callback(userdata, mid.c_str(), view.bgra, view.width, view.height,
            view.stride, view.timestamp_us);
 }

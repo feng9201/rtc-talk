@@ -81,6 +81,16 @@ class Media {
     (void)source;
     return Json::object();
   }
+  // 入房前本地摄像头预览；不发布 producer，也不要求先连接房间。
+  virtual Json StartCameraPreview(int device_index) {
+    (void)device_index;
+    return {{"error", "当前构建不支持摄像头预览"}};
+  }
+  virtual Json StopCameraPreview() { return Json::object(); }
+  // 摄像头枚举；数组项为 {index,name}。
+  virtual Json GetCameras() {
+    return {{"cameras", Json::array()}};
+  }
   // 下行视频帧回调；可跨线程，空 sink 表示取消。
   virtual void SetVideoSink(VideoFrameSink sink) { (void)sink; }
 
@@ -102,7 +112,8 @@ inline bool IsMediaEnabled(const Json& config) {
 
 std::unique_ptr<Media> MakeMedia(const Json& config, const Json& ice_servers,
                                  MuteGate gate, Media::Event event,
-                                 VideoFrameSink video_sink);
+                                 VideoFrameSink video_sink,
+                                 VideoFrameSink local_video_sink = {});
 
 }  // namespace talk
 

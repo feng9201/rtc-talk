@@ -44,6 +44,7 @@ void TalkCoreClient::Stop() {
   ++generation_;
   if (core_ != nullptr) {
     talk_set_video_frame_callback(core_, nullptr, nullptr);
+    talk_set_local_video_frame_callback(core_, nullptr, nullptr);
     talk_destroy(core_);
     core_ = nullptr;
   }
@@ -66,6 +67,13 @@ void TalkCoreClient::SetVideoCallback(bool enabled) {
   talk_set_video_frame_callback(core_,
                                 enabled ? &TalkCoreClient::DispatchVideo : nullptr,
                                 enabled ? context_.get() : nullptr);
+}
+
+void TalkCoreClient::SetLocalVideoCallback(bool enabled) {
+  if (core_ == nullptr) return;
+  talk_set_local_video_frame_callback(
+      core_, enabled ? &TalkCoreClient::DispatchLocalVideo : nullptr,
+      enabled ? context_.get() : nullptr);
 }
 
 void TalkCoreClient::Dispatch(void* context, const char* name, const char* json) {
@@ -103,6 +111,28 @@ void TalkCoreClient::DispatchVideo(void* context, const char* mid,
       Qt::QueuedConnection);
 }
 
+void TalkCoreClient::DispatchLocalVideo(void* context, const char* mid,
+                                        const uint8_t* bgra, int width,
+                                        int height, int stride,
+                                        int64_t timestamp_us) {
+  Q_UNUSED(timestamp_us);
+  if (context == nullptr || bgra == nullptr || width <= 0 || height <= 0 ||
+      stride < width * 4) {
+    return;
+  }
+  const Context state = *static_cast<Context*>(context);
+  const QImage view(bgra, width, height, stride, QImage::Format_ARGB32);
+  const QImage frame = view.copy();
+  const QString mid_text = QString::fromUtf8(mid != nullptr ? mid : "");
+  QMetaObject::invokeMethod(
+      state.self,
+      [state, frame, mid_text] {
+        if (state.self->generation_ != state.generation) return;
+        state.self->DeliverLocalVideo(frame, mid_text);
+      },
+      Qt::QueuedConnection);
+}
+
 void TalkCoreClient::DeliverEvent(const QString& name, const QJsonObject& data) {
   const CoreEvent event = EventMapper::Map(name, data);
   if (const auto* result = std::get_if<ResultEvent>(&event.payload)) {
@@ -113,6 +143,11 @@ void TalkCoreClient::DeliverEvent(const QString& name, const QJsonObject& data) 
 
 void TalkCoreClient::DeliverVideo(const QImage& frame, const QString& mid) {
   emit VideoFrameReceived(frame, mid);
+}
+
+void TalkCoreClient::DeliverLocalVideo(const QImage& frame,
+                                       const QString& mid) {
+  emit LocalVideoFrameReceived(frame, mid);
 }
 
 }  // namespace talk::desktop

@@ -34,7 +34,8 @@ class MediaController {
   };
 
   MediaController(asio::io_context& io, const Json& config, EventSink& events,
-                  VideoFrameSink video_sink);
+                  VideoFrameSink video_sink,
+                  VideoFrameSink local_video_sink = {});
   ~MediaController();
 
   MediaController(const MediaController&) = delete;
@@ -95,6 +96,10 @@ class MediaController {
                   std::function<void(MediaResult)> done);
   void StopVideo(const std::string& source,
                  std::function<void(MediaResult)> done = {});
+  void StartCameraPreview(int device_index,
+                          std::function<void(MediaResult)> done);
+  void StopCameraPreview(std::function<void(MediaResult)> done = {});
+  void GetCameras(std::function<void(MediaResult)> done);
   void GetDevices(std::function<void(MediaResult)> done);
   void GetStats(std::function<void(MediaResult)> done);
   void SetVolume(double gain, std::function<void(MediaResult)> done);

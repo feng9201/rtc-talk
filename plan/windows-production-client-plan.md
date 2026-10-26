@@ -1,6 +1,6 @@
 # Windows 生产客户端集成开发计划
 
-> 状态：P4 已完成，等待确认进入 P5；其他分支只允许只读参考
+> 状态：P5 实现与真机验证已完成，等待确认进入 P6
 > 计划日期：2026-10-26  
 > 目标：把 `client-win` 的真实媒体/信令能力与 `qt-ui-prototype` 的 UI 组合为面向生产的 Windows 桌面客户端  
 > 建议分支：`codex/feat/windows-production-client`
@@ -814,3 +814,73 @@ P4 不包含：
 - 远端视频画面渲染
 - 本地摄像头预览
 - 设备面板和状态面板的完整接入
+
+### P5 执行结果（2026-10-26）
+
+已完成：
+
+- `talk_core` 新增 `camera.devices`、`video.previewStart` 和
+  `video.previewStop` 命令，入房前可使用
+- C ABI 新增 `talk_set_local_video_frame_callback`，旧 ABI/结构体保持兼容
+- 摄像头采集线程提供独立 BGRA 本地预览回调，不经过远端视频 sink
+- `TalkCoreClient` 支持远端与本地帧分别跨线程投递到 Qt UI 线程
+- 新增 `VideoStreamRegistry`：
+  - 按 `mid` 注册流
+  - `video.track` 与 `media.producer` 状态收敛
+  - 33ms 帧合并
+  - producer paused 立即清空画面
+  - 5 秒无帧回收 Surface
+- 新增生产视频控件：
+  - `VideoSurface` / `ImageVideoSurface` / 可注入 Surface 工厂
+  - `VideoTile` 成员画面、角色、麦克风、摄像头与共享角标
+  - `VideoGrid` 宫格、聚焦、1v1 画中画、共享主画面 + 胶片条
+  - 全部成员 / 仅视频成员过滤
+- 入房页接入真实摄像头枚举、设备选择、重新扫描和本地预览
+- 摄像头设备索引持久化，并作为 `camera_index` 传给媒体核心
+- 房间页顶部连接时长、成员数、布局与筛选控件接入真实状态
+- 日志初始化异常不再导致客户端启动崩溃
+- 新增 `desktop_p5_smoke` 真实服务双端视频联调工具
+
+验证：
+
+- Release 构建：通过
+- 本地回归测试：6/6 通过
+- `camera_probe`：1280x720、约 14–15fps、连续开关两轮送帧通过
+- `desktop_p5_smoke`：退出码 0
+- 入房前本地摄像头预览：真实画面通过
+- 真实 SFU 双端联调：
+  - 屏幕共享发布成功
+  - 成员端注册 screen 流
+  - 成员端收到 `mid=2`、1280x720 实际远端画面
+  - producer 暂停后立即清屏
+  - 双端正常离房
+- 真实 P2P 双端联调：
+  - 摄像头发布成功
+  - 成员端收到真实远端摄像头画面
+  - 1v1 远端主画面 + 本机画中画正确
+  - P2P 视频 sink 在 SDP 落地前完成挂载
+- 双端 UI 截图验证共享布局真实渲染
+
+截图：
+
+```text
+client-win/build/windows-x64/desktop-shots/p5-prejoin-final.png
+client-win/build/windows-x64/desktop-shots/p5-local-preview.png
+client-win/build/windows-x64/desktop-shots/p5-room-grid.png
+client-win/build/windows-x64/desktop-shots/p5-room-camera-p2p.png
+client-win/build/windows-x64/desktop-shots/p5-room-share.png
+```
+
+当前验证限制：
+
+- 沙箱内直接运行摄像头测试可能因 Windows 相机权限返回
+  `0x80070005`；以桌面应用权限运行时已验证通过
+- `camera_probe` 在无摄像头或设备被占用时返回 77（CTest 显示 Skipped），
+  有摄像头时继续严格检查送帧数
+- 本地屏幕共享预览仍为占位画面，首版优先验证远端共享与摄像头预览
+
+P5 不包含：
+
+- 完整设备侧栏和状态侧栏
+- `media.stats` 周期性诊断面板
+- D3D/OpenGL 视频渲染器

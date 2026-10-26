@@ -63,6 +63,12 @@ struct PrejoinOptions {
   QString recordingDevice;
   QString playoutDevice;
   QString cameraDevice;
+  int cameraIndex = -1;
+};
+
+struct CameraDevice {
+  int index = -1;
+  QString name;
 };
 
 struct PeerSnapshot {
@@ -131,6 +137,8 @@ struct SessionSnapshot {
 }  // namespace talk::desktop
 
 Q_DECLARE_METATYPE(talk::desktop::PrejoinOptions)
+Q_DECLARE_METATYPE(talk::desktop::CameraDevice)
+Q_DECLARE_METATYPE(QVector<talk::desktop::CameraDevice>)
 Q_DECLARE_METATYPE(talk::desktop::SessionSnapshot)
 Q_DECLARE_METATYPE(talk::desktop::PanelTab)
 Q_DECLARE_METATYPE(talk::desktop::RoomPolicy)

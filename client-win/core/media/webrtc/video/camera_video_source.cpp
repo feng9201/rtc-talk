@@ -12,6 +12,7 @@
 #include "rtc_base/logging.h"
 #include "rtc_base/time_utils.h"
 #include "third_party/libyuv/include/libyuv/convert.h"
+#include "third_party/libyuv/include/libyuv/convert_argb.h"
 
 namespace talk {
 namespace {
@@ -86,6 +87,14 @@ int PickFps(const camera::CameraInfo& info, int target) {
     }
   }
   return best > 0 ? best : *info.supportedFps.begin();
+}
+
+std::string FriendlyCameraError(const std::string& error) {
+  if (error.find("0x80070005") != std::string::npos) {
+    return "摄像头访问被拒绝，请检查 Windows 相机隐私权限或关闭正在占用"
+           "摄像头的应用";
+  }
+  return error;
 }
 
 }  // namespace
@@ -179,6 +188,11 @@ int CameraVideoSource::video_fps() const {
   return active_fps_;
 }
 
+void CameraVideoSource::SetLocalFrameSink(VideoFrameSink sink) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  local_sink_ = std::move(sink);
+}
+
 void CameraVideoSource::FinishStart(bool ok, std::string error) {
   {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -225,26 +239,44 @@ bool CameraVideoSource::OpenCamera(std::string* error) {
     return false;
   }
 
-  const camera::FrameSize size = PickFrameSize(*chosen, max_width_, max_height_);
-  if (size.width <= 0 || size.height <= 0) {
-    if (error != nullptr) {
-      *error = "摄像头没有可用的视频格式";
-    }
-    return false;
-  }
   capture_fps_ = PickFps(*chosen, fps_);
-
-  capture_ = std::make_unique<camera::MFAPICapture>();
-  const size_t frame_bytes = static_cast<size_t>(size.width) * size.height * 3 / 2;
-  nv12_ = std::shared_ptr<uint8_t>(new uint8_t[frame_bytes],
-                                   std::default_delete<uint8_t[]>());
-  capture_->setBuffer(nv12_, frame_bytes);
-  if (!capture_->init(*chosen, size.width, size.height, capture_fps_)) {
-    if (error != nullptr) {
-      *error = capture_->getCurErr();
+  std::vector<camera::FrameSize> candidates;
+  const auto append = [&candidates](int width, int height) {
+    if (width <= 0 || height <= 0) return;
+    for (const camera::FrameSize& item : candidates) {
+      if (item.width == width && item.height == height) return;
     }
+    candidates.push_back({width, height});
+  };
+  const camera::FrameSize preferred =
+      PickFrameSize(*chosen, max_width_, max_height_);
+  append(preferred.width, preferred.height);
+  for (const camera::FrameSize& size : chosen->supportedFrameSize) {
+    append(size.width, size.height);
+  }
+  // 部分驱动首次枚举拿不到原生媒体类型，但固定档位仍可协商成功。
+  append(1280, 720);
+  append(640, 480);
+  append(640, 360);
+  append(320, 240);
+
+  std::string last_error = "摄像头没有可用的视频格式";
+  for (const camera::FrameSize& size : candidates) {
+    capture_ = std::make_unique<camera::MFAPICapture>();
+    const size_t frame_bytes =
+        static_cast<size_t>(size.width) * size.height * 3 / 2;
+    nv12_ = std::shared_ptr<uint8_t>(new uint8_t[frame_bytes],
+                                     std::default_delete<uint8_t[]>());
+    capture_->setBuffer(nv12_, frame_bytes);
+    if (capture_->init(*chosen, size.width, size.height, capture_fps_)) {
+      break;
+    }
+    last_error = capture_->getCurErr();
     capture_.reset();
     nv12_.reset();
+  }
+  if (!capture_) {
+    if (error != nullptr) *error = FriendlyCameraError(last_error);
     return false;
   }
 
@@ -337,13 +369,39 @@ void CameraVideoSource::Deliver() {
                      buffer->MutableDataU(), buffer->StrideU(),
                      buffer->MutableDataV(), buffer->StrideV(), width, height);
 
+  const int64_t timestamp_us = webrtc::TimeMicros();
   webrtc::VideoFrame frame = webrtc::VideoFrame::Builder()
                                  .set_video_frame_buffer(buffer)
-                                 .set_timestamp_us(webrtc::TimeMicros())
+                                 .set_timestamp_us(timestamp_us)
                                  .build();
   // AdaptedVideoTrackSource 会把帧广播给所有 sink（编码器）。
   ++frames_;
   OnFrame(frame);
+
+  VideoFrameSink local_sink;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    local_sink = local_sink_;
+  }
+  if (!local_sink) {
+    return;
+  }
+  const int stride = width * 4;
+  const size_t needed = static_cast<size_t>(stride) * height;
+  if (local_bgra_.size() < needed) {
+    local_bgra_.resize(needed);
+  }
+  libyuv::I420ToARGB(buffer->DataY(), buffer->StrideY(), buffer->DataU(),
+                     buffer->StrideU(), buffer->DataV(), buffer->StrideV(),
+                     local_bgra_.data(), stride, width, height);
+  VideoFrameView view;
+  view.mid = "local:camera";
+  view.bgra = local_bgra_.data();
+  view.width = width;
+  view.height = height;
+  view.stride = stride;
+  view.timestamp_us = timestamp_us;
+  local_sink(view);
 }
 
 }  // namespace talk

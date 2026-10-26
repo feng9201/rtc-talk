@@ -19,7 +19,10 @@ MainWindow::MainWindow(QWidget* parent) : FramelessWindow(parent) {
   settings_ = std::make_unique<AppSettingsService>();
   BuildUi();
   ConnectSignals();
-  prejoin_page_->SetOptions(settings_->Load());
+  const PrejoinOptions options = settings_->Load();
+  prejoin_page_->SetOptions(options);
+  controller_->PrepareLocalMedia(options);
+  controller_->EnumerateCameras();
   ShowPrejoinPage();
 }
 
@@ -54,6 +57,18 @@ void MainWindow::ConnectSignals() {
             UpdatePrejoinStatus(QStringLiteral("设置已保存"),
                                 QStringLiteral("ok"));
           });
+  connect(prejoin_page_, &PrejoinPage::cameraRefreshRequested, controller_,
+          &SessionController::EnumerateCameras);
+  connect(prejoin_page_, &PrejoinPage::previewToggleRequested, this, [this] {
+    if (controller_->cameraPreviewActive()) {
+      controller_->StopCameraPreview();
+    } else {
+      controller_->StartCameraPreview(
+          prejoin_page_->options().cameraIndex);
+    }
+  });
+  connect(prejoin_page_, &PrejoinPage::cameraPreviewRequested, controller_,
+          &SessionController::StartCameraPreview);
   connect(room_page_, &RoomPage::leaveRequested, controller_,
           &SessionController::LeaveRoom);
   connect(room_page_, &RoomPage::micToggleRequested, this,
@@ -87,6 +102,7 @@ void MainWindow::ConnectSignals() {
           });
   connect(controller_, &SessionController::Joined, this,
           [this] {
+            prejoin_page_->SetPreviewActive(false);
             ShowRoomPage();
             Toast::Show(this, QStringLiteral("已进入房间"),
                         QStringLiteral("ok"));
@@ -94,13 +110,18 @@ void MainWindow::ConnectSignals() {
   connect(controller_, &SessionController::Left, this, [this] {
     ShowPrejoinPage();
     prejoin_page_->setJoinEnabled(true);
+    prejoin_page_->SetPreviewActive(false);
     UpdatePrejoinStatus(QStringLiteral("已离开房间"),
                         QStringLiteral("info"));
+    const PrejoinOptions options = prejoin_page_->options();
+    controller_->PrepareLocalMedia(options);
+    controller_->EnumerateCameras();
   });
   connect(controller_, &SessionController::Kicked, this,
           [this](const QString& reason) {
             ShowPrejoinPage();
             prejoin_page_->setJoinEnabled(true);
+            prejoin_page_->SetPreviewActive(false);
             const QString message =
                 reason == QStringLiteral("replaced")
                     ? QStringLiteral("账号已在其他客户端登录")
@@ -126,16 +147,51 @@ void MainWindow::ConnectSignals() {
             UpdatePrejoinStatus(text, QStringLiteral("danger"));
             if (controller_->snapshot().joined) {
               Toast::Show(this, text, QStringLiteral("error"));
+            } else {
+              prejoin_page_->SetPreviewActive(false);
             }
           });
   connect(controller_, &SessionController::Notice, this,
           [this](const QString& message, const QString& tone) {
             Toast::Show(this, message, tone);
           });
+  connect(controller_, &SessionController::CameraDevicesChanged, this,
+          [this](const QVector<CameraDevice>& devices) {
+            prejoin_page_->SetCameraDevices(devices);
+            UpdatePrejoinStatus(
+                devices.isEmpty() ? QStringLiteral("未找到可用摄像头")
+                                  : QStringLiteral("已发现 %1 个摄像头")
+                                        .arg(devices.size()),
+                devices.isEmpty() ? QStringLiteral("warn")
+                                  : QStringLiteral("ok"));
+          });
+  connect(controller_, &SessionController::CameraPreviewChanged, this,
+          [this](bool active, const QString& device) {
+            prejoin_page_->SetPreviewActive(active, device);
+          });
+  connect(controller_, &SessionController::LocalVideoFrameReceived, this,
+          [this](const QImage& frame) {
+            room_page_->SetLocalFrame(frame);
+            if (stack_->currentWidget() == prejoin_page_ &&
+                controller_->cameraPreviewActive()) {
+              prejoin_page_->SetPreviewFrame(frame);
+            }
+          });
+  connect(controller_, &SessionController::VideoStreamsChanged, this,
+          [this](const QVector<VideoStreamView>& streams) {
+            room_page_->SetVideoStreams(streams);
+          });
+  connect(controller_, &SessionController::VideoFrameReady, this,
+          [this](const QString& mid, const QImage& frame) {
+            room_page_->SetVideoFrame(mid, frame);
+          });
+  connect(controller_, &SessionController::VideoFrameCleared, this,
+          [this](const QString& mid) { room_page_->ClearVideoFrame(mid); });
 }
 
 void MainWindow::BeginJoin(const PrejoinOptions& options) {
   settings_->Save(options);
+  prejoin_page_->SetPreviewActive(false);
   prejoin_page_->setJoinEnabled(false);
   UpdatePrejoinStatus(QStringLiteral("正在建立会话…"),
                       QStringLiteral("info"));
@@ -166,6 +222,19 @@ void MainWindow::ShowRoomPreview() {
   room_page_->SetPreviewMode(true);
   stack_->setCurrentWidget(room_page_);
   window_controls_->raise();
+}
+
+void MainWindow::StartLocalPreview() {
+  if (controller_->snapshot().joined) return;
+  controller_->StartCameraPreview(prejoin_page_->options().cameraIndex);
+}
+
+void MainWindow::ToggleRoomCamera() {
+  if (controller_->snapshot().joined) controller_->ToggleCamera();
+}
+
+void MainWindow::ToggleRoomShare() {
+  if (controller_->snapshot().joined) controller_->ToggleShare();
 }
 
 void MainWindow::SetLogPath(const QString& path) {

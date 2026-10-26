@@ -25,6 +25,9 @@ class MainWindow final : public FramelessWindow {
   void BeginJoin(const PrejoinOptions& options);
   void OpenRoomPolicyDialog();
   void ShowRoomPreview();
+  void StartLocalPreview();
+  void ToggleRoomCamera();
+  void ToggleRoomShare();
   void SetLogPath(const QString& path);
 
  signals:

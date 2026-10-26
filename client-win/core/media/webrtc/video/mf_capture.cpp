@@ -242,7 +242,8 @@ bool MFAPICapture::init(const CameraInfo& camera_info, int width, int height,
       break;
     }
   }
-  if (!size_supported) {
+  // 少数驱动在枚举阶段不返回原生媒体类型；允许调用方用通用档位继续协商。
+  if (!size_supported && !camera_info.supportedFrameSize.empty()) {
     m_strErr = "unsupported frame size " + std::to_string(width) + "x" +
                std::to_string(height);
     return false;
@@ -278,7 +279,7 @@ bool MFAPICapture::init(const CameraInfo& camera_info, int width, int height,
   }
 
   if (!createDevice(camera_info)) {
-    m_strErr = "createDevice error";
+    if (m_strErr.empty()) m_strErr = "createDevice error";
     return false;
   }
 
@@ -431,19 +432,23 @@ bool MFAPICapture::createDevice(const CameraInfo& camera_info) {
   UINT32 count = 0;
 
   if (FAILED(MFCreateAttributes(&config, 1))) {
+    m_strErr = "MFCreateAttributes error";
     return false;
   }
   if (FAILED(config->SetGUID(MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
                              MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID))) {
+    m_strErr = "SetGUID video capture error";
     return false;
   }
   if (FAILED(MFEnumDeviceSources(config, &raw_devices, &count)) ||
       !raw_devices || count == 0) {
+    m_strErr = "MFEnumDeviceSources error";
     ReleaseDeviceArray(raw_devices, count);
     return false;
   }
   if (camera_info.index < 0 ||
       static_cast<UINT32>(camera_info.index) >= count) {
+    m_strErr = "camera index out of range";
     ReleaseDeviceArray(raw_devices, count);
     return false;
   }
@@ -452,6 +457,9 @@ bool MFAPICapture::createDevice(const CameraInfo& camera_info) {
       raw_devices[camera_info.index]->ActivateObject(IID_PPV_ARGS(&m_pDevice));
 
   ReleaseDeviceArray(raw_devices, count);
+  if (FAILED(hr)) {
+    m_strErr = "ActivateObject failed " + HrToString(hr);
+  }
   return SUCCEEDED(hr);
 }
 

@@ -14,8 +14,10 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "media/base/adapted_video_track_source.h"
+#include "media/media.h"
 #include "media/webrtc/video/mf_capture.h"
 
 namespace talk {
@@ -47,6 +49,8 @@ class CameraVideoSource : public webrtc::AdaptedVideoTrackSource {
   int video_width() const;
   int video_height() const;
   int video_fps() const;
+  // 本机预览帧回调；与编码器 sink 独立，可在采集线程回调。
+  void SetLocalFrameSink(VideoFrameSink sink);
 
   // 摄像头不是屏幕共享；未采集期间也必须报 kLive，理由同桌面源。
   SourceState state() const override { return SourceState::kLive; }
@@ -76,6 +80,8 @@ class CameraVideoSource : public webrtc::AdaptedVideoTrackSource {
   std::thread thread_;
   std::atomic<bool> running_{false};
   std::atomic<uint64_t> frames_{0};
+  VideoFrameSink local_sink_;
+  std::vector<uint8_t> local_bgra_;
 
   mutable std::mutex mutex_;
   std::condition_variable start_cv_;

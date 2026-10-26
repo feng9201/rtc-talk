@@ -34,10 +34,13 @@ class TalkClient {
 
   // 任意线程调用；帧回调在 webrtc 媒体线程执行。
   void SetVideoFrameCallback(talk_video_frame_fn callback, void* userdata);
+  void SetLocalVideoFrameCallback(talk_local_video_frame_fn callback,
+                                  void* userdata);
 
  private:
   // 由媒体线程调用：加锁取回调副本后转发给 C ABI。
   void DeliverVideoFrame(const VideoFrameView& view);
+  void DeliverLocalVideoFrame(const VideoFrameView& view);
 
   IoRuntime runtime_;
   EventSink events_;
@@ -50,6 +53,8 @@ class TalkClient {
   std::mutex video_mutex_;
   talk_video_frame_fn video_callback_ = nullptr;
   void* video_userdata_ = nullptr;
+  talk_local_video_frame_fn local_video_callback_ = nullptr;
+  void* local_video_userdata_ = nullptr;
   // 每路 mid 各记一次首帧：多路时能看出是哪几路真的解码出了画面。
   std::mutex video_first_frame_mutex_;
   std::set<std::string> video_first_frame_mids_;

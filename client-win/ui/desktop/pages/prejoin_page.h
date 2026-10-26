@@ -6,6 +6,7 @@
 
 class QCheckBox;
 class QComboBox;
+class QImage;
 class QLabel;
 class QLineEdit;
 class QPushButton;
@@ -14,6 +15,7 @@ class QSlider;
 namespace talk::desktop {
 
 class SegmentedControl;
+class VideoSurface;
 
 class PrejoinPage final : public QWidget {
   Q_OBJECT
@@ -25,10 +27,16 @@ class PrejoinPage final : public QWidget {
   void SetOptions(const PrejoinOptions& options);
   void setJoinEnabled(bool enabled);
   void setStatusMessage(const QString& text, const QString& tone = QString());
+  void SetCameraDevices(const QVector<CameraDevice>& devices);
+  void SetPreviewFrame(const QImage& frame);
+  void SetPreviewActive(bool active, const QString& device = QString());
 
  signals:
   void joinRequested(const PrejoinOptions& options);
   void saveSettingsRequested(const PrejoinOptions& options);
+  void cameraRefreshRequested();
+  void previewToggleRequested();
+  void cameraPreviewRequested(int camera_index);
 
  private:
   QWidget* BuildHeader();
@@ -51,6 +59,9 @@ class PrejoinPage final : public QWidget {
   QComboBox* recording_device_ = nullptr;
   QComboBox* playout_device_ = nullptr;
   QComboBox* camera_device_ = nullptr;
+  VideoSurface* preview_surface_ = nullptr;
+  QPushButton* preview_ = nullptr;
+  QLabel* preview_device_ = nullptr;
   QSlider* volume_ = nullptr;
   QLabel* volume_value_ = nullptr;
   QLabel* summary_connection_ = nullptr;
@@ -60,6 +71,8 @@ class PrejoinPage final : public QWidget {
   QLabel* status_ = nullptr;
   QPushButton* join_ = nullptr;
   QPushButton* save_ = nullptr;
+  bool preview_active_ = false;
+  int preferred_camera_index_ = -1;
 };
 
 }  // namespace talk::desktop

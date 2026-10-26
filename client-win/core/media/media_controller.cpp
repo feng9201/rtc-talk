@@ -82,14 +82,15 @@ std::string SdpVideoSummary(const std::string& sdp) {
 }  // namespace
 
 MediaController::MediaController(asio::io_context& io, const Json& config,
-                                 EventSink& events, VideoFrameSink video_sink)
+                                 EventSink& events, VideoFrameSink video_sink,
+                                 VideoFrameSink local_video_sink)
     : io_(io),
       events_(events),
       queue_(io, config, std::make_shared<std::atomic<bool>>(true),
              [this](std::string name, Json data) {
                HandleMediaEvent(std::move(name), std::move(data));
              },
-             std::move(video_sink)),
+             std::move(video_sink), std::move(local_video_sink)),
       mode_timer_(io),
       stats_timer_(io) {}
 
@@ -539,6 +540,27 @@ void MediaController::StopVideo(const std::string& source,
          }
        },
        false);
+}
+
+void MediaController::StartCameraPreview(
+    int device_index, std::function<void(MediaResult)> done) {
+  TALK_LOG_INFO("media", "启动摄像头预览 device={}", device_index);
+  Post([device_index](Media& media) {
+         return media.StartCameraPreview(device_index);
+       },
+       std::move(done));
+}
+
+void MediaController::StopCameraPreview(
+    std::function<void(MediaResult)> done) {
+  TALK_LOG_INFO("media", "停止摄像头预览");
+  Post([](Media& media) { return media.StopCameraPreview(); },
+       std::move(done), false);
+}
+
+void MediaController::GetCameras(std::function<void(MediaResult)> done) {
+  TALK_LOG_DEBUG("media", "枚举摄像头");
+  Post([](Media& media) { return media.GetCameras(); }, std::move(done));
 }
 
 void MediaController::GetDevices(std::function<void(MediaResult)> done) {

@@ -65,6 +65,12 @@ int main(int argc, char** argv) {
   parser.addOption(
       {"show-policy-after-ms", "联调：入房后自动打开主持人策略弹窗", "ms"});
   parser.addOption(
+      {"start-camera-preview", "启动后自动打开本地摄像头预览"});
+  parser.addOption(
+      {"auto-start-camera-ms", "联调：入房后自动开启摄像头", "ms"});
+  parser.addOption(
+      {"auto-start-share-ms", "联调：入房后自动开始屏幕共享", "ms"});
+  parser.addOption(
       {"log-file", "日志文件路径", "path"});
   parser.addOption(
       {"log-level", "文件日志级别", "level"});
@@ -100,6 +106,10 @@ int main(int argc, char** argv) {
 
   if (parser.isSet("show-room-preview")) {
     QTimer::singleShot(0, &window, &talk::desktop::MainWindow::ShowRoomPreview);
+  }
+  if (parser.isSet("start-camera-preview")) {
+    QTimer::singleShot(3000, &window,
+                       &talk::desktop::MainWindow::StartLocalPreview);
   }
 
   if (parser.isSet("auto-join-url") && parser.isSet("auto-join-room") &&
@@ -138,6 +148,22 @@ int main(int argc, char** argv) {
       if (policy_ok && delay >= 0) {
         QTimer::singleShot(delay, &window,
                            &talk::desktop::MainWindow::OpenRoomPolicyDialog);
+      }
+    }
+    if (parser.isSet("auto-start-camera-ms")) {
+      bool ok = false;
+      const int delay = parser.value("auto-start-camera-ms").toInt(&ok);
+      if (ok && delay >= 0) {
+        QTimer::singleShot(delay, &window,
+                           &talk::desktop::MainWindow::ToggleRoomCamera);
+      }
+    }
+    if (parser.isSet("auto-start-share-ms")) {
+      bool ok = false;
+      const int delay = parser.value("auto-start-share-ms").toInt(&ok);
+      if (ok && delay >= 0) {
+        QTimer::singleShot(delay, &window,
+                           &talk::desktop::MainWindow::ToggleRoomShare);
       }
     }
   }

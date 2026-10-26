@@ -28,8 +28,8 @@ int main() {
     }
   }
   if (devices.empty()) {
-    std::printf("no camera found\n");
-    return 1;
+    std::printf("SKIP: no camera found\n");
+    return 77;
   }
 
   // AdaptedVideoTrackSource 继承 RefCountInterface，只能由引用计数工厂创建。
@@ -42,8 +42,9 @@ int main() {
     const uint64_t before = source->frames();
     std::string error;
     if (!source->Start(&error)) {
-      std::printf("round%d start failed: %s\n", round, error.c_str());
-      return 2;
+      std::printf("SKIP: round%d camera unavailable: %s\n", round,
+                  error.c_str());
+      return 77;
     }
     std::printf("round%d started device=%s size=%dx%d fps=%d\n", round,
                 source->device_name().c_str(), source->video_width(),

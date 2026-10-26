@@ -13,6 +13,8 @@ add_library(talk_desktop_core STATIC
   services/session_controller.h
   state/session_store.cpp
   state/session_store.h
+  state/video_stream_registry.cpp
+  state/video_stream_registry.h
 )
 
 target_include_directories(talk_desktop_core PUBLIC
@@ -47,6 +49,12 @@ add_library(talk_desktop_ui STATIC
   pages/room_page.h
   theme/theme.cpp
   theme/theme.h
+  video/video_grid.cpp
+  video/video_grid.h
+  video/video_surface.cpp
+  video/video_surface.h
+  video/video_tile.cpp
+  video/video_tile.h
   widgets/control_button.cpp
   widgets/control_button.h
   widgets/avatar.cpp

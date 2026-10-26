@@ -334,6 +334,30 @@ if(TALK_BUILD_TESTS)
       COMMAND ${CMAKE_COMMAND} -E copy_if_different
               $<TARGET_FILE:talk_core>
               $<TARGET_FILE_DIR:desktop_p4_smoke>)
+
+    add_executable(desktop_p5_smoke
+      tests/desktop_p5_smoke.cpp
+      apps/common/log_setup.cpp
+      apps/common/log_setup.h
+    )
+    target_include_directories(desktop_p5_smoke PRIVATE
+      apps/common
+    )
+    target_link_libraries(desktop_p5_smoke PRIVATE
+      talk_desktop_core Qt5::Core log-cpp::log-cpp
+    )
+    target_compile_options(desktop_p5_smoke PRIVATE
+      $<$<CXX_COMPILER_ID:MSVC>:/utf-8 /EHsc /GR /W3>
+    )
+    set_target_properties(desktop_p5_smoke PROPERTIES
+      CXX_STANDARD 17
+      CXX_STANDARD_REQUIRED ON
+      MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
+    )
+    add_custom_command(TARGET desktop_p5_smoke POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              $<TARGET_FILE:talk_core>
+              $<TARGET_FILE_DIR:desktop_p5_smoke>)
   endif()
 
   # 视频编解码回环：直接调用 talk_media 的 MF 封装，不经过 WebRTC。
@@ -359,7 +383,7 @@ if(TALK_BUILD_TESTS)
     target_include_directories(camera_probe PRIVATE
       "${CMAKE_CURRENT_SOURCE_DIR}/core"
     )
-    target_link_libraries(camera_probe PRIVATE talk_media talk_webrtc)
+    target_link_libraries(camera_probe PRIVATE talk_media talk_webrtc talk_protocol)
     target_compile_options(camera_probe PRIVATE
       $<$<CXX_COMPILER_ID:MSVC>:/utf-8 /std:c++20 /EHsc /GR /W3>
     )
@@ -367,5 +391,6 @@ if(TALK_BUILD_TESTS)
       MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
     )
     add_test(NAME camera_probe COMMAND camera_probe)
+    set_tests_properties(camera_probe PROPERTIES SKIP_RETURN_CODE 77)
   endif()
 endif()

@@ -19,7 +19,8 @@ namespace talk {
 class WebRtcMedia : public Media {
  public:
   WebRtcMedia(const Json& config, const Json& ice_servers, MuteGate gate,
-              Event event, VideoFrameSink video_sink);
+              Event event, VideoFrameSink video_sink,
+              VideoFrameSink local_video_sink);
   ~WebRtcMedia() override;
 
   WebRtcMedia(const WebRtcMedia&) = delete;
@@ -47,6 +48,9 @@ class WebRtcMedia : public Media {
   // 启停只切采集与对应 sender。
   Json StartVideo(const std::string& source) override;
   Json StopVideo(const std::string& source) override;
+  Json StartCameraPreview(int device_index) override;
+  Json StopCameraPreview() override;
+  Json GetCameras() override;
   void SetVideoSink(VideoFrameSink sink) override;
 
   Json GetDevices() override;
@@ -91,12 +95,14 @@ class WebRtcMedia : public Media {
   webrtc::scoped_refptr<webrtc::VideoTrackInterface> camera_track_;
   webrtc::scoped_refptr<webrtc::VideoTrackInterface> video_track_;
   VideoFrameSink video_sink_;
+  VideoFrameSink local_video_sink_;
   std::atomic<bool> muted_{true};
   std::atomic<bool> sfu_paused_{false};
   std::atomic<bool> camera_sharing_{false};
   std::atomic<bool> video_sharing_{false};
   std::atomic<double> gain_{0.5};
   int camera_index_ = -1;
+  bool preview_running_ = false;
   std::string error_;
 };
 
