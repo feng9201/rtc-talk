@@ -272,6 +272,21 @@ if(TALK_BUILD_TESTS)
     MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
   )
   add_test(NAME signaling_test COMMAND signaling_test)
+  if(TARGET talk_desktop_core)
+    add_executable(desktop_core_test tests/desktop_core_test.cpp)
+    target_link_libraries(desktop_core_test PRIVATE
+      talk_desktop_core Qt5::Core
+    )
+    target_compile_options(desktop_core_test PRIVATE
+      $<$<CXX_COMPILER_ID:MSVC>:/utf-8 /EHsc /GR /W3>
+    )
+    set_target_properties(desktop_core_test PROPERTIES
+      CXX_STANDARD 17
+      CXX_STANDARD_REQUIRED ON
+      MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
+    )
+    add_test(NAME desktop_core_test COMMAND desktop_core_test)
+  endif()
 
   # 视频编解码回环：直接调用 talk_media 的 MF 封装，不经过 WebRTC。
   if(TALK_HAS_MEDIA)

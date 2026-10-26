@@ -86,6 +86,7 @@ struct FloorSnapshot {
   QString holderUid;
   QStringList queue;
   bool selfHasFloor = false;
+  qint64 expiresInMs = 0;
   qint64 deadlineEpochMs = 0;
 };
 
@@ -119,6 +120,8 @@ struct SessionSnapshot {
   bool cameraOn = false;
   bool sharing = false;
   bool deafen = false;
+  int lastErrorCode = 0;
+  QString lastError;
 };
 
 }  // namespace talk::desktop

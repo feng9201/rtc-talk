@@ -1,6 +1,6 @@
 # Windows 生产客户端集成开发计划
 
-> 状态：P1 已完成，等待确认进入 P2；其他分支只允许只读参考  
+> 状态：P2 已完成，等待确认进入 P3；其他分支只允许只读参考
 > 计划日期：2026-10-26  
 > 目标：把 `client-win` 的真实媒体/信令能力与 `qt-ui-prototype` 的 UI 组合为面向生产的 Windows 桌面客户端  
 > 建议分支：`codex/feat/windows-production-client`
@@ -709,3 +709,32 @@ P1 不包含：
 - 真实成员或设备数据
 - 真实视频帧
 - 业务 mock 数据
+
+### P2 执行结果（2026-10-26）
+
+已完成：
+
+- 新增 `talk_desktop_core` 静态库
+- 新增 `TalkCoreClient`，封装 `talk_create`、`talk_command`、
+  `talk_set_video_frame_callback` 和 `talk_destroy`
+- 新增 generation 隔离，旧句柄事件和视频帧不会污染新会话
+- 新增 `CommandCorrelator`，按命令 ID 关联成功、失败和超时
+- 新增 `EventMapper`，将 state/ready/joined/left/peer/floor/policy/video/
+  audio level/result/error 等事件转为类型化 payload
+- 新增 `SessionStore`，统一管理连接、房间、成员、视频流、发言权和错误状态
+- 新增 `desktop_core_test`
+
+构建与测试：
+
+- Release 构建：通过
+- `desktop_core_test`：通过
+- `talk_core` 真实句柄创建、命令提交和释放：通过
+- 全部回归测试：6/6 通过
+- `talk-desktop --smoke-seconds 2`：退出码 0
+
+P2 不包含：
+
+- 生产页面与 `SessionStore` 的连接
+- 真实信令连接和入房
+- 设备枚举和设置持久化
+- 真实视频画面渲染

@@ -6,9 +6,9 @@
 It is separate from the legacy `talk-qt` diagnostic UI and the visual-only
 `qt-ui-prototype` project.
 
-## P1 boundary
+## P1/P2 boundary
 
-The current P1 deliverable is an application skeleton:
+The current P1/P2 deliverable is an application and state-layer skeleton:
 
 - production executable target and CMake structure
 - frameless window and window controls
@@ -16,10 +16,15 @@ The current P1 deliverable is an application skeleton:
 - production room page shell
 - shared theme and UI widgets
 - domain state types and page state setters
+- typed core events and event mapping
+- core command correlation and timeout handling
+- `TalkCoreClient` C ABI lifetime and thread bridge
+- `SessionStore` as the single room/session state owner
 - screenshot and smoke-test command line modes
 
-P1 does not create a `talk_handle`, connect to signaling, enumerate devices, or
-render video. Those integrations start in later phases.
+The production pages are not yet connected to `SessionStore`, and the
+application does not yet connect to signaling. Real connection and page wiring
+start in P3.
 
 ## Layers
 
@@ -59,7 +64,6 @@ build/windows-x64/bin/Release/talk-desktop.exe
 
 ## Next integration phases
 
-- P2: `TalkCoreClient`, event mapping and `SessionStore`
 - P3: real connect/join/leave/settings
 - P4: members, controls, PTT and host policy
 - P5: real video stream registry and local preview
