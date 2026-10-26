@@ -56,7 +56,7 @@ PrejoinPage::PrejoinPage(QWidget* parent) : QWidget(parent) {
   root->addWidget(scroll, 1);
 
   RefreshSummary();
-  setJoinEnabled(false);
+  setJoinEnabled(true);
 }
 
 QWidget* PrejoinPage::BuildHeader() {
@@ -110,9 +110,9 @@ QWidget* PrejoinPage::BuildFormCard() {
                        0, Qt::AlignTop);
   layout->addLayout(title_row);
 
-  url_ = new QLineEdit(QStringLiteral("wss://your-server.example/talk/v1/ws"),
-                       card);
-  url_->setPlaceholderText(QStringLiteral("wss://server/talk/v1/ws"));
+  url_ = new QLineEdit(card);
+  url_->setPlaceholderText(
+      QStringLiteral("ws://server:8080/talk/v1/ws"));
   user_id_ = new QLineEdit(
       QStringLiteral("windows-") + QSysInfo::machineHostName().toLower(), card);
   room_id_ = new QLineEdit(card);
@@ -193,7 +193,6 @@ QWidget* PrejoinPage::BuildFormCard() {
                         QStringLiteral("default"), card);
   join_ = Theme::button(QStringLiteral("进入房间"),
                         QStringLiteral("primary"), card);
-  save_->setEnabled(false);
   actions->addWidget(save_);
   actions->addStretch(1);
   actions->addWidget(join_);
@@ -210,6 +209,10 @@ QWidget* PrejoinPage::BuildFormCard() {
   connect(save_, &QPushButton::clicked, this, [this] {
     emit saveSettingsRequested(options());
   });
+  connect(audio_source_, &SegmentedControl::currentIdChanged, this,
+          [this](const QString&) { RefreshSummary(); });
+  connect(talk_mode_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+          [this] { RefreshSummary(); });
   return card;
 }
 
@@ -344,9 +347,44 @@ PrejoinOptions PrejoinPage::options() const {
   return result;
 }
 
+void PrejoinPage::SetOptions(const PrejoinOptions& options) {
+  url_->setText(options.url);
+  user_id_->setText(options.userId);
+  room_id_->setText(options.roomId);
+  token_->clear();
+  dev_token_->setChecked(options.fetchDevToken);
+
+  const auto set_combo = [](QComboBox* combo, const QString& value) {
+    const int index = combo->findData(value);
+    if (index >= 0) combo->setCurrentIndex(index);
+  };
+  set_combo(audio_backend_,
+            options.audioBackend == AudioBackend::None
+                ? QStringLiteral("none")
+                : options.audioBackend == AudioBackend::Fake
+                      ? QStringLiteral("fake")
+                      : QStringLiteral("wasapi"));
+  set_combo(media_mode_,
+            options.mediaMode == MediaModePreference::P2p
+                ? QStringLiteral("p2p")
+                : options.mediaMode == MediaModePreference::Sfu
+                      ? QStringLiteral("sfu")
+                      : QStringLiteral("auto"));
+  set_combo(talk_mode_,
+            options.talkMode == TalkMode::Ptt
+                ? QStringLiteral("ptt")
+                : options.talkMode == TalkMode::Moderated
+                      ? QStringLiteral("moderated")
+                      : QStringLiteral("free"));
+  audio_source_->setCurrentId(options.audioSource == AudioSource::System
+                                  ? QStringLiteral("system")
+                                  : QStringLiteral("mic"));
+  volume_->setValue(options.volume);
+  RefreshSummary();
+}
+
 void PrejoinPage::setJoinEnabled(bool enabled) {
   if (join_ != nullptr) join_->setEnabled(enabled);
-  if (save_ != nullptr) save_->setEnabled(enabled);
 }
 
 void PrejoinPage::setStatusMessage(const QString& text, const QString& tone) {

@@ -2,6 +2,8 @@
 
 #include "pages/prejoin_page.h"
 #include "pages/room_page.h"
+#include "services/app_settings_service.h"
+#include "services/session_controller.h"
 #include "widgets/window_controls.h"
 
 #include <QResizeEvent>
@@ -13,8 +15,10 @@ namespace talk::desktop {
 MainWindow::MainWindow(QWidget* parent) : FramelessWindow(parent) {
   setObjectName(QStringLiteral("DesktopMainWindow"));
   setWindowTitle(QStringLiteral("RTC Talk"));
+  settings_ = std::make_unique<AppSettingsService>();
   BuildUi();
   ConnectSignals();
+  prejoin_page_->SetOptions(settings_->Load());
   ShowPrejoinPage();
 }
 
@@ -27,6 +31,7 @@ void MainWindow::BuildUi() {
   stack_->setObjectName(QStringLiteral("PageStack"));
   prejoin_page_ = new PrejoinPage(stack_);
   room_page_ = new RoomPage(stack_);
+  controller_ = new SessionController(this);
   stack_->addWidget(prejoin_page_);
   stack_->addWidget(room_page_);
   layout->addWidget(stack_);
@@ -38,14 +43,83 @@ void MainWindow::BuildUi() {
 
 void MainWindow::ConnectSignals() {
   connect(prejoin_page_, &PrejoinPage::joinRequested, this,
-          &MainWindow::joinRequested);
-  connect(room_page_, &RoomPage::leaveRequested, this,
-          &MainWindow::ShowPrejoinPage);
+          [this](const PrejoinOptions& options) {
+            BeginJoin(options);
+            emit joinRequested(options);
+          });
+  connect(prejoin_page_, &PrejoinPage::saveSettingsRequested, this,
+          [this](const PrejoinOptions& options) {
+            settings_->Save(options);
+            UpdatePrejoinStatus(QStringLiteral("设置已保存"),
+                                QStringLiteral("ok"));
+          });
+  connect(room_page_, &RoomPage::leaveRequested, controller_,
+          &SessionController::LeaveRoom);
+
+  connect(controller_, &SessionController::StateChanged, this,
+          [this](const SessionSnapshot& state) {
+            room_page_->SetSessionState(state);
+          });
+  connect(controller_, &SessionController::Joined, this,
+          &MainWindow::ShowRoomPage);
+  connect(controller_, &SessionController::Left, this, [this] {
+    ShowPrejoinPage();
+    prejoin_page_->setJoinEnabled(true);
+    UpdatePrejoinStatus(QStringLiteral("已离开房间"),
+                        QStringLiteral("info"));
+  });
+  connect(controller_, &SessionController::Kicked, this,
+          [this](const QString& reason) {
+            ShowPrejoinPage();
+            prejoin_page_->setJoinEnabled(true);
+            const QString message =
+                reason == QStringLiteral("replaced")
+                    ? QStringLiteral("账号已在其他客户端登录")
+                    : QStringLiteral("已被移出房间");
+            UpdatePrejoinStatus(message, QStringLiteral("danger"));
+          });
+  connect(controller_, &SessionController::BusyChanged, this,
+          [this](bool busy, const QString& message) {
+            prejoin_page_->setJoinEnabled(!busy);
+            room_page_->SetBusy(busy);
+            if (!message.isEmpty()) {
+              UpdatePrejoinStatus(message,
+                                  busy ? QStringLiteral("info")
+                                       : QStringLiteral("default"));
+            }
+          });
+  connect(controller_, &SessionController::ErrorOccurred, this,
+          [this](const QString& message, const QString& detail) {
+            prejoin_page_->setJoinEnabled(true);
+            UpdatePrejoinStatus(
+                detail.isEmpty() ? message
+                                 : QStringLiteral("%1：%2").arg(message, detail),
+                QStringLiteral("danger"));
+          });
+}
+
+void MainWindow::BeginJoin(const PrejoinOptions& options) {
+  settings_->Save(options);
+  prejoin_page_->setJoinEnabled(false);
+  UpdatePrejoinStatus(QStringLiteral("正在建立会话…"),
+                      QStringLiteral("info"));
+  controller_->ConnectAndJoin(options);
 }
 
 void MainWindow::ShowPrejoinPage() {
   stack_->setCurrentWidget(prejoin_page_);
   window_controls_->raise();
+}
+
+void MainWindow::ShowRoomPage() {
+  room_page_->SetSessionState(controller_->snapshot());
+  stack_->setCurrentWidget(room_page_);
+  window_controls_->raise();
+}
+
+void MainWindow::UpdatePrejoinStatus(const QString& message,
+                                     const QString& tone) {
+  prejoin_page_->setStatusMessage(message, tone);
 }
 
 void MainWindow::ShowRoomPreview() {

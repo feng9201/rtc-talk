@@ -1,6 +1,6 @@
 # Windows 生产客户端集成开发计划
 
-> 状态：P2 已完成，等待确认进入 P3；其他分支只允许只读参考
+> 状态：P3 已完成，等待确认进入 P4；其他分支只允许只读参考
 > 计划日期：2026-10-26  
 > 目标：把 `client-win` 的真实媒体/信令能力与 `qt-ui-prototype` 的 UI 组合为面向生产的 Windows 桌面客户端  
 > 建议分支：`codex/feat/windows-production-client`
@@ -738,3 +738,36 @@ P2 不包含：
 - 真实信令连接和入房
 - 设备枚举和设置持久化
 - 真实视频画面渲染
+
+### P3 执行结果（2026-10-26）
+
+已完成：
+
+- `MainWindow` 接入 `SessionController` 和 `SessionStore`
+- `PrejoinPage` 支持配置回填、忙碌状态和真实错误提示
+- `RoomPage` 接收真实会话快照，离房等待服务端确认
+- 开发 Token 获取、connect、ready 后入房和离房完整链路
+- `QSettings` 配置持久化，Token 不落盘
+- 断线、重连、被移出和账号替换状态处理
+- 离房后主动停止核心句柄，释放 WebSocket 会话
+- 新增 `desktop_session_smoke` 真实服务联调工具
+
+验证：
+
+- 本地回归测试：6/6 通过
+- 测试服务健康检查：`rev=4a24f30`
+- 生产 `SessionController` 真实链路：
+  - 获取开发 Token
+  - 连接信令
+  - 加入房间
+  - 离开房间
+  - 退出码 0，`left` 只上报一次
+- `talk-desktop` 自动入房并截图：通过
+- 截图：
+  `client-win/build/windows-x64/desktop-shots/p3-connected-room.png`
+
+已知限制：
+
+- 当前 `talk_core` WebSocket 客户端仅支持 `ws://`，P3 明确拒绝 `wss://`
+- 媒体控制按钮在 P3 保持禁用，P4 接入命令和结果回滚
+- 成员列表仍为占位内容，P4 接入真实成员交互

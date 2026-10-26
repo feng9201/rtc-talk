@@ -33,9 +33,10 @@ void SessionStore::SetLocalIdentity(const QString& uid,
 }
 
 void SessionStore::Reset() {
+  const bool was_joined = snapshot_.joined;
   snapshot_ = SessionSnapshot{};
   NotifyChanged();
-  emit Left();
+  if (was_joined) emit Left();
 }
 
 void SessionStore::ApplyEvent(const CoreEvent& event) {
@@ -55,10 +56,11 @@ void SessionStore::ApplyEvent(const CoreEvent& event) {
                  std::get_if<PeerLeftEvent>(&event.payload)) {
     ApplyPeerLeft(*left);
   } else if (std::get_if<LeftEvent>(&event.payload) != nullptr) {
+    const bool was_joined = snapshot_.joined;
     ClearRoomState();
     snapshot_.connectionState = ConnectionState::Ready;
     NotifyChanged();
-    emit Left();
+    if (was_joined) emit Left();
   } else if (const auto* mode =
                  std::get_if<ModeChangedEvent>(&event.payload)) {
     snapshot_.mediaMode = mode->mode;

@@ -23,6 +23,7 @@ class RoomPage final : public QWidget {
 
   void SetSessionState(const SessionSnapshot& state);
   void SetPreviewMode(bool preview);
+  void SetBusy(bool busy);
   const SessionSnapshot& state() const { return state_; }
 
  signals:
@@ -49,6 +50,7 @@ class RoomPage final : public QWidget {
 
   SessionSnapshot state_;
   bool preview_mode_ = false;
+  bool busy_ = false;
 
   QLabel* room_title_ = nullptr;
   QLabel* room_id_ = nullptr;

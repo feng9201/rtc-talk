@@ -7,6 +7,10 @@ add_library(talk_desktop_core STATIC
   api/talk_core_client.cpp
   api/talk_core_client.h
   domain/app_types.h
+  services/app_settings_service.cpp
+  services/app_settings_service.h
+  services/session_controller.cpp
+  services/session_controller.h
   state/session_store.cpp
   state/session_store.h
 )
@@ -16,7 +20,7 @@ target_include_directories(talk_desktop_core PUBLIC
   "${CMAKE_SOURCE_DIR}/include"
 )
 target_link_libraries(talk_desktop_core
-  PUBLIC Qt5::Core Qt5::Gui
+  PUBLIC Qt5::Core Qt5::Gui Qt5::Network
   PRIVATE talk_core
 )
 target_compile_options(talk_desktop_core PRIVATE

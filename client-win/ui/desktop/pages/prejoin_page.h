@@ -22,6 +22,7 @@ class PrejoinPage final : public QWidget {
   explicit PrejoinPage(QWidget* parent = nullptr);
 
   PrejoinOptions options() const;
+  void SetOptions(const PrejoinOptions& options);
   void setJoinEnabled(bool enabled);
   void setStatusMessage(const QString& text, const QString& tone = QString());
 

@@ -2,11 +2,14 @@
 #include "api/core_event.h"
 #include "api/event_mapper.h"
 #include "api/talk_core_client.h"
+#include "services/app_settings_service.h"
+#include "services/session_controller.h"
 #include "state/session_store.h"
 
 #include <QCoreApplication>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QTemporaryDir>
 
 #include <iostream>
 
@@ -96,7 +99,9 @@ void TestSessionStore() {
   using namespace talk::desktop;
   SessionStore store;
   int joined_count = 0;
+  int left_count = 0;
   QObject::connect(&store, &SessionStore::Joined, [&joined_count] { ++joined_count; });
+  QObject::connect(&store, &SessionStore::Left, [&left_count] { ++left_count; });
 
   store.SetLocalIdentity(QStringLiteral("me"), QStringLiteral("本机"));
   store.ApplyEvent(EventMapper::Map(
@@ -164,6 +169,11 @@ void TestSessionStore() {
   Check(!store.snapshot().joined && store.snapshot().peers.isEmpty() &&
             store.snapshot().streams.isEmpty() && store.snapshot().selfUid == QStringLiteral("me"),
         "session disconnected reset");
+  Check(left_count == 1, "left emitted once");
+
+  // A late room.closed notification must not report another leave.
+  store.ApplyEvent(EventMapper::Map(QStringLiteral("room.closed"), QJsonObject{}));
+  Check(left_count == 1, "duplicate room.closed is deduplicated");
 }
 
 void TestCommandCorrelator() {
@@ -189,6 +199,67 @@ void TestCommandCorrelator() {
         "command completion payload");
 }
 
+void TestAppSettings() {
+  using namespace talk::desktop;
+  QTemporaryDir dir;
+  Check(dir.isValid(), "temporary settings directory");
+  if (!dir.isValid()) return;
+
+  AppSettingsService settings(dir.filePath(QStringLiteral("settings.ini")));
+  PrejoinOptions saved;
+  saved.url = QStringLiteral("ws://127.0.0.1:8080/talk/v1/ws");
+  saved.userId = QStringLiteral("tester");
+  saved.roomId = QStringLiteral("room-a");
+  saved.token = QStringLiteral("must-not-be-persisted");
+  saved.fetchDevToken = true;
+  saved.audioBackend = AudioBackend::Fake;
+  saved.mediaMode = MediaModePreference::Sfu;
+  saved.talkMode = TalkMode::Ptt;
+  saved.audioSource = AudioSource::System;
+  saved.volume = 73;
+  saved.recordingDevice = QStringLiteral("mic-id");
+  saved.playoutDevice = QStringLiteral("speaker-id");
+  settings.Save(saved);
+
+  const PrejoinOptions loaded = settings.Load();
+  Check(loaded.url == saved.url && loaded.userId == saved.userId &&
+            loaded.roomId == saved.roomId && loaded.fetchDevToken &&
+            loaded.audioBackend == AudioBackend::Fake &&
+            loaded.mediaMode == MediaModePreference::Sfu &&
+            loaded.talkMode == TalkMode::Ptt &&
+            loaded.audioSource == AudioSource::System &&
+            loaded.volume == 73 &&
+            loaded.recordingDevice == saved.recordingDevice &&
+            loaded.playoutDevice == saved.playoutDevice,
+        "settings round trip");
+  Check(loaded.token.isEmpty(), "token is not persisted");
+}
+
+void TestSessionControllerValidation() {
+  using namespace talk::desktop;
+  SessionController controller;
+  QString error_message;
+  bool busy = true;
+  QObject::connect(
+      &controller, &SessionController::ErrorOccurred,
+      [&error_message](const QString& message, const QString&) {
+        error_message = message;
+      });
+  QObject::connect(&controller, &SessionController::BusyChanged,
+                   [&busy](bool value, const QString&) { busy = value; });
+
+  PrejoinOptions options;
+  options.url = QStringLiteral("wss://invalid.example/talk/v1/ws");
+  options.userId = QStringLiteral("u1");
+  options.roomId = QStringLiteral("r1");
+  options.token = QStringLiteral("token");
+  options.audioBackend = AudioBackend::None;
+  controller.ConnectAndJoin(options);
+  Check(!controller.busy() && !error_message.isEmpty(),
+        "session controller rejects unsupported URL");
+  Q_UNUSED(busy);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -197,6 +268,8 @@ int main(int argc, char** argv) {
   TestEventMapper();
   TestSessionStore();
   TestCommandCorrelator();
+  TestAppSettings();
+  TestSessionControllerValidation();
   if (failures != 0) {
     std::cerr << failures << " test(s) failed\n";
     return 1;

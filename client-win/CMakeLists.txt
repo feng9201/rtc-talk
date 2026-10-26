@@ -286,6 +286,30 @@ if(TALK_BUILD_TESTS)
       MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
     )
     add_test(NAME desktop_core_test COMMAND desktop_core_test)
+
+    add_executable(desktop_session_smoke
+      tests/desktop_session_smoke.cpp
+      apps/common/log_setup.cpp
+      apps/common/log_setup.h
+    )
+    target_include_directories(desktop_session_smoke PRIVATE
+      apps/common
+    )
+    target_link_libraries(desktop_session_smoke PRIVATE
+      talk_desktop_core Qt5::Core log-cpp::log-cpp
+    )
+    target_compile_options(desktop_session_smoke PRIVATE
+      $<$<CXX_COMPILER_ID:MSVC>:/utf-8 /EHsc /GR /W3>
+    )
+    set_target_properties(desktop_session_smoke PROPERTIES
+      CXX_STANDARD 17
+      CXX_STANDARD_REQUIRED ON
+      MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
+    )
+    add_custom_command(TARGET desktop_session_smoke POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              $<TARGET_FILE:talk_core>
+              $<TARGET_FILE_DIR:desktop_session_smoke>)
   endif()
 
   # 视频编解码回环：直接调用 talk_media 的 MF 封装，不经过 WebRTC。

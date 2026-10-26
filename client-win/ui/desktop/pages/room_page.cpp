@@ -280,6 +280,11 @@ void RoomPage::SetPreviewMode(bool preview) {
   RebuildSidePanel();
 }
 
+void RoomPage::SetBusy(bool busy) {
+  busy_ = busy;
+  UpdateControls();
+}
+
 void RoomPage::UpdateHeader() {
   if (room_title_ == nullptr) return;
   room_title_->setText(state_.roomId.isEmpty() ? QStringLiteral("尚未加入房间")
@@ -316,10 +321,10 @@ void RoomPage::UpdateHeader() {
 
 void RoomPage::UpdateControls() {
   const bool joined = state_.joined || preview_mode_;
-  for (ControlButton* control : {mic_, camera_, share_, listen_, settings_,
-                                 leave_}) {
-    if (control != nullptr) control->setEnabledState(joined);
+  for (ControlButton* control : {mic_, camera_, share_, listen_, settings_}) {
+    if (control != nullptr) control->setEnabledState(false);
   }
+  if (leave_ != nullptr) leave_->setEnabledState(joined && !busy_);
   if (mic_ != nullptr) {
     mic_->setIcon(state_.micMuted ? Theme::Icon::MicOff : Theme::Icon::Mic);
     mic_->setText(state_.micMuted ? QStringLiteral("闭麦")
