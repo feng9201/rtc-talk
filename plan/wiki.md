@@ -1,7 +1,12 @@
 # RTC Talk 改动与排障记录
 
+> 本文件是仓库唯一 wiki（原根目录 `wiki.md` 已于 2026-10-26 合并删除），客户端与服务端记录都同步到这里。
+
 > **第一部分（第 1~9 节）· 音轨 source 透传改动记录**（服务端）：已回退，部分内容已被上游 `62df51b` 覆盖。
-> **第二部分（2026-10-22）· 双人 SFU 对讲现场问题**（客户端）：双向无声与共享按钮置灰，已修复并实测验证。
+> **第二部分（2026-10-22）· 双人 SFU 对讲现场问题**（客户端）：双向无声与共享按钮置灰，已修复并实测验证；第 10~13 节为后续的视频 P1、多人视频、P2P 视频与 S4 客户端对接记录。
+> **第三部分（2026-10-24）· 服务端视频 P1 + S5 第一批**（服务端）：screen 独立静音、`media.producer`、`/metrics`、内存上限。
+> **第四部分（2026-10-25）· 服务端 S4 对讲形态**（服务端）：`floor.*`、`host.*`、主讲人与音量推送。
+> **第五部分（2026-10-25）· 音量/主讲人无数据与 setPolicy 整表重置**（服务端）：线上 `4a24f30` 修复的两个缺陷。
 
 ## 第一部分 · 音轨 source 透传改动记录
 
@@ -439,6 +444,7 @@ cd deploy && ./package.sh && ./deploy.sh   # 按现场发布流程执行
    - 客户端配合：一人两路必须在 join 时一次性发布两路 video m-line，之后只用 `media.setMute` / `SetSenderActive`，不要为启停单路重新 publish。
 5. **producer 暂停状态没有广播**
    - `watchProducer`（220-224）只处理 `close`，`pause/resume` 不通知别人，订阅端只能靠无帧推断。
+   - **2026-10-25 已解决（服务端 `333f795` + 客户端本轮适配）**：服务端新增 `media.producer{uid,mid,kind,source,paused}` 广播，客户端 UI 收到 `paused=true` 立即收掉对应画面；5 秒无帧超时降级为兜底。详见第 12 节。
    - 一人两路时 UI 需要区分「摄像头关」和「屏幕共享停」：建议新增 `media.producer` 事件（uid/mid/source/paused），或随 `room.peerUpdated` 带 `video.sources`。
 
 #### P2 建议（人数上来再做）
@@ -470,7 +476,7 @@ cd deploy && ./package.sh && ./deploy.sh   # 按现场发布流程执行
 1. `WebRtcMedia::StartP2p` / `AnswerP2p` 改为预加三条 m-line：音频 + 摄像头 + 屏幕，顺序与 SFU 一致（mid `0/1/2`）；新增 `ApplyP2pVideoState()` 按索引 0/1 应用摄像头/屏幕的采集状态。
 2. **应答方必须先 `SetRemote(offer)` 再 `AddTrack`**：`PeerConnection::AddTrack` 在 `pc_->remote_description() != nullptr` 时改走 `pc_->AddTrack()` 复用远端 m-line 的 transceiver；否则会多出一组本地 transceiver（`p2p_send_active` 出现 `audio2/video3/video4`），应答 m-line 变成 `recvonly` → 只收不发。
 3. `video.start/stop` 同时作用在 `send_`（SFU）与 `p2p_` 两个 PC 上；`SetVideoSink` 也同时下发两端，否则 P2P 画面进不了 UI。
-4. 会话层删掉 P2P 的 409 分支；摄像头启停在 P2P 下跳过 `media.setMute`（P2P 没有 producer），只靠 sender `active` 控制；`SwitchToSfu` 完成后若摄像头仍在采集，补发一次 `media.setMute{camera,false}` 恢复 P2P 期间一直 paused 的 producer。
+4. 会话层删掉 P2P 的 409 分支；摄像头启停在 P2P 下跳过 `media.setMute`（P2P 没有 producer），只靠 sender `active` 控制；`SwitchToSfu` 完成后按 `camera_sharing_`/`video_sharing_` 逐路补发 `media.setMute{camera|screen,false}` 恢复 P2P 期间一直 paused 的 producer（2026-10-25 起屏幕共享也走这条路径，见第 12 节）。
 5. 切换期去重：新增 `PeerConnection::SetVideoReceivePaused()`，P2P↔SFU 重叠期把已让出链路的两路视频接收 `set_enabled(false)`，避免同名 mid 的画面互盖。
 6. `MediaController` 对 `pc=p2p` 的 `video.track` 按到达顺序标注 `source=camera|screen`、`uid=对端`，UI 宫格与 SFU 一致。
 7. UI `ApplyVideoButtonState()` 不再按模式置灰，P2P 与 SFU 下摄像头/屏幕按钮行为一致（`p2p_mode_` 成员已移除）。
@@ -485,14 +491,67 @@ cd deploy && ./package.sh && ./deploy.sh   # 按现场发布流程执行
 
 #### 遗留
 
-- 未做能力位协商（`caps.p2p_video`）：只与最新版服务端/客户端互通，旧客户端不兼容。
+- ~~未做能力位协商（`caps.p2p_video`）：只与最新版服务端/客户端互通，旧客户端不兼容。~~ → 2026-10-25 已补：hello 上报 `caps.p2p_video=true`，服务端双方都声明才在 `room.mediaMode.p2p_video` 透出 true（见第 12 节）。
 - `talk-cli` 的 `--video-source` 默认值是 `screen`，测摄像头必须显式传 `--video-source camera`，否则会误以为摄像头未生效。
+
+### 12. 对接服务端视频 P1（`333f795`，2026-10-25）
+
+背景：服务端 `333f795` 上线视频 P1，客户端需要配合三件事才能完整受益（否则只是“不坏”）：停共享真正 pause producer（释放 `max_publishers` 名额）、对端停共享立即收画面（不再等 5 秒）、以及 P2P 视频能力位。
+
+#### 客户端改动
+
+1. **hello 上报 `caps.p2p_video`**（`call_session.cpp` `HandleOpen`）：服务端要求双方都声明才在 `room.mediaMode` 里回 `p2p_video=true`；客户端两路视频 m-line 是 P2P 预发布，能力上确实支持。
+2. **屏幕共享精确暂停**（`HandleVideoStart/Stop`）：原来只有摄像头走 `media.setMute`，屏幕路注释写着“producer 常驻 resume”。改为两路统一按 `source` 精确控制：P2P 下仍直接返回（无 producer），SFU 下 `start→setMute{source,muted:false}`、`stop→setMute{source,muted:true}`；失败只告警（画面停在最后一帧），不回滚。停共享后服务端把该 producer 计为暂停，`max_publishers` 名额释放（`room-media.ts` 按“未关闭且未暂停”计数）。
+3. **处理 `media.producer`**（`ui/qt/window.cpp` `HandleProducerState`）：`{uid,mid,kind,source,paused}` 里的 `mid` 是**发布方**的 mid，订阅端拿到的是 consumer mid，两者不同，所以只能按 `uid+source` 匹配本地 `video_tracks_`；`paused=true` 时立即 `RemoveVideoView`（日志“移除远端视频 mid=X：对端停止屏幕共享”），`paused=false` 不主动建视图，等第一帧到达由 `EnsureVideoView` 自然重建。`kind=audio` 直接忽略。
+4. `PruneVideoViews` 的 5 秒无帧超时保留作兜底（`media.producer` 在断线重连窗口可能丢），但不再是唯一手段；抽了 `RemoveVideoView(mid, reason)` 复用移除+重排逻辑。
+5. `talk-cli` 打印 `media.producer`（uid/kind/source/paused），方便联调时确认服务端是否真的 pause。
+6. `HandleMediaModeRequest` 日志带上 `p2p_video`，便于核对协商结果。
+
+#### 验证（测试服 `47.117.159.193`）
+
+- **P2P 双端（room `p2pvid9`）**：`切换媒体模式 mode=p2p p2p_video=true`（能力位生效）；`video.stop`/`start` 全程无 `media.setMute` 请求，`video.stop` 返回 `ok=true data={}`；`P2P 视频状态 camera_mid=1(有) screen_mid=2(有) 直播中=false/true ok=true/true`。
+- **3 人 SFU（room `sfuscreen2`）**：A 第 12 秒停共享、第 18 秒恢复；A 侧 `send_active.video2` 由 true→false→true、`video_capture.sharing` 同步；B/C 各收到一次 `media.producer{source:"screen",uid:"sa",paused:true}` 与 `paused:false`（后者无 `producer_id`，即 `setMute` 路径的广播），证明屏幕独立暂停/恢复生效，且音频与摄像头 producer 未被牵连。
+- 客户端 `cmake --build --preset windows-x64-release` 通过（仅 websocketpp 既有 C4267 告警）。
+
+#### 遗留
+
+- P2P 下停共享仍只能靠对端 5 秒无帧超时收画面（P2P 无 producer、无 `media.producer`），若以后要即时，需要走 DataChannel 或服务端在 P2P 房间转发一条轻量通知。
+- Qt 界面侧的“画面立即消失/恢复重建”需要真人验收（本轮只验证到事件到达与 CLI 日志）。
+
+### 13. 对接服务端 S4 对讲形态（`ff242ea` / 线上 `cd3fef2`，2026-10-25）
+
+背景：S4 上线发言权状态机（单 holder + FIFO 队列 + `ptt_max_hold_sec` 超时）与主持人命令。客户端不改就是错的：非 free 房间入房仍会本地开麦（服务端会 403）、看不到谁在说、被主持人收回也不会停发。
+
+#### 客户端改动
+
+1. **入房不再无条件开麦**（`call_session.cpp` `HandleJoin`）：`policy.talk_mode` 改为读本端配置（`--talk-mode` / Qt 设置项），joined 回调里再用房间真实 `policy` 校正；非 free 时强制 `floor_open_=false`、`gate()->store(true)`、`SetMuted(true)`。
+2. **本地拦截 `media.setMute{false}`**：非 free 且未持麦直接回 `403 需先申请发言权`，不浪费一次往返（服务端同样会拒）。
+3. **发言权会话状态**：新增 `HandleFloorCommand`（`floor.*`/`host.*`/`room.subscribeLevels` 直通）、`ApplyFloor`、`ApplyTalkMode`、`SetFloorMic`、`self_uid_`。`SetFloorMic` 只切本地采集门，**绝不再发 `media.setMute`**——服务端 `floors.hold()` 已经 resume producer（授予即 resume）。
+4. **倒计时换算**：`expires_at` 是服务端 epoch ms，用 `server_offset_ms_ = 本地now - hello.server_time`（心跳 `ping` 响应持续校正）换算成 `expires_in_ms` 再抛给 UI，避免两端时钟不一致把倒计时显示成负数。
+5. **通知分支**：`floor.state`（含 `self`/`talk_mode`/`ptt_queue` 附加字段）、`room.policyChanged`（重算模式并强制关麦）、`floor.revoked`（无论 `timeout`/`preempt`/`host` 一律停发）、`session.kicked`（记 `reason`，`retry_=false`，不当断线重连）、`media.forceMute` 保留。
+6. **Qt UI**（`ui/qt/window.cpp`）：新增“对讲模式”下拉（free/ptt/moderated，落 `app_settings`）、主持人按钮行（仅 `room.role==='host'` 且非 free 时显示 `放行/全体静音/移出`）、发言权标签 + 1 秒倒计时；“开麦”按钮双路——free 走 `clicked`，ptt/moderated 走 `pressed/released` 发 `floor.request/release`；成员列表显示 `[发言]`/`[排队N]` 与 5 格音量条；`HandleAudioLevels` 对缺失 uid 做半衰衰减，避免有人停口后条子一直挂着。
+7. **CLI**：新增 `--talk-mode`、`--ptt-request-at`、`--ptt-release-at`（无人值守联调用）；joined 时才自动 `media.setMute{false}` 且仅 free；打印 `floor.state`/`floor.revoked`/`room.policyChanged`/`room.audioLevels` 摘要。
+
+#### 验证（测试服 `47.117.159.193`，当时 `rev=cd3fef2`）
+
+- **PTT 主链路（`s4ptt3`）**：A `floor.local{open:true}` → `floor.state{holder:"sa",self:true,expires_in_ms:60012}` → `result{floor.request,granted:true}`；松手 `floor.local{open:false}` + `floor.state{holder:null}`。B 在 A 持麦时排队 `queue_pos=1`，A 释放后自动递补 `holder:"sb",self:true`。
+- **主持人链路（`s4host1`，python websockets 充当主持人）**：`host.grant{allow:false}` → A 收 `floor.revoked{reason:"host"}` + 本地门关；`host.muteAll` → A 收 `media.forceMute{source:"mic",by:"shost"}`；`host.kick{uid:"sb"}` → B 收 `session.kicked{reason:"kicked"}` 且 `state:disconnected` 无重连计划；`host.grant{allow:true}` → A **无需按键**即 `floor.local{open:true}`（证实授予即 resume）。
+- **忙线路径（`s4busy2`，房间创建时 `ptt_queue:false`）**：B 在 A 持麦时收到 `{"granted":false}`（无 `queue_pos`）→ UI 走“发言权忙线，请稍后再试”；同时 A 的 `expires_in_ms` 由 60013 降到 49045，证明服务端每次广播都按 `expires_at` 重算。
+- `cmake --build --preset windows-x64-release` 通过（仅 websocketpp 既有 C4267 告警）；`talk-qt.exe` 启动 6 秒冒烟正常。
+
+#### 遗留
+
+- ~~音量条拿不到数据~~ → **服务端 `4a24f30` 已修复**（2026-10-25，线上 `/healthz rev=4a24f30`）：根因是 `room-media.ts` 的 `enableObservers()` 从未 `addProducer`，修复细节见第五部分第 1 节。客户端订阅/渲染代码不变，仍待真声卡 + Qt 端复验数值。
+- ~~`host.setPolicy` 把 `talk_mode` 打回 `free`~~ → **服务端 `4a24f30` 已修复**：不只是 `talk_mode`，zod `.partial()` 保留 `.default()` 会把整张策略表回默认；现改为全 optional 的手写 schema + `mergePolicy` 逐字段合并，见第五部分第 2 节。
+- Qt 界面的人工验收未做：主持人按钮可见性、按住说话手感、成员列表 `[发言]`/`[排队N]` 与音量条渲染，需要真人双端/三端过一遍。
 
 ---
 
+> 第三～五部分合并自服务端 wiki（2026-10-26 同步，线上 `rev=4a24f30`），保留服务端视角原文；客户端侧实现与验证见第二部分第 12/13 节。已被服务端新版本推翻的结论按现况标注，历史行号失效处按符号定位。
+
 ## 第三部分 · 服务端视频 P1 + S5 第一批（2026-10-24）
 
-> 对应 `plan/talk-protocol.md` 本次扩展；服务端已落地，64 用例通过。客户端（Windows）需按第 4 节配合三处。
+> 对应 `plan/talk-protocol.md` 本次扩展；服务端已落地，64 用例通过。当时客户端（Windows）需按第 4 节配合三处，**已于 2026-10-25 全部完成**（见 §4 标注）。
 
 ### 1. 协议扩展（不升 v，旧客户端忽略未知字段）
 
@@ -530,9 +589,11 @@ cd deploy && ./package.sh && ./deploy.sh   # 按现场发布流程执行
 
 ### 4. 客户端待配合（Windows / RK）
 
-1. **停共享发 `media.setMute{source:"screen", muted:true}`**：当前 `call_session.cpp:403` 注释为“屏幕路 producer 常驻 resume，停采即停流，无需通知服务端”——SFU 下这样名额不释放、对端停在最后一帧。需在 `video.stop` 的 SFU 分支补发；`video.start` 时补 `muted:false`。
-2. **处理 `media.producer`**：`source=screen && paused=true` 时立即清空共享画面（不必等 RTP 超时）。
-3. **`session.hello` 上报 `caps.p2p_video`**：P2P 能带视频才置 true；不报则按 false 处理（P2P 仍可通话，但不得加视频 m-line）。
+> Windows 端已于 2026-10-25 全部完成（`f3790aa`，见第二部分第 12 节）；RK 端未做，以下保留问题背景。
+
+1. **停共享发 `media.setMute{source:"screen", muted:true}`**：当时 `HandleVideoStop` 的 SFU 分支注释为“屏幕路 producer 常驻 resume，停采即停流，无需通知服务端”（原文引 `call_session.cpp:403`，S4 改动后行号失效，按符号定位）——SFU 下这样名额不释放、对端停在最后一帧。需在 `video.stop` 的 SFU 分支补发；`video.start` 时补 `muted:false`。**已完成。**
+2. **处理 `media.producer`**：`source=screen && paused=true` 时立即清空共享画面（不必等 RTP 超时）。**已完成**（按 `uid+source` 匹配，见第 12 节）。
+3. **`session.hello` 上报 `caps.p2p_video`**：P2P 能带视频才置 true；不报则按 false 处理（P2P 仍可通话，但不得加视频 m-line）。**已完成。**
 
 ### 5. 未完成 / 下一步
 
@@ -544,7 +605,7 @@ cd deploy && ./package.sh && ./deploy.sh   # 按现场发布流程执行
 
 ## 第四部分 · 服务端 S4 对讲形态（2026-10-25）
 
-> 对应 `plan/talk-protocol.md` §8 / §8.1 / §8.2；服务端已落地，`npx vitest run` 75 用例通过，tsc / eslint / prettier 均干净。客户端（Windows / RK）需按第 4 节配合。
+> 对应 `plan/talk-protocol.md` §8 / §8.1 / §8.2；服务端已落地，`npx vitest run` 75 用例通过，tsc / eslint / prettier 均干净。
 
 ### 1. 新增能力
 
@@ -566,6 +627,7 @@ cd deploy && ./package.sh && ./deploy.sh   # 按现场发布流程执行
 - `room/room-manager.ts`：`policyChanged` 事件新增 `previous`，供 floor 判断 talk_mode 是否真的变了。
 - `media/room-media.ts`：`RoomMedia` 懒加载 `enableObservers()`（`createActiveSpeakerObserver({interval:300})` + `createAudioLevelObserver({maxEntries:24, threshold:-70, interval:500})`），转发 `dominantspeaker` / `volumes`；`close()` 一并关闭 observer。
   - 音量归一化：`(dBFS + 100) / 100` 并截断到 `0..1`、保留两位小数。
+  - producer 登记最初漏做，导致两条推送都无数据，修复见第五部分第 1 节。
 - `media/media-node.ts`：`setAudioObservers(sink)` 把 `(roomId, uid)` / `(roomId, entries)` 回灌给信令层；`resumedAudioCount(roomId, excludeUid)` 供 `max_speakers` 计数。
 
 ### 3. 语义与易踩坑
@@ -575,12 +637,14 @@ cd deploy && ./package.sh && ./deploy.sh   # 按现场发布流程执行
 3. **`ptt_queue=false` 的拒绝不带 `queue_pos`**：客户端应提示“忙线”并在下次按键重试，不要轮询。
 4. **`floor.request` 在 p2p 下 `409`**：发言权依赖服务端 `producer.pause()`，P2P 无服务端媒体面；切 `ptt/moderated` 会强制 SFU。
 5. **`host.muteAll` 会清空 floor**：被静音的人即使原本持有发言权也要重新 `floor.request`，且广播 `floor.state{holder:null}`。
-6. **observer 不覆盖 paused producer**：没上台的人不会出现在 `room.audioLevels.levels` 里：UI 用“先 `floor.state` 定颜色、用 `levels` 补音量条”的思路，而不是靠 `levels` 是否存在判断在麦人数。
-7. **音量订阅是会话级**：断线重连或重新 `session.hello` 后需重新 `room.subscribeLevels{enabled:true}`（服务端在会话销毁时清理）。
+6. **observer 不覆盖 paused producer**：observer 已登记全部 audio producer，但 `paused` 的 producer 没有 RTP 样本，不会出现在 `room.audioLevels.levels`；UI 用“先 `floor.state` 定状态、用 `levels` 补音量条”的思路，不要靠 `levels` 是否存在判断在麦人数。
+7. **音量订阅是会话级**：断线重连或重新 `session.hello` 后需重新 `room.subscribeLevels{enabled:true}`（服务端在会话销毁时清理）。（Windows 端每次 `joined` 包含断线恢复都会重发订阅，已满足。）
 8. **`host.kick` 先发再断**：目标端会先收到 `session.kicked{reason:"kicked"}`，随后 WS 以 `4003` 关闭；其他成员收到 `room.peerLeft{reason:"kicked"}`。不能踢自己（`400`）。
 9. **`free` 模式下 `host.grant` 返回 `409`**：没有发言权概念，客户端不要在自由通话里展示“放行/收回”按钮（`floor.request` 在 `free` 下始终 `{granted:true}`）。
 
-### 4. 客户端待配合（Windows / RK）
+### 4. 客户端接入要点（Windows / RK）
+
+> Windows 端已于 2026-10-25 完成（`f3790aa`，见第二部分第 13 节）：入房不自动开麦、`floor.request/release`、`floor.state` 倒计时与排队、`floor.revoked` 三种 reason 停发、`session.kicked` 不重连、主持人按钮、`room.subscribeLevels` 订阅。RK 端未做。
 
 1. **入房后不要本地直接开麦**：`talk_mode != free` 时服务端已强制静音，本地要先 `floor.request`，**收到 `granted:true` 后再恢复 RTP**（服务端此时已 `resume`）。
 2. **按键松手发 `floor.release`**：长时间不释放会被 `ptt_max_hold_sec` 收回并收到 `floor.revoked{reason:"timeout"}`，届时必须停发。
@@ -592,7 +656,7 @@ cd deploy && ./package.sh && ./deploy.sh   # 按现场发布流程执行
 
 ### 5. 测试
 
-`npx vitest run` 75 用例通过（本轮新增 11 个）：
+`npx vitest run` 75 用例通过（本轮新增 11 个；后续缺陷修复补充至 82 例，见第五部分）：
 
 - `floor.test.ts`（8）：空闲获批 + 排队去重、释放递补、超时递补（`floor.revoked{timeout}`）、`ptt_queue=false` 拒排、moderated 需主持人放行（含主持人自麦 + 改授 `preempt`）、离房清队列、切 ptt 全员暂停、free 不占 floor。
 - `s3.test.ts`（+1）：`runs ptt floor and host controls` —— ptt 强制 sfu、入房静音、request/release 递补、无发言权开麦 `403`、非主持人 `host.*` `403`、`host.muteAll` 全员静音+清 floor、`host.kick` 的 `session.kicked`/`peerLeft`。
@@ -600,7 +664,58 @@ cd deploy && ./package.sh && ./deploy.sh   # 按现场发布流程执行
 
 ### 6. 未完成 / 下一步
 
-- 客户端侧 S4（Windows 按键麦、排队 UI、音量条）尚未开始；RK3576 端同上。
+- 客户端侧 S4：Windows 已完成（2026-10-25，见第二部分第 13 节）；RK3576 端未开始。
 - `/metrics` 本轮未加 floor 相关指标（`talk_floor_holder_*` 等），如需大盘再补。
 - 多房间长时间抢麦压测（队列抖动、定时器泄漏）未做，建议在测试服跟 netem 一起验。
 
+---
+
+## 第五部分 · 音量/主讲人无数据与 setPolicy 整表重置（2026-10-25）
+
+> commit `4a24f30`，测试机 release `20261025-125719-4a24f30`（previous `cd3fef2` 可 `--rollback`）；`npx vitest run` 82 用例通过。两个缺陷客户端都无法绕过，已在服务端根除。
+
+### 1. 缺陷一：observer 建了但从未登记 producer
+
+**现象**：客户端订阅与渲染已就绪，`room.audioLevels` 与 `room.activeSpeaker` 却永远没有推送。
+
+**根因**：`media/room-media.ts` 的 `enableObservers()` 只创建 `ActiveSpeakerObserver` / `AudioLevelObserver` 并绑了 `dominantspeaker` / `volumes`，全程没有 `observer.addProducer(...)`。这两个 observer **采样对象是 Producer，与有没有 Consumer 无关**（原注释“需 Consumer 已存在才会出数据”是错的），不登记就一个包都拿不到。另有竞态：`createRoom` 不 `await enableObservers()`，先发布的那批 producer 会漏登记。
+
+**修复**：
+
+- `PeerMedia` 新增 `onProducer` 回调，producer 新建后立即上报；`RoomMedia.watchProducer()` 只处理 `kind === "audio"`，登记到两个 observer，`producer.observer.on("close")` 时从 `observed` 移除。
+- `enableObservers()` 幂等化（内部 `enabling` Promise），observer 就绪后**回补全量已发布 producer**，消除竞态。
+- `close()` 一并清 `observed` / `enabling`。
+
+**音量链路的外部条件**：mediasoup 从 RTP 头扩展 `ssrc-audio-level`（RFC 6464）取音量，不看 Opus 能量；worker 需累计 ≥10 个包且 `-level >= threshold(-70)` 才推送。**发布端 SDP 必须带 `a=extmap:N urn:ietf:params:rtp-hdrext:ssrc-audio-level` 并在 RTP 头写该扩展**——浏览器与 libwebrtc（Windows 客户端用的就是它）默认会带，werift / 自研模拟器默认不带（之前 bot 冒烟“RTP 有包、音量没数”就是此原因）。
+
+### 2. 缺陷二：host.setPolicy 把整张策略表打回默认
+
+**现象**：ptt / moderated 房间主持人只改 `{ptt_queue:false}`，`talk_mode` 却被打回 `free`。
+
+**根因**：`PolicyInputSchema = PolicySchema.partial().extend(...)`，而 **zod 4 的 `.partial()` 会保留 `.default()`**（实测 4.6.7：`parse({ptt_queue:false})` → `{talk_mode:"free", ptt_queue:false}`）。`setPolicy` 用 `{...room.policy, ...patch}` 整体合并，缺失字段被默认值覆盖——**不止 `talk_mode`，而是整张策略表**（`max_speakers` / `ptt_max_hold_sec` / `media_mode` / `p2p_allow_relay` / `max_peers` / `video.enabled` / `video.max_publishers`）。
+
+**次生影响**：房间被悄悄切成 `free` 后 floor 的 `onPolicy` 不再暂停非持有人，麦口约束直接失效；客户端只能被动靠 `room.policyChanged` 收尾。
+
+**修复**：
+
+- `PolicyInputSchema` 改为手写，**全 optional 且不带 default**（含 `video` 内层）。
+- 新增 `mergePolicy(current, patch, maxPeersLimit)`：`??` 逐字段合并、`video` 嵌套逐字段、`max_peers` 夹紧服务端上限；`room-manager.setPolicy` 改用它。
+- `buildPolicy` 保留默认填充，只用于入房建策略。
+
+### 3. 验证
+
+| 层面 | 内容 |
+|---|---|
+| 单测 | 82 用例 / 13 文件全绿；新增 `policy.test.ts` 6 例（`Object.keys` 断言无多余键、逐字段合并、`false` 不被吞、`max_peers` 夹紧） |
+| 集成 | `s3.test.ts` 加回归：ptt 房间只改 `ptt_queue` 后 `talk_mode` 仍 `ptt`；`sfu.int.test.ts` 加 observer 端到端用例（werift offer 注入音量扩展后断言 `audioLevels` / `activeSpeaker`） |
+| 公网 | bot 2 人音频：各收约 240 个 RTP 包，且各收到 9 次 `audioLevels`（`loudest=0.9`，与注入 `level=10`→`-10 dBov` 一致）、`activeSpeaker=bot-1` |
+| 公网 | policy 冒烟 9 项 PASS：局部改 `ptt_queue` / `video.max_publishers` 不动其它字段，显式改 `talk_mode` 仍生效；S4 信令冒烟 19 项回归 PASS |
+
+2026-10-26 复核：线上 `GET /healthz` 返回 `rev=4a24f30`，确认修复已上线（`previous` 为 `cd3fef2`，含上述两个缺陷，仅用于回滚逃生）。
+
+### 4. 结论与遗留
+
+- 客户端**无需改代码**：音量条、主讲人、策略回退三条链路的问题都在服务端；Windows 端订阅与渲染已就绪（第二部分第 13 节），仍需真声卡复验 Qt 音量条数值。
+- `room.activeSpeaker` 服务端已推送，Windows 端暂未消费（成员列表用 `floor.state` 定颜色、`audioLevels` 补音量），需要“主讲人高亮”时再接。
+- 自研发布端（bot / 嵌入式 / 模拟器）要出音量必须发 RFC 6464 扩展；`plan/talk-protocol.md` §8.2 尚未补这一句（协议文档待补，客户端不受影响）。
+- 回滚：`deploy/deploy.sh --rollback` 切回 `cd3fef2`。
