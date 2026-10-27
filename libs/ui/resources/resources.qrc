@@ -1,0 +1,5 @@
+<RCC>
+  <qresource prefix="/rtcwin">
+    <file>theme.qss</file>
+  </qresource>
+</RCC>
