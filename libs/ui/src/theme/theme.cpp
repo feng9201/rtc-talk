@@ -10,6 +10,9 @@
 #include <QPushButton>
 #include <QStyleFactory>
 
+static void InitRtcwinResources() {
+  Q_INIT_RESOURCE(resources);
+}
 namespace rtcwin::ui::theme {
 namespace {
 
@@ -35,21 +38,22 @@ QPainterPath Polyline(const QRectF& rect,
 }  // namespace
 
 void Apply(QApplication& app) {
+  InitRtcwinResources();
   app.setStyle(QStyleFactory::create(QStringLiteral("Fusion")));
   QPalette palette;
-  palette.setColor(QPalette::Window, QColor(QStringLiteral("#0a0d11")));
-  palette.setColor(QPalette::WindowText, QColor(QStringLiteral("#e7eef4")));
-  palette.setColor(QPalette::Base, QColor(QStringLiteral("#0d1319")));
+  palette.setColor(QPalette::Window, QColor(QStringLiteral("#0b0d10")));
+  palette.setColor(QPalette::WindowText, QColor(QStringLiteral("#e8edf2")));
+  palette.setColor(QPalette::Base, QColor(QStringLiteral("#0c1218")));
   palette.setColor(QPalette::AlternateBase,
-                   QColor(QStringLiteral("#121a21")));
-  palette.setColor(QPalette::Text, QColor(QStringLiteral("#e7eef4")));
-  palette.setColor(QPalette::Button, QColor(QStringLiteral("#151d25")));
-  palette.setColor(QPalette::ButtonText, QColor(QStringLiteral("#e7eef4")));
+                   QColor(QStringLiteral("#11171d")));
+  palette.setColor(QPalette::Text, QColor(QStringLiteral("#e8edf2")));
+  palette.setColor(QPalette::Button, QColor(QStringLiteral("#151e27")));
+  palette.setColor(QPalette::ButtonText, QColor(QStringLiteral("#e8edf2")));
   palette.setColor(QPalette::Highlight, QColor(QStringLiteral("#55c2ff")));
   palette.setColor(QPalette::HighlightedText,
-                   QColor(QStringLiteral("#071116")));
+                   QColor(QStringLiteral("#04141c")));
   palette.setColor(QPalette::PlaceholderText,
-                   QColor(QStringLiteral("#657483")));
+                   QColor(QStringLiteral("#5c6b79")));
   app.setPalette(palette);
 
   QFile file(QStringLiteral(":/rtcwin/theme.qss"));
@@ -183,6 +187,8 @@ QPixmap Pixmap(Icon icon, int size, const QColor& color) {
 QFrame* Card(QWidget* parent, const QString& object_name) {
   auto* card = new QFrame(parent);
   card->setObjectName(object_name);
+  card->setAttribute(Qt::WA_StyledBackground, true);
+
   return card;
 }
 

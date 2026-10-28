@@ -37,6 +37,7 @@ target_include_directories(rtcwin_ui PUBLIC
 target_link_libraries(rtcwin_ui
   PUBLIC
     rtcwin_client_gateway
+    rtcwin_muxplayer_adapter
     Qt5::Core
     Qt5::Gui
     Qt5::Widgets

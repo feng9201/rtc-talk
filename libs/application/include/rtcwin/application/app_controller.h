@@ -4,6 +4,7 @@
 #include "rtcwin/application/settings_store.h"
 
 #include <QObject>
+#include <QVector>
 
 #include <memory>
 
@@ -30,6 +31,9 @@ class AppController final : public QObject {
   void RequestFloor();
   void ReleaseFloor();
   void SelectPeer(const std::string& uid);
+  void RefreshCameras();
+  void StartCameraPreview(int device_index);
+  void StopCameraPreview();
 
  signals:
   void SnapshotChanged(const rtcwin::domain::SessionSnapshot& snapshot);
@@ -38,6 +42,11 @@ class AppController final : public QObject {
   void BusyChanged(bool busy, const QString& message);
   void ErrorOccurred(const QString& message, const QString& detail);
   void Notice(const QString& message, const QString& tone);
+  void CameraDevicesChanged(
+      const QVector<rtcwin::domain::CameraDevice>& devices);
+  void CameraPreviewChanged(bool active, const QString& device, int width,
+                            int height, int fps);
+  void LocalFrameReceived(const rtcwin::domain::VideoFrame& frame);
 
  private:
   std::optional<domain::AppError> Validate(

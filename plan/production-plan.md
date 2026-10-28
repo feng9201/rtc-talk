@@ -1,493 +1,879 @@
-# rtc-talk-win 生产开发计划
+# rtc-talk-win 详细开发计划（muxPlayer 优先）
 
-> 状态：待用户确认；确认前不开始业务代码。  
-> 日期：2026-10-26  
-> 需求基线：`docs/requirements.md`  
-> 工程目录：`D:\google\webrtc-win-client\rtc-talk-win`  
-> 独立 Git 仓库初始分支：`rtc-talk-win`
+> 状态：S1 已完成，P5 UI 已与 `talk-desktop.exe` 对齐，待用户验收；S2 未开始。
+> 日期：2026-10-28
+> 当前代码基线：`rtc-talk-win@d49836f` + S1 implementation commit
+> 第一验收目标：完成 muxPlayer 接入，并用本机摄像头完成真实预览联调。
+> 约束：WebRTC 音频仍由 WebRTC AudioDeviceModule 处理；muxPlayer 只作为视频渲染基础设施。
 
-## 1. 仓库与工程决策
+## 1. 当前基线
 
-目标目录位于现有 `rtc-talk` 仓库之外，因此本工程作为**独立 Git 仓库**管理，
-初始分支为 `rtc-talk-win`。现有 `rtc-talk` 仓库只读，不修改、不切换、
-不提交、不合并。
+S1 已完成：
 
-首批提交前建立以下基线文件：
+- 独立工程 `rtc-talk-win`，模块保持 domain/application/client_api/engine/client_gateway/ui 分层。
+- `rtcwin_engine.dll` 提供版本化 C ABI、异步命令队列和本地 I420 回调。
+- Media Foundation 摄像头枚举、NV12 采集和 I420 转换已接入 Engine。
+- Client Gateway 消费本地帧，并采用“只保留最新帧”的 UI 投递背压。
+- muxPlayer 完整源码树已迁入 `third_party/muxplayer`，S1 启用软件 OpenGL 渲染子集。
+- muxPlayer 用户依赖 mtAudio、mtAudioPlayer、tmcore、flvparser 已完整迁入 `third_party`。
+- FFmpeg 依赖由私有 vcpkg registry 固定版本获取；Qt/VS 仅作为开发环境。
+- P5 MEDIA 预入会 UI、主题资源、胶囊控件、窗口控件和摄像头重新扫描已移植。
+- 已修复静态 UI 库 QRC 资源未初始化导致 `theme.qss` 不生效的问题。
+- Release、Debug 构建通过，CTest 1/1 通过，真实摄像头出画已验证。
 
-```text
-rtc-talk-win/
-  .gitignore
-  .editorconfig
-  CMakeLists.txt
-  CMakePresets.json
-  vcpkg.json
-  vcpkg-configuration.json
-  README.md
-  docs/
-    requirements.md
-    architecture.md
-    coding-standard.md
-    adr/
-  plan/
-    production-plan.md
-```
+S1 后剩余工作：
 
-如果用户原意是“在旧 `rtc-talk` 仓库创建分支”，而不是独立仓库，应在编码前停止并调整；
-当前按目标目录和“新工程”描述选择独立仓库。
+- 信令、认证和房间生命周期。
+- libwebrtc 音频、视频发布/订阅和 P2P/SFU。
+- 远端视频、屏幕共享、设备热插拔和诊断。
+- muxPlayer WGL/D3D11 零拷贝后端启用。
+- 安装包、发布验收和生产稳定性测试。
+## 2. 第一里程碑范围
 
-## 2. 只读参考基线
-
-| 参考 | 用途 | 约束 |
-|---|---|---|
-| `rtc-talk@bbb3891` | 已验证过的行为样本、联调场景 | 只读 |
-| `client-win` demo | 协议能力、设备能力、历史缺陷 | 只读 |
-| `qt-ui-prototype` | 视觉、布局、QSS 参考 | 只读 |
-| 服务端 `origin/main` | 协议权威实现 | 只读，联调前重新确认提交号 |
-| `device_tool/omni_station` | Qt 工程结构、无边框、视频窗口参考 | 只读 |
-| `D:/google/webrtc_sdk_hevc` | WebRTC SDK | 只链接，不修改 |
-
-联调开始时在 `docs/integration-baseline.md` 记录实际服务端提交、SDK 版本和
-工程版本；未记录基线不得声明集成通过。
-
-## 3. 代码来源规则
-
-1. demo 只提供需求和回归场景，不作为生产代码结构模板。
-2. 复用算法时，先写成独立 adapter/utility，再补接口、测试、错误处理和生命周期。
-3. 禁止跨模块 include demo 私有头文件。
-4. 禁止把 demo 的大型 `WebRtcMedia`、`CallSession` 原样复制后继续扩展。
-5. 每个迁移能力建立“行为对照表”：输入、输出、事件、失败路径、线程约束。
-6. 代码评审发现 demo 结构泄漏时，该模块不得验收。
-
-## 4. 目标架构
+只完成以下链路，不接信令、不接 WebRTC、不做远端视频：
 
 ```text
-┌─────────────────────────────────────────────────────────────┐
-│ apps/rtc-talk                                               │
-│ Bootstrap · DI · lifecycle · single-instance · crash guard  │
-└──────────────────────────────┬──────────────────────────────┘
-                               │ application interfaces
-┌──────────────────────────────▼──────────────────────────────┐
-│ ui/                                                         │
-│  shell · pages · widgets · video surfaces · models · theme  │
-└──────────────────────────────┬──────────────────────────────┘
-                               │ typed state / commands
-┌──────────────────────────────▼──────────────────────────────┐
-│ application/                                                │
-│  SessionService · DeviceService · SettingsService           │
-│  DiagnosticsService · ViewModels · state reducers           │
-└──────────────────────────────┬──────────────────────────────┘
-                               │ domain ports
-┌──────────────────────────────▼──────────────────────────────┐
-│ domain/                                                     │
-│  Session · Room · Member · Floor · Policy · MediaStream     │
-│  Device · Diagnostics · Result/Error · typed events         │
-└──────────────────────────────┬──────────────────────────────┘
-                               │ ports
-┌──────────────────────────────▼──────────────────────────────┐
-│ infrastructure/                                             │
-│  signaling · WebRTC adapter · camera · audio · screen      │
-│  Windows settings/credential · logging · diagnostics        │
-└──────────────────────────────┬──────────────────────────────┘
-                               │ versioned C ABI
-┌──────────────────────────────▼──────────────────────────────┐
-│ rtc_engine.dll                                              │
-│  Signaling codec · session engine · media orchestration     │
-└──────────────────────────────┬──────────────────────────────┘
-                               │
-                    libwebrtc / Windows devices
+Windows Camera
+  -> Media Foundation enumeration/capture
+  -> NV12
+  -> I420 frame pool
+  -> rtcwin_engine C ABI local frame callback
+  -> Client Gateway UI-thread frame bridge
+  -> muxPlayer RawFrameInjector
+  -> muxPlayer Live render
+  -> GLPlayWidget
+  -> PrejoinPage local preview
 ```
 
-### 4.1 依赖方向
+本里程碑成功时：
+
+- 入房页能列出真实摄像头名称。
+- 选择设备后可启动/停止本地预览。
+- muxPlayer 显示真实摄像头画面。
+- 支持 1280x720、约 15fps。
+- 连续开关 100 次无崩溃、无设备泄漏。
+- 关闭预览后摄像头可被其他程序立即重新打开。
+- Debug/Release 构建和测试通过。
+- 生成真实预览截图和测试报告。
+
+明确不在第一里程碑：
+
+- 信令连接
+- WebRTC 发布/订阅
+- 远端视频
+- 屏幕共享
+- 音频设备枚举
+- 安装包
+
+## 3. 关键架构决策
+
+### 3.1 muxPlayer 的位置
+
+- muxPlayer 运行在 `rtc-talk.exe` UI 进程。
+- muxPlayer 使用 `/MD`，与 Qt UI 一致。
+- `rtcwin_engine.dll` 保持纯媒体引擎，不链接 Qt 或 muxPlayer。
+- 摄像头采集在 Engine，视频显示在 UI 的 muxPlayer。
+
+### 3.2 第一版渲染路径
+
+首选：
 
 ```text
-ui -> application -> domain
-application -> domain
-infrastructure -> domain
-apps -> ui + application + infrastructure
-domain -> standard library only
+I420 CPU frame
+  -> muxPlayer RawVideoSource
+  -> muxPlayer Live RenderScheduler
+  -> SoftGLDisplay
+  -> GLPlayWidget YUV shader
 ```
 
-禁止反向依赖：
+原因：
 
-- `domain` 不得依赖 Qt、WebRTC、Windows SDK、JSON。
-- `ui` 不得依赖 `infrastructure` 具体实现。
-- `application` 不得依赖 PeerConnection、Media Foundation 或 QWidget。
-- `infrastructure` 不得操作 QWidget。
+- 摄像头输出可以直接转换为 I420。
+- 不经过 H.264 二次编码。
+- 不依赖 NVIDIA WGL interop。
+- OpenGL 3.3 即可运行。
+- 后续可增加 D3D11 上传/共享纹理路径，不需要改 UI 页面。
 
-### 4.2 关键端口
+备用路径：
+
+```text
+I420 CPU frame
+  -> muxPlayer RawVideoSource
+  -> D3D11FrameRenderer CPU upload
+```
+
+首版不实现 CUDA，不使用 QImage 作为生产兜底。
+
+### 3.3 原始帧所有权
+
+- C ABI 帧指针只在回调期间有效。
+- Engine 使用有界 I420 frame pool。
+- Gateway 在回调内复制或取得带引用计数的 frame lease。
+- UI 每路只保留最新帧。
+- muxPlayer 渲染完成前不得回收 frame。
+- 禁止把 WebRTC/media 线程指针直接交给 QWidget。
+
+### 3.4 muxPlayer 来源
+
+只读来源：
+
+```text
+D:\work\device_tool\muxPlayer
+device_tool@4c3da7bf8ec92c0826e143918403cba5d61ab1db
+```
+
+新工程处理方式：
+
+```text
+third_party/muxplayer/
+  VERSION.md
+  PATCHES.md
+  source/
+  patches/
+```
+
+记录文件清单和 SHA256，不直接依赖 device_tool 工作树。
+
+## 4. 模块变更
+
+### 4.1 `third_party/muxplayer`
+
+任务：
+
+- 固定 muxPlayer 源码快照。
+- 拆分或补齐独立 CMake，去掉 GLOB。
+- 构建 `muxPlayer.dll`，运行时 `/MD`。
+- 锁定 FFmpeg、mtAudio、mttool、log-cpp、OpenSSL、cpr 等依赖版本。
+- 只启用首版需要的模块。
+
+### 4.2 `libs/muxplayer_adapter`
+
+新增目标：
+
+```text
+rtcwin_muxplayer_adapter
+```
+
+职责：
+
+- muxPlayer 初始化/关闭。
+- Raw frame injector。
+- muxPlayer session 生命周期。
+- GL/D3D 能力检测。
+- GPU 选择。
+- 渲染状态和统计数据。
+- 向 UI 暴露稳定接口，不暴露 muxPlayer 私有头文件。
+
+预计文件：
+
+```text
+mux_player_environment.h/.cpp
+raw_frame_injector.h/.cpp
+mux_player_session.h/.cpp
+mux_player_surface.h/.cpp
+mux_render_capabilities.h/.cpp
+```
+
+对外接口：
 
 ```cpp
-class ISignalingTransport;
-class ISessionEngine;
-class IAudioService;
-class ICameraService;
-class IScreenService;
-class IPreviewSession;
-class IVideoPublisher;
-class IRemoteVideoStreams;
-class IMediaStatistics;
-class IClock;
-class ICredentialStore;
+class MuxPlayerSurface final : public QWidget {
+ public:
+  bool Open(const MuxSurfaceOptions&);
+  void SubmitFrame(FrameLease frame);
+  void SetMirrored(bool);
+  void Clear();
+  void Close();
+};
 ```
 
-具体命名在 W2 通过接口评审后定稿。接口必须满足：
+### 4.3 muxPlayer 补丁
 
-- 强类型输入输出。
-- 明确同步/异步语义。
-- 提供 cancellation/generation。
-- 可注入 Fake 实现。
-- 不暴露 JSON、QWidget、WebRTC 或 COM 类型。
+必须新增：
 
-## 5. 目录结构
+```cpp
+enum class RawVideoMemoryType { CpuI420, CpuNv12, D3D11Texture };
+
+struct RawVideoFrame {
+  uint64_t frame_id;
+  int64_t pts_ms;
+  int width;
+  int height;
+  RawVideoMemoryType memory_type;
+  RawVideoPlane planes[3];
+  void* native_texture;
+  uint32_t subresource;
+};
+
+bool MultiplexPlayer::openRawVideo(const RawVideoOpenOptions&,
+                                   PlayerStatusCallback, void*);
+bool MultiplexPlayer::pushRawVideoFrame(const RawVideoFrame&);
+```
+
+实现要求：
+
+- `openRawVideo` 只创建渲染管线，不创建解码器/解封装器。
+- 使用 Live 模式，帧到即渲染。
+- latest-frame queue 深度为 1。
+- `pushRawVideoFrame` 非阻塞。
+- `close()` 幂等，重复调用安全。
+- close 后拒绝新帧。
+- 回调通知只在对象存活时执行。
+- 不改变现有 open/openFlv/injectExternalStream 行为。
+
+### 4.4 `libs/camera_win`
+
+新增目标：
 
 ```text
-rtc-talk-win/
-  apps/
-    rtc-talk/
-      app_bootstrap.*
-      main.cpp
-  libs/
-    domain/
-    application/
-    protocol/
-    client_api/
-      include/rtc/client_api.h
-    platform_win/
-    camera_win/
-    audio_win/
-    screen_win/
-    webrtc_media/
-    engine/
-    ui/
-      shell/
-      components/
-      pages/
-      video/
-      theme/
-      models/
-  tests/
-    unit/
-    integration/
-    smoke/
-    fixtures/
-  tools/
-    talk-cli/
-    camera-probe/
-  packaging/
-    windows/
-  scripts/
-  docs/
-  plan/
+rtcwin_camera_win
 ```
 
-### 5.1 CMake 目标
+对外接口：
 
-| 目标 | 职责 | 运行库 |
+```cpp
+class ICameraService {
+ public:
+  virtual std::vector<CameraDeviceInfo> Enumerate() = 0;
+  virtual std::unique_ptr<ICameraCaptureSession> Open(
+      const CameraOpenOptions&) = 0;
+};
+
+class ICameraCaptureSession {
+ public:
+  virtual bool Start(CaptureCallback, ErrorCallback) = 0;
+  virtual void Stop() = 0;
+  virtual CameraCaptureState State() const = 0;
+};
+```
+
+实现要求：
+
+- Media Foundation 枚举摄像头。
+- 稳定设备 ID，不使用 UI 序号作为长期标识。
+- 设备名、分辨率、FPS 能力。
+- 独立 COM MTA 采集线程。
+- 默认协商 1280x720 / 15fps。
+- 不支持时选择最接近的偶数分辨率。
+- NV12 -> I420。
+- 有界 frame pool。
+- 权限、占用、拔插、格式错误分类。
+- Start/Stop 幂等，连续开关安全。
+
+### 4.5 Engine
+
+新增本地摄像头命令：
+
+```text
+camera.devices
+camera.preview.start
+camera.preview.stop
+camera.preview.select
+```
+
+命令参数：
+
+```json
+camera.preview.start: { "device_id": "...", "width": 1280, "height": 720, "fps": 15 }
+camera.preview.stop: {}
+```
+
+事件：
+
+```text
+camera.devices.changed
+camera.preview.state { state, device_id, width, height, fps }
+camera.preview.error { code, message, detail }
+```
+
+本地帧通过 `rtcwin_options.on_local_frame` 回传。
+
+Engine 首版不依赖 WebRTC，摄像头模块可独立测试。
+
+### 4.6 Client Gateway
+
+任务：
+
+- 接通 `on_local_frame` 回调。
+- 将 I420 frame 转为 FrameLease。
+- QueuedConnection 投递到 UI 线程。
+- 按 `mid`/source 路由到 muxPlayer Surface。
+- 处理关闭后迟到帧。
+- 连接 `camera.devices` 结果到 PrejoinPage。
+- 连接预览状态和错误。
+
+### 4.7 UI
+
+PrejoinPage 改动：
+
+- 摄像头下拉框启用真实设备。
+- 显示设备能力。
+- 刷新设备按钮。
+- 启动/停止预览按钮接真实命令。
+- 预览区域使用 `MuxPlayerSurface`。
+- 状态显示启动中、预览中、错误。
+- 设备被占用、权限拒绝时有明确提示。
+
+房间页本轮不改远端视频逻辑，只保留后续接入点。
+
+## 5. 分阶段任务
+
+### P0：计划与依赖审计（0.5 天）
+
+任务：
+
+- 确认 muxPlayer 源码版本和许可证。
+- 确认 FFmpeg/mtAudio/mttool 依赖版本。
+- 固定 muxPlayer 目录快照。
+- 记录 Windows/GPU/OpenGL 环境。
+- 确认摄像头测试设备。
+
+交付：
+
+- `third_party/muxplayer/VERSION.md`
+- 依赖清单
+- 本地设备测试基线
+
+验收：
+
+- 依赖来源明确，无读取 device_tool 活动工作树作为构建依赖。
+
+### P1：muxPlayer 可构建（1 天）
+
+任务：
+
+- 引入 muxPlayer 源码。
+- 编写独立 CMake target。
+- 完成 `/MD` 构建。
+- 输出 `muxPlayer.dll`。
+- 在 UI 进程完成空白 GLPlayWidget 初始化和关闭。
+- windeploy 所需 DLL 到构建输出目录。
+
+交付：
+
+- `muxPlayer.dll`
+- `rtcwin_muxplayer_adapter`
+- 空白视频窗口组件
+
+验收：
+
+- Debug/Release 构建通过。
+- 空白 GL widget 打开/关闭 100 次无崩溃。
+- 不依赖 D3D 解码路径即可显示固定颜色。
+
+### P2：muxPlayer 原始帧注入（1.5 天）
+
+任务：
+
+- 增加 RawVideoFrame/RawVideoSource API。
+- 增加 latest-frame queue。
+- 接入 Live RenderScheduler 和 SoftGLDisplay。
+- 实现 openRawVideo/pushRawVideoFrame/close。
+- 创建合成 I420 测试帧。
+- 增加 stride、尺寸、内存所有权校验。
+
+交付：
+
+- muxPlayer raw frame patch。
+- 合成 I420 渲染测试。
+- adapter 单元测试。
+
+验收：
+
+- 1280x720 I420 测试画面连续渲染。
+- 30fps 合成帧队列不积压。
+- close 后不再回调。
+- 重复 close 安全。
+- 画面尺寸/stride 不正确时拒绝并不崩溃。
+
+### P3：本地摄像头采集与 C ABI（1.5 天）
+
+任务：
+
+- 实现 Media Foundation 摄像头枚举。
+- 实现采集会话和 NV12->I420。
+- 增加 camera.* 命令。
+- 本地 I420 frame callback。
+- 设备占用/权限错误映射。
+- 设备热插拔基础处理。
+
+交付：
+
+- `rtcwin_camera_win`
+- Engine camera 命令
+- C ABI 本地帧
+- camera probe 测试工具
+
+验收：
+
+- 本机摄像头列出。
+- 开启后稳定 1280x720/15fps。
+- 停止后可被其他程序重新打开。
+- 连续开关 100 次通过。
+- 错误可恢复，不崩溃。
+
+### P4：UI 本地预览联调（1 天）
+
+任务：
+
+- PrejoinPage 填充真实摄像头。
+- 启动/停止按钮接 Engine。
+- muxPlayer Surface 接 Gateway 帧。
+- 状态和错误提示。
+- 镜像、宽高比、DPI。
+
+交付：
+
+- 真实本地预览界面
+- 截图
+- 运行说明
+
+验收：
+
+- 入房页显示真实画面。
+- 启动延迟小于 2 秒。
+- 1280x720 画面比例正确。
+- 125%/150% DPI 不裁切。
+- 停止预览立即清屏。
+
+### P5：稳定性与提交验收（1 天）
+
+任务：
+
+- 10 分钟预览稳定性。
+- 连续启动/停止 100 次。
+- 设备切换。
+- 摄像头被占用。
+- 权限拒绝。
+- OpenGL 不可用降级测试。
+- 内存、句柄、线程检查。
+- Debug/Release 全量回归。
+
+验收：
+
+- 无崩溃、无死锁、无持续内存增长。
+- 关闭后摄像头句柄完全释放。
+- 日志可定位设备、帧率和错误。
+- 生成测试报告和截图。
+
+第一里程碑总预估：**5.5–6.5 个有效工作日**。
+
+## 6. 测试计划
+
+### 6.1 单元测试
+
+- I420 尺寸/stride 校验。
+- latest-frame queue 丢旧保新。
+- muxPlayer session open/close 幂等。
+- 摄像头错误码映射。
+- C ABI 参数校验。
+- 本地帧 generation 隔离。
+
+### 6.2 组件测试
+
+- 合成 I420 -> muxPlayer -> Surface。
+- 摄像头枚举。
+- 摄像头采集 -> I420 callback。
+- 100 次启动/停止。
+- 预览停止后设备释放。
+
+### 6.3 集成测试
+
+- rtc-talk.exe -> Gateway -> Engine -> Camera -> Frame callback -> muxPlayer。
+- 真实摄像头预览。
+- 错误路径。
+
+### 6.4 人工验收
+
+- 画面正确、无明显延迟。
+- 设备名正确。
+- 镜像正确。
+- 停止按钮立即生效。
+- 重新启动预览正常。
+- 应用关闭后摄像头指示灯熄灭。
+
+## 7. 性能指标
+
+| 指标 | 目标 |
+|---|---|
+| 设备枚举 | < 3 秒 |
+| 预览首帧 | < 2 秒 |
+| 采集帧率 | 15fps，允许 12–16fps 波动 |
+| UI 刷新 | 30fps 合并上限 |
+| 端到端延迟 | < 150ms（不含显示刷新） |
+| 10 分钟内存增长 | 可解释且稳定 |
+| 连续开关 | 100 次无失败 |
+| 空闲 CPU | 预览关闭时接近 0 |
+
+## 8. 风险与处理
+
+| 风险 | 处理 |
+|---|---|
+| muxPlayer 当前不支持原始帧 | P2 先完成 RawVideoFrame API |
+| muxPlayer 源码依赖复杂 | P0 固定源码和依赖，P1 单独构建验证 |
+| Qt `/MD` 与 muxPlayer 依赖不匹配 | muxPlayer 只在 UI 进程，独立 target |
+| 摄像头权限/占用 | 强类型错误，可切换设备，不退出应用 |
+| 帧生命周期错误 | FrameLease + 回调内复制/引用计数 |
+| OpenGL 兼容性 | 先 SoftGL，保留 D3D11 fallback |
+| 多实例渲染资源 | 第一版单预览 session，后续做 pool |
+| 连续开关死锁 | 明确 Start/Close owner 线程和 join 顺序 |
+| 设备序号变化 | 使用稳定 DeviceId，不持久化 index |
+
+## 9. 第一里程碑完成定义
+
+只有以下全部满足才进入信令/WebRTC 开发：
+
+1. muxPlayer 已从固定源码版本成功构建。
+2. 原始 I420 帧注入可用。
+3. 本机摄像头能在入房页列出。
+4. muxPlayer 显示真实摄像头画面。
+5. 启动、停止、重复启动和设备切换可用。
+6. CTest 全部通过。
+7. Debug/Release 构建通过。
+8. 100 次开关和 10 分钟稳定性通过。
+9. 关闭预览后摄像头资源释放。
+10. 用户完成真实画面验收。
+
+## 10. 后续阶段（本轮不执行）
+
+第一里程碑通过后，按顺序进入：
+
+1. 信令连接、hello、room join/leave。
+2. WebRTC 音频发布/订阅。
+3. 摄像头和屏幕共享发布。
+4. 远端视频 I420 帧注入 muxPlayer。
+5. 多路 muxPlayer session pool、宫格和共享布局。
+6. PTT、发言权和主持人。
+7. 设备、统计、诊断和安装包。
+
+本轮只执行 P0–P5，完成本地摄像头 + muxPlayer 真实联调。
+
+## 11. 全项目开发周期总计划
+
+### 11.1 能否确定完整计划
+
+可以确定完整开发阶段、依赖关系、交付物和验收门禁，但不能在没有完成以下技术验证前承诺固定发布日期：
+
+1. muxPlayer 在 `/MD` UI 进程中的完整构建和运行。
+2. muxPlayer 原始 I420 帧注入补丁。
+3. 本机摄像头设备、权限和 OpenGL 渲染链路。
+4. 服务端 WSS、信令和媒体链路是否已达到生产可用状态。
+5. libwebrtc SDK 与 Qt/Engine 的 CRT 和线程集成。
+
+因此本计划采用：
+
+- 阶段固定。
+- 顺序固定。
+- 交付物固定。
+- 验收标准固定。
+- 工作量使用区间。
+- 每个阶段完成后重新校准剩余工期。
+
+### 11.2 总体工作量
+
+| 阶段 | 内容 | 基础工作量 |
+|---|---|---:|
+| S0 | 需求、架构和基线确认 | 0.5 天 |
+| S1 | muxPlayer + 本地摄像头预览 | 5.5–6.5 天 |
+| S2 | 信令、认证、入房和离房 | 3–4 天 |
+| S3 | WebRTC 音频与媒体链路 | 4–5 天 |
+| S4 | 摄像头/屏幕发布与远端 muxPlayer 渲染 | 4–5 天 |
+| S5 | 成员、发言权、PTT 和主持人 | 3–4 天 |
+| S6 | 设备、统计、日志和诊断 | 3–4 天 |
+| S7 | 重连、安全、异常和稳定性 | 2.5–3.5 天 |
+| S8 | 安装包、干净机验证和发布 | 2.5–3.5 天 |
+
+基础合计：**28–36.5 个有效人日**。
+
+考虑 muxPlayer 依赖、设备差异、服务端联调和现场问题，建议增加 15%–20% 风险缓冲：
+
+**最终计划区间：32–44 个有效人日，约 7–9 个工作周。**
+
+以上估算假设：
+
+- 一名主要开发者全职投入。
+- 服务端基本可用。
+- 一台带摄像头和可用 OpenGL 3.3 的 Windows 测试机。
+- 不包含服务端功能开发。
+- 不包含多平台客户端。
+- 不包含产品需求大幅变更。
+
+### 11.3 周级排期建议
+
+| 周次 | 目标 | 主要交付 |
 |---|---|---|
-| `rtc_domain` | 纯领域类型和端口 | `/MD` |
-| `rtc_protocol` | 协议编解码、校验、错误码 | `/MT` 或静态无 CRT 依赖 |
-| `rtc_client_api` | 版本化 C ABI | 边界 |
-| `rtc_camera_win` | MF/WGC 摄像头采集与枚举 | `/MT` |
-| `rtc_audio_win` | WASAPI/测试音频适配 | `/MT` |
-| `rtc_screen_win` | 桌面采集适配 | `/MT` |
-| `rtc_webrtc_media` | PeerConnection、SDP、轨道、帧转换 | `/MT` |
-| `rtc_engine` | 会话和媒体编排 DLL | `/MT` |
-| `rtc_application` | 应用服务、ViewModel、状态收敛 | `/MD` |
-| `rtc_ui` | Qt Widgets 组件、页面、视频显示 | `/MD` |
-| `rtc-talk` | 生产可执行程序 | `/MD` |
+| 第 1 周 | muxPlayer 和本地摄像头 | S1 完成并通过真实预览验收 |
+| 第 2 周 | 信令和房间生命周期 | S2 完成，真实服务入房/离房通过 |
+| 第 3 周 | WebRTC 音频和基础媒体 | S3 完成，1v1 音频通话通过 |
+| 第 4 周 | 视频发布和远端 muxPlayer | S4 完成，P2P/SFU 视频互看通过 |
+| 第 5 周 | 房间业务 UI | S5 完成，PTT 和主持人功能通过 |
+| 第 6 周 | 设备、统计和诊断 | S6 完成，设备和状态页可用 |
+| 第 7 周 | 稳定性、重连和安全 | S7 完成，长稳和异常场景通过 |
+| 第 8–9 周 | 打包和发布 | S8 完成，干净机验收通过 |
 
-## 6. 线程与生命周期
+每周结束必须完成回归，不允许带着未解决的核心缺陷进入下一周。
 
-```text
-UI thread
-  QWidget / ViewModel / presentation state
-        ▲ queued typed events
-        │
-Engine control thread
-  signaling / session state machine / command dispatch
-        ▲
-        │
-Media threads
-  camera capture / desktop capture / WebRTC worker/signaling
-        │
-        ▼ frame copies only
-UI thread
-```
+## 12. 全阶段详细计划
 
-规则：
-
-- 跨线程只传值类型或明确所有权对象。
-- 回调中禁止销毁对象、阻塞、操作 QWidget 或抛异常。
-- 所有异步请求有超时和取消。
-- 每路视频只保留最新帧，Surface 按约 33ms 合并刷新。
-- 每代会话有 generation，旧回调不得污染新会话。
-- 关闭顺序为：停止 UI 命令 -> 停止发布/预览 -> 停止信令 -> 关闭媒体 -> 关闭引擎。
-
-## 7. 分阶段交付
-
-每个阶段完成后暂停，提交验证清单、构建结果、测试结果和截图；用户确认后才进入下一阶段。
-
-### W0：仓库与架构骨架（1 天）
+### S0：计划与基线（0.5 天）
 
 交付：
 
-- 独立 Git 仓库和 `rtc-talk-win` 分支。
-- CMake/CMakePresets/vcpkg 配置。
-- 空目标依赖图、目录、编码规范、ADR 模板。
-- `rtc-talk` 可启动空窗口，不接入真实业务。
-- CI 本地脚本：configure、build、test。
+- 本计划确认。
+- 当前代码基线 `d49836f`。
+- muxPlayer 版本、SDK、Qt、服务端版本记录。
+- 测试设备和摄像头记录。
 
 验收：
 
-- Debug/Release 均可构建。
-- 依赖方向检查脚本可运行。
-- UI target 不包含 WebRTC 私有头文件。
+- 计划、依赖和测试环境明确。
+- 未确认事项列明。
+- 后续工作不依赖 demo 活动工作树。
 
-### W1：平台基础能力（1.5 天）
+### S1：muxPlayer + 本地摄像头（5.5–6.5 天）
 
-交付：
+范围：
 
-- 日志、路径、版本、配置、凭证、错误码框架。
-- Token 内存与 Windows 凭证存储接口。
-- 崩溃转储和诊断包目录预留。
-- 单实例、DPI、应用生命周期。
-
-验收：
-
-- 日志滚动和脱敏测试。
-- 配置往返测试。
-- Token 不落普通配置文件。
-- 日志初始化失败不导致应用崩溃。
-
-### W2：领域契约与协议层（2 天）
-
-交付：
-
-- `domain` 强类型状态和端口。
-- `rtc_protocol` JSON codec、完整错误码和字段校验。
-- 请求/响应/通知信封测试。
-- Fake clock/transport/event sink。
+- muxPlayer 固定源码构建。
+- Raw I420 frame 注入。
+- Media Foundation 摄像头枚举和采集。
+- Engine C ABI 本地帧。
+- PrejoinPage 设备选择和 muxPlayer 预览。
 
 验收：
 
-- 未知字段容忍、非法消息拒绝。
-- 领域层不包含 JSON/Qt/WebRTC。
-- 协议 fixture 测试覆盖 join、floor、policy、video、result、error。
+- 真实摄像头预览可用。
+- 1280x720/15fps。
+- 100 次开关通过。
+- 10 分钟稳定。
+- 停止后设备释放。
+- 截图和测试报告完整。
 
-### W3：Windows 采集模块（3 天）
+S1 未通过，不进入 S2。
+
+### S2：信令、认证和房间生命周期（3–4 天）
 
 交付：
 
-- `CameraService`：枚举、权限、占用、设备索引、热插拔。
-- `AudioService`：录制/播放设备、音频源、音量、静音。
-- `ScreenService`：主屏选择、采集启停和错误。
-- `PreviewSession`：独立预览状态机。
-- Fake camera/audio/screen 实现。
+- WSS/WS Signaling Transport。
+- TLS 证书校验。
+- `session.hello`、认证、心跳。
+- `room.join`、`room.leave`。
+- 命令 ID、超时和结果关联。
+- generation 隔离。
+- prejoin 到 room 的真实页面切换。
+- 断线状态骨架。
 
 验收：
 
-- 摄像头设备权限、占用、拔插测试。
-- 预览连续开关 100 次无卡死。
-- 预览停止不影响正式摄像头发布。
-- 采集模块不依赖 UI 和 Session。
+- 真实服务连接、入房、离房。
+- 两客户端成员列表相互可见。
+- Token 错误、房间不存在、重复入房有稳定错误码。
+- 主动离房不重连，网络断开进入明确状态。
+- 单元测试和真实服务冒烟通过。
 
-### W4：WebRTC 媒体管线（3 天）
+### S3：WebRTC 音频与基础媒体链路（4–5 天）
 
 交付：
 
-- PeerConnection 封装仅负责 SDP/ICE/轨道/sender。
-- SFU send/recv 与 P2P 管线。
-- 摄像头、屏幕、本地预览、远端视频独立 sink。
-- 帧队列上限、33ms 合并和无帧回收。
-- 媒体统计适配。
+- libwebrtc SDK 集成到 Engine。
+- Engine 控制线程和媒体线程边界。
+- WASAPI 录音与播放。
+- Opus 音频发布/订阅。
+- SFU send/recv PeerConnection。
+- P2P 基础链路。
+- 静音、音量和收听。
+- 媒体事件和错误映射。
+
+验收：
+
+- 1v1 P2P 音频双向通话。
+- 第三人加入后切换 SFU 音频继续。
+- 静音和音量生效。
+- 媒体设备错误不导致崩溃。
+- 关闭和重连不泄漏 PeerConnection。
+
+### S4：视频发布与远端 muxPlayer 渲染（4–5 天）
+
+交付：
+
+- 摄像头和屏幕共享轨道发布。
+- 远端视频 track 注册。
+- I420 frame + frame lease。
+- muxPlayer session pool。
+- camera/screen 分流。
+- 宫格、聚焦、1v1 画中画、共享布局。
+- producer paused 立即清屏。
+- 5 秒无帧回收。
+- 本地预览和正式发布独立生命周期。
 
 验收：
 
 - 双人 P2P 摄像头和共享互看。
-- 三人切 SFU 后视频继续。
-- producer paused 立即清屏。
-- 视频帧不串流、不积压。
-- 关闭和重连无死锁。
+- 第三人加入后切 SFU 视频继续。
+- 多路 muxPlayer 渲染无串流。
+- 停止共享立即清屏。
+- 预览停止不影响发布。
+- 9 路视频性能测试可接受。
 
-### W5：会话引擎与应用服务（2.5 天）
+### S5：成员、发言权和主持人（3–4 天）
 
 交付：
 
-- `SessionEngine` 状态机、generation、命令超时。
-- 连接、hello、join、leave、resume、kicked。
-- `SessionService`、`DeviceService`、`SettingsService`。
-- ViewModel 状态快照。
+- 成员状态、音量和主讲人。
+- 自由发言、PTT、moderated。
+- 发言权申请、排队、释放、revoke。
+- 主持人授予/收回。
+- 全员静音、移出成员。
+- 房间策略局部更新。
+- 主持人策略弹窗。
 
 验收：
 
-- Fake transport 下状态机全覆盖。
-- 断线 10 秒恢复、恢复过期、顶号、被踢路径通过。
-- 页面不解析协议 JSON。
+- PTT 排队和递补正确。
+- 被收回发言权后立即闭麦。
+- host 策略更新不重置其他字段。
+- 全员静音和踢人流程正确。
+- 音量、发言人和排队 UI 与服务端一致。
 
-### W6：生产 UI 框架与入房页（2 天）
+### S6：设备、统计、日志和诊断（3–4 天）
 
 交付：
 
-- 无边框窗口、主题、图标、DPI。
-- 入房页、设备选择、音量、模式配置。
-- 本地预览 Surface。
-- 设置持久化和错误提示。
+- 音频录制/播放设备枚举与选择。
+- 摄像头设备选择。
+- 设备热插拔。
+- `media.stats` 周期采集。
+- 状态面板显示 RTT、码率、丢包、设备。
+- 日志滚动和脱敏。
+- 诊断包导出。
 
 验收：
 
-- 1100x720、1440x900、125%、150% DPI 截图。
-- 设备枚举异步，不阻塞 UI。
-- 键盘 Tab 顺序和禁用态正确。
+- 设备切换和失败回滚正确。
+- 状态面板数据与核心一致。
+- 诊断包不包含 Token、完整 SDP 等敏感信息。
+- 日志能定位连接、设备、媒体和视频问题。
 
-### W7：房间 UI、对讲与主持人（3 天）
+### S7：重连、安全和稳定性（2.5–3.5 天）
 
 交付：
 
-- 成员模型、设备/状态侧栏。
-- 麦克风、摄像头、共享、收听控制。
-- PTT/moderated、排队、倒计时、revoke。
-- 主持人策略、授权、全员静音、移出。
-- 宫格、聚焦、1v1、共享布局。
+- 断线重连、resume、恢复过期。
+- 顶号、被踢、主动离房分流。
+- WSS 证书错误处理。
+- 命令超时和取消。
+- 错误恢复和 Toast/错误中心。
+- 30 分钟双人、2 小时多人测试框架。
+- 连续设备切换、连续视频开关。
+- 资源泄漏和关闭顺序修复。
 
 验收：
 
-- 双端 PTT 和主持人流程。
-- 6 人布局和“仅视频成员”过滤。
-- 视频、成员、音量、主讲人同步。
-- 失败操作按钮恢复，不出现永久禁用。
+- 断网 10 秒后可恢复或给出明确失败路径。
+- kicked/replaced 不自动重连。
+- 2 小时多人视频无崩溃、无明显资源增长。
+- 连续开关摄像头/共享 100 次通过。
+- 关闭应用后无残留线程和摄像头句柄。
 
-### W8：统计、诊断和稳定性（2 天）
-
-交付：
-
-- 周期 stats、状态页、错误中心。
-- 日志导出、脱敏诊断包。
-- 设备热插拔和切换失败回滚。
-- 重连和长时间运行测试。
-
-验收：
-
-- 统计与服务端/core 数据一致。
-- 诊断包不含敏感信息。
-- 30 分钟双人、2 小时多人稳定性通过。
-
-### W9：安装包与发布验收（2.5 天）
+### S8：安装包与发布验收（2.5–3.5 天）
 
 交付：
 
-- windeployqt 打包。
-- VC Runtime、Qt 插件、WebRTC DLL、许可证。
-- 安装/卸载、版本资源、图标。
+- ReleaseWithSymbols 构建。
+- windeployqt。
+- VC Runtime、Qt 插件、muxPlayer DLL、FFmpeg 依赖。
+- 版本信息、图标和许可证清单。
+- 安装、升级、卸载。
+- 崩溃转储路径。
+- 运行手册、故障排查和发布说明。
 - 干净 Windows 10/11 机器验证。
-- 运行手册、故障排查、发布说明。
 
 验收：
 
-- 干净机器安装后可连接、入房、通话、视频和离房。
-- 无缺失 DLL、无调试残留、无未授权文件。
+- 干净机器可安装和启动。
+- 连接、音频、视频、共享、PTT、主持人和离房通过。
+- 无缺失 DLL。
+- 无调试工具和 demo 文件进入主安装目录。
 - 完整回归矩阵通过。
 
-总预估：**21.5 个有效工作日**，不含外部服务阻塞和用户验收等待。
+## 13. 跨阶段并行工作
 
-## 8. 测试矩阵
+以下工作贯穿全部阶段：
 
-### 8.1 单元测试
+### 13.1 构建与 CI
 
-- 协议信封和字段校验。
-- 命令相关 ID、超时、取消和 generation。
-- Session/Room/Floor 状态收敛。
-- producer paused、无帧回收和流注册。
-- 设备选择、权限错误和热插拔。
-- 配置和凭证脱敏。
-- ViewModel 状态转换。
+- Debug/Release 每阶段构建。
+- 编译警告清零目标。
+- 单元测试和真实冒烟测试。
+- 架构依赖检查。
+- 包依赖版本锁定。
 
-### 8.2 集成测试
+### 13.2 测试资产
 
-- connect + hello + join + leave。
-- P2P 双人音频/摄像头/共享。
-- 第三人切换 SFU。
-- PTT 排队、释放、revoke。
-- host grant/muteAll/kick/setPolicy。
-- reconnect/resume/kicked/replaced。
-- 设备失败回滚和重试。
+- Fake signaling transport。
+- Fake camera/audio/screen。
+- 合成 I420 帧源。
+- 双客户端测试脚本。
+- muxPlayer 渲染探针。
+- 设备错误场景。
 
-### 8.3 UI 回归
+### 13.3 文档
 
-- 入房页。
-- 设备面板。
-- 1v1 画中画。
-- 宫格。
-- 聚焦。
-- 共享布局。
-- 状态/诊断页。
-- 策略弹窗。
-- 125%/150% DPI。
+- 接口变更记录。
+- 集成基线。
+- 运行手册。
+- 故障码表。
+- muxPlayer patch 说明。
 
-### 8.4 稳定性
+## 14. 关键依赖和阻塞条件
 
-- 连续摄像头/共享开关 100 次。
-- 连续设备切换。
-- 断网 10 秒。
-- 30 分钟双人通话。
-- 2 小时多人视频。
-
-## 9. 质量门禁
-
-每个 PR/提交必须通过：
-
-1. Release 和 Debug 构建。
-2. CTest 全部通过。
-3. 架构依赖检查。
-4. 格式和静态检查。
-5. 敏感信息扫描。
-6. 真实服务冒烟测试。
-7. 对应阶段截图或运行证据。
-8. 用户阶段确认。
-
-以下情况直接拒绝：
-
-- UI 引用 WebRTC/asio/JSON 私有头文件。
-- 页面直接发协议 JSON。
-- 新增万能类或超过 600 行且无拆分说明。
-- 回调线程和生命周期不清晰。
-- 只有 happy path，没有失败路径测试。
-- 直接复制 demo 类后继续堆代码。
-
-## 10. 主要风险
-
-| 风险 | 影响 | 对策 |
+| 依赖 | 最晚需要时间 | 影响 |
 |---|---|---|
-| libwebrtc SDK 与 Qt CRT 不一致 | 崩溃/链接失败 | 保持 `/MT` 引擎 + `/MD` UI，只走 C ABI |
-| TLS/WSS 未实现 | 无法正式上线 | W2/W5 明确实现并测试证书校验 |
-| 多线程关闭顺序错误 | 退出崩溃/死锁 | 生命周期状态机、关闭顺序测试 |
-| 设备权限和占用 | 预览/发布失败 | 强类型错误、可重试、设备 probe |
-| P2P/SFU 模式切换 | 视频中断 | 独立媒体管线与模式切换集成测试 |
-| Qt QImage 渲染性能 | 多路视频卡顿 | 最新帧合并、Surface 工厂、D3D 预留 |
-| 服务端协议演进 | 解析失败 | 协议层集中、未知字段容忍、fixture |
-| 安装依赖遗漏 | 干净机器无法启动 | 自动打包清单和干净机验收 |
+| muxPlayer 可构建 | S1 开始前 | 整个视频架构阻塞 |
+| Raw frame API 完成 | S1 中 | 本地预览和远端视频阻塞 |
+| 本机摄像头权限 | S1 开始前 | 预览验收阻塞 |
+| WSS 服务可用 | S2 开始前 | 正式信令阻塞 |
+| libwebrtc SDK | S3 开始前 | 音频和视频阻塞 |
+| SFU/TURN 可联调 | S3 中 | P2P/SFU 验收阻塞 |
+| 第二台测试客户端 | S4 开始前 | 双端视频验收阻塞 |
+| 安装机/干净机 | S8 开始前 | 发布验收阻塞 |
 
-## 11. 提交与验收流程
+任一关键依赖延期，后续阶段的开始时间顺延；不允许用假实现替代验收。
 
-```text
-需求确认
-  -> 计划确认
-  -> W0 实现
-  -> 构建/测试/架构门禁
-  -> 用户验收
-  -> W1 ...
-```
+## 15. 阶段门禁
 
-任何阶段不得跳门禁。若阶段中发现需求或架构冲突：
+每个阶段必须同时满足：
 
-1. 停止编码。
-2. 写 ADR 或需求变更。
-3. 更新计划。
-4. 用户确认后继续。
+1. 代码完成。
+2. Debug/Release 构建通过。
+3. 单元和组件测试通过。
+4. 真实链路或设备测试通过。
+5. 资源释放和错误路径通过。
+6. 日志和诊断信息充分。
+7. 用户验收确认。
 
-## 12. 当前状态
+未通过门禁，不进入下一阶段。
 
-- 已创建独立目录和 `rtc-talk-win` Git 分支。
-- 已产出需求基线 `docs/requirements.md`。
-- 已产出本生产计划。
-- **尚未开始业务代码和工程骨架。**
-- 等待用户确认需求与计划，确认后才进入 W0。
+## 16. 最终发布条件
+
+- S1–S8 全部完成。
+- 所有 CTest 和真实服务测试通过。
+- P2P、SFU、摄像头、共享、PTT、主持人、重连全部验收。
+- 125%/150% DPI 通过。
+- 30 分钟双人和 2 小时多人稳定性通过。
+- 干净 Windows 10/11 安装和运行通过。
+- 诊断包、日志和安装包可交付。
+- 用户完成最终验收。
+
+## 17. 计划维护
+
+每完成一个阶段，更新：
+
+- 实际工作量。
+- 剩余估算。
+- 风险状态。
+- 集成基线提交号。
+- 测试和截图结果。
+
+若阶段偏差超过 20%，必须重新评审后续排期，但不得降低阶段验收标准。

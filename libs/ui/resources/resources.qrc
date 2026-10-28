@@ -2,4 +2,7 @@
   <qresource prefix="/rtcwin">
     <file>theme.qss</file>
   </qresource>
+  <qresource prefix="/desktop">
+    <file>icons/chevron-down.png</file>
+  </qresource>
 </RCC>

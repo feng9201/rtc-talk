@@ -3,6 +3,7 @@
 #include "rtcwin/domain/types.h"
 
 #include <QObject>
+#include <QVector>
 
 namespace rtcwin::application {
 
@@ -26,6 +27,9 @@ class EngineClient : public QObject {
   virtual void RequestFloor() = 0;
   virtual void ReleaseFloor() = 0;
   virtual void SelectPeer(const std::string& uid) = 0;
+  virtual void RefreshCameras() = 0;
+  virtual void StartCameraPreview(int device_index) = 0;
+  virtual void StopCameraPreview() = 0;
 
  signals:
   void SnapshotChanged(const rtcwin::domain::SessionSnapshot& snapshot);
@@ -33,6 +37,11 @@ class EngineClient : public QObject {
   void Left();
   void Notice(const QString& message, const QString& tone);
   void ErrorOccurred(const rtcwin::domain::AppError& error);
+  void CameraDevicesChanged(
+      const QVector<rtcwin::domain::CameraDevice>& devices);
+  void CameraPreviewChanged(bool active, const QString& device, int width,
+                            int height, int fps);
+  void LocalFrameReceived(const rtcwin::domain::VideoFrame& frame);
 };
 
 }  // namespace rtcwin::application

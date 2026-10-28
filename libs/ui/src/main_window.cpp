@@ -64,6 +64,7 @@ MainWindow::MainWindow(QWidget* parent) : FramelessWindow(parent) {
   BuildUi();
   ConnectSignals();
   prejoin_page_->SetOptions(controller_->settings().Load());
+  controller_->RefreshCameras();
   ShowPrejoinPage();
 }
 
@@ -105,11 +106,25 @@ void MainWindow::ConnectSignals() {
             prejoin_page_->SetStatus(QStringLiteral("设置已保存"),
                                      QStringLiteral("ok"));
           });
-  connect(prejoin_page_, &PrejoinPage::PreviewToggleRequested, this, [this] {
-    prejoin_page_->SetStatus(
-        QStringLiteral("muxPlayer 本地预览将在 Engine 接入后启用"),
-        QStringLiteral("warn"));
-  });
+  connect(prejoin_page_, &PrejoinPage::PreviewToggleRequested, this,
+          [this](bool start) {
+            if (start) {
+              StartSelectedCameraPreview();
+            } else {
+              UpdateStatus(QStringLiteral("正在关闭本地预览…"),
+                           QStringLiteral("info"));
+              controller_->StopCameraPreview();
+            }
+          });
+  connect(prejoin_page_, &PrejoinPage::CameraRefreshRequested, controller_.get(),
+          &application::AppController::RefreshCameras);
+  connect(prejoin_page_, &PrejoinPage::CameraSelectionChanged, this,
+          [this](int device_index) {
+            if (!prejoin_page_->PreviewActive() || device_index < 0) return;
+            prejoin_page_->SetPreviewPending(
+                QStringLiteral("正在切换摄像头…"));
+            controller_->StartCameraPreview(device_index);
+          });
 
   connect(room_page_, &RoomPage::LeaveRequested, controller_.get(),
           &application::AppController::LeaveRoom);
@@ -132,6 +147,41 @@ void MainWindow::ConnectSignals() {
 
   connect(controller_.get(), &application::AppController::SnapshotChanged,
           room_page_, &RoomPage::SetState);
+  connect(controller_.get(),
+          &application::AppController::CameraDevicesChanged, prejoin_page_,
+          &PrejoinPage::SetCameraDevices);
+  connect(controller_.get(),
+          &application::AppController::CameraPreviewChanged, prejoin_page_,
+          &PrejoinPage::SetPreviewActive);
+  connect(controller_.get(),
+          &application::AppController::LocalFrameReceived, prejoin_page_,
+          &PrejoinPage::SetPreviewFrame);
+  connect(controller_.get(),
+          &application::AppController::CameraPreviewChanged, this,
+          [this](bool active, const QString& device, int width, int height,
+                 int fps) {
+            if (!active) return;
+            UpdateStatus(
+                QStringLiteral("muxPlayer 本地预览：%1 · %2×%3 @ %4 fps")
+                    .arg(device)
+                    .arg(width)
+                    .arg(height)
+                    .arg(fps),
+                QStringLiteral("ok"));
+          });
+  connect(controller_.get(),
+          &application::AppController::CameraDevicesChanged, this,
+          [this](const QVector<domain::CameraDevice>& devices) {
+            if (devices.isEmpty()) {
+              UpdateStatus(QStringLiteral("未发现可用摄像头"),
+                           QStringLiteral("warn"));
+              return;
+            }
+            if (auto_preview_) {
+              auto_preview_ = false;
+              StartSelectedCameraPreview();
+            }
+          });
   connect(controller_.get(), &application::AppController::Joined, this,
           &MainWindow::ShowRoomPage);
   connect(controller_.get(), &application::AppController::Left, this,
@@ -152,6 +202,9 @@ void MainWindow::ConnectSignals() {
           });
   connect(controller_.get(), &application::AppController::ErrorOccurred,
           this, [this](const QString& message, const QString& detail) {
+            if (prejoin_page_->PreviewPending()) {
+              prejoin_page_->SetPreviewActive(false, {}, 0, 0, 0);
+            }
             UpdateStatus(detail.isEmpty() ? message
                                          : QStringLiteral("%1：%2")
                                                .arg(message, detail),
@@ -163,6 +216,28 @@ void MainWindow::BeginJoin(const domain::PrejoinOptions& options) {
   prejoin_page_->SetBusy(true);
   UpdateStatus(QStringLiteral("正在建立会话…"), QStringLiteral("info"));
   controller_->BeginJoin(options);
+}
+
+void MainWindow::EnableCameraPreview() {
+  auto_preview_ = true;
+  if (prejoin_page_->SelectedCameraIndex() >= 0) {
+    auto_preview_ = false;
+    StartSelectedCameraPreview();
+  }
+}
+
+bool MainWindow::StartSelectedCameraPreview() {
+  const int index = prejoin_page_->SelectedCameraIndex();
+  if (index < 0) {
+    prejoin_page_->SetPreviewActive(false, {}, 0, 0, 0);
+    prejoin_page_->SetStatus(QStringLiteral("未发现可用摄像头"),
+                             QStringLiteral("warn"));
+    return false;
+  }
+  prejoin_page_->SetPreviewPending(QStringLiteral("正在打开摄像头…"));
+  UpdateStatus(QStringLiteral("正在打开摄像头…"), QStringLiteral("info"));
+  controller_->StartCameraPreview(index);
+  return true;
 }
 
 void MainWindow::ShowRoomPreview() {

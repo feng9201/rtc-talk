@@ -3,11 +3,45 @@
 #include "rtcwin/client_api.h"
 
 #include <QByteArray>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonValue>
 #include <QMetaObject>
 
+#include <cstring>
+#include <utility>
+
 namespace rtcwin::client_gateway {
+namespace {
+
+domain::VideoFrame CopyFrame(const rtcwin_frame_view& view) {
+  domain::VideoFrame frame;
+  frame.mid = view.mid != nullptr ? view.mid : "";
+  frame.source = view.source == 1 ? domain::VideoSource::Screen
+                                   : domain::VideoSource::Camera;
+  frame.width = view.width;
+  frame.height = view.height;
+  frame.stride_y = view.stride_y;
+  frame.stride_u = view.stride_u;
+  frame.stride_v = view.stride_v;
+  frame.timestamp_us = view.timestamp_us;
+  if (view.i420_y == nullptr || view.i420_u == nullptr ||
+      view.i420_v == nullptr || view.width <= 0 || view.height <= 0 ||
+      view.stride_y < view.width || view.stride_u < (view.width + 1) / 2 ||
+      view.stride_v < (view.width + 1) / 2) {
+    return {};
+  }
+  const int chroma_height = (view.height + 1) / 2;
+  frame.y.resize(static_cast<size_t>(view.stride_y) * view.height);
+  frame.u.resize(static_cast<size_t>(view.stride_u) * chroma_height);
+  frame.v.resize(static_cast<size_t>(view.stride_v) * chroma_height);
+  std::memcpy(frame.y.data(), view.i420_y, frame.y.size());
+  std::memcpy(frame.u.data(), view.i420_u, frame.u.size());
+  std::memcpy(frame.v.data(), view.i420_v, frame.v.size());
+  return frame;
+}
+
+}  // namespace
 
 struct CAbiEngineClient::CallbackContext {
   CAbiEngineClient* self = nullptr;
@@ -50,41 +84,39 @@ void CAbiEngineClient::ConnectAndJoin(
   Submit(QStringLiteral("session.connectAndJoin"), payload);
 }
 
-void CAbiEngineClient::LeaveRoom() {
-  Submit(QStringLiteral("room.leave"));
-}
-
+void CAbiEngineClient::LeaveRoom() { Submit(QStringLiteral("room.leave")); }
 void CAbiEngineClient::Disconnect() {
   Submit(QStringLiteral("session.disconnect"));
 }
-
 void CAbiEngineClient::SetMicEnabled(bool enabled) {
   Submit(QStringLiteral("media.setMute"),
          QJsonObject{{QStringLiteral("muted"), !enabled}});
 }
-
 void CAbiEngineClient::ToggleCamera() {
   Submit(QStringLiteral("media.toggleCamera"));
 }
-
 void CAbiEngineClient::ToggleShare() {
   Submit(QStringLiteral("media.toggleScreenShare"));
 }
-
 void CAbiEngineClient::ToggleDeafened() {
   Submit(QStringLiteral("media.toggleDeafened"));
 }
-
 void CAbiEngineClient::RequestFloor() {
   Submit(QStringLiteral("floor.request"));
 }
-
 void CAbiEngineClient::ReleaseFloor() {
   Submit(QStringLiteral("floor.release"));
 }
-
-void CAbiEngineClient::SelectPeer(const std::string& uid) {
-  Q_UNUSED(uid);
+void CAbiEngineClient::SelectPeer(const std::string& uid) { Q_UNUSED(uid); }
+void CAbiEngineClient::RefreshCameras() {
+  Submit(QStringLiteral("camera.devices"));
+}
+void CAbiEngineClient::StartCameraPreview(int device_index) {
+  Submit(QStringLiteral("camera.preview.start"),
+         QJsonObject{{QStringLiteral("device_index"), device_index}});
+}
+void CAbiEngineClient::StopCameraPreview() {
+  Submit(QStringLiteral("camera.preview.stop"));
 }
 
 void CAbiEngineClient::OnEvent(void* userdata, const char* method,
@@ -100,8 +132,8 @@ void CAbiEngineClient::OnEvent(void* userdata, const char* method,
   QMetaObject::invokeMethod(
       self,
       [self, method_text, body] {
-        const QJsonObject event = QJsonDocument::fromJson(body).object();
-        self->HandleEvent(method_text, event);
+        self->HandleEvent(method_text,
+                          QJsonDocument::fromJson(body).object());
       },
       Qt::QueuedConnection);
 }
@@ -114,8 +146,40 @@ void CAbiEngineClient::OnRemoteFrame(void* userdata,
 
 void CAbiEngineClient::OnLocalFrame(void* userdata,
                                     const rtcwin_frame_view* frame) {
-  Q_UNUSED(userdata);
-  Q_UNUSED(frame);
+  auto* context = static_cast<CallbackContext*>(userdata);
+  if (context == nullptr || context->self == nullptr || frame == nullptr) return;
+  domain::VideoFrame copied = CopyFrame(*frame);
+  if (copied.width <= 0 || copied.y.empty()) return;
+
+  CAbiEngineClient* self = context->self;
+  auto latest = std::make_shared<domain::VideoFrame>(std::move(copied));
+  {
+    std::lock_guard<std::mutex> lock(self->local_frame_mutex_);
+    self->latest_local_frame_ = std::move(latest);
+  }
+  if (self->local_frame_post_pending_.exchange(true)) return;
+  QMetaObject::invokeMethod(
+      self, [self] { self->DrainLatestLocalFrame(); }, Qt::QueuedConnection);
+}
+
+void CAbiEngineClient::DrainLatestLocalFrame() {
+  std::shared_ptr<domain::VideoFrame> frame;
+  {
+    std::lock_guard<std::mutex> lock(local_frame_mutex_);
+    frame = std::move(latest_local_frame_);
+  }
+  local_frame_post_pending_.store(false);
+  if (frame) emit LocalFrameReceived(*frame);
+
+  bool has_newer_frame = false;
+  {
+    std::lock_guard<std::mutex> lock(local_frame_mutex_);
+    has_newer_frame = latest_local_frame_ != nullptr;
+  }
+  if (has_newer_frame && !local_frame_post_pending_.exchange(true)) {
+    QMetaObject::invokeMethod(
+        this, [this] { DrainLatestLocalFrame(); }, Qt::QueuedConnection);
+  }
 }
 
 uint64_t CAbiEngineClient::Submit(const QString& method,
@@ -145,17 +209,56 @@ uint64_t CAbiEngineClient::Submit(const QString& method,
 
 void CAbiEngineClient::HandleEvent(const QString& method,
                                    const QJsonObject& event) {
-  if (event.value(QStringLiteral("type")).toString() !=
-      QStringLiteral("res")) {
+  const QString type = event.value(QStringLiteral("type")).toString();
+  if (type == QStringLiteral("ntf")) {
+    if (method == QStringLiteral("camera.preview.error")) {
+      emit CameraPreviewChanged(false, {}, 0, 0, 0);
+      domain::AppError error;
+      error.domain = domain::ErrorDomain::Device;
+      error.code = 1502;
+      error.operation = "camera.preview";
+      error.message = event.value(QStringLiteral("data"))
+                          .toObject()
+                          .value(QStringLiteral("message"))
+                          .toString()
+                          .toStdString();
+      emit ErrorOccurred(error);
+    }
     return;
   }
+  if (type != QStringLiteral("res")) return;
   const bool ok = event.value(QStringLiteral("ok")).toBool(false);
   if (ok) {
-    if (method == QStringLiteral("room.leave")) emit Left();
+    const QJsonObject data = event.value(QStringLiteral("data")).toObject();
+    if (method == QStringLiteral("camera.devices")) {
+      QVector<domain::CameraDevice> devices;
+      for (const QJsonValue& value :
+           data.value(QStringLiteral("cameras")).toArray()) {
+        const QJsonObject object = value.toObject();
+        domain::CameraDevice device;
+        device.id = object.value(QStringLiteral("id")).toString().toStdString();
+        device.name =
+            object.value(QStringLiteral("name")).toString().toStdString();
+        if (!device.name.empty()) devices.push_back(device);
+      }
+      emit CameraDevicesChanged(devices);
+    } else if (method == QStringLiteral("camera.preview.start")) {
+      emit CameraPreviewChanged(
+          true, data.value(QStringLiteral("device")).toString(),
+          data.value(QStringLiteral("width")).toInt(),
+          data.value(QStringLiteral("height")).toInt(),
+          data.value(QStringLiteral("fps")).toInt());
+    } else if (method == QStringLiteral("camera.preview.stop")) {
+      emit CameraPreviewChanged(false, {}, 0, 0, 0);
+    } else if (method == QStringLiteral("room.leave")) {
+      emit Left();
+    }
     return;
   }
-  const QJsonObject detail =
-      event.value(QStringLiteral("error")).toObject();
+  if (method == QStringLiteral("camera.preview.start")) {
+    emit CameraPreviewChanged(false, {}, 0, 0, 0);
+  }
+  const QJsonObject detail = event.value(QStringLiteral("error")).toObject();
   domain::AppError error;
   error.domain = domain::ErrorDomain::Internal;
   error.code = detail.value(QStringLiteral("code")).toInt(500);
@@ -163,7 +266,6 @@ void CAbiEngineClient::HandleEvent(const QString& method,
   error.message =
       detail.value(QStringLiteral("msg")).toString().toStdString();
   error.detail = "C ABI engine";
-  error.action = domain::RecoveryAction::None;
   emit ErrorOccurred(error);
 }
 

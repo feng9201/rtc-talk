@@ -25,6 +25,12 @@ AppController::AppController(std::unique_ptr<EngineClient> engine,
   });
   connect(engine_.get(), &EngineClient::Notice, this,
           &AppController::Notice);
+  connect(engine_.get(), &EngineClient::CameraDevicesChanged, this,
+          &AppController::CameraDevicesChanged);
+  connect(engine_.get(), &EngineClient::CameraPreviewChanged, this,
+          &AppController::CameraPreviewChanged);
+  connect(engine_.get(), &EngineClient::LocalFrameReceived, this,
+          &AppController::LocalFrameReceived);
   connect(engine_.get(), &EngineClient::ErrorOccurred, this,
           [this](const domain::AppError& error) {
             busy_ = false;
@@ -142,4 +148,9 @@ void AppController::ApplySnapshot(const domain::SessionSnapshot& snapshot) {
   emit SnapshotChanged(snapshot_);
 }
 
+void AppController::RefreshCameras() { engine_->RefreshCameras(); }
+void AppController::StartCameraPreview(int device_index) {
+  engine_->StartCameraPreview(device_index);
+}
+void AppController::StopCameraPreview() { engine_->StopCameraPreview(); }
 }  // namespace rtcwin::application

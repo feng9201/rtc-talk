@@ -5,12 +5,17 @@
 #include <QCoreApplication>
 #include <QTemporaryDir>
 
+#include <chrono>
+#include <condition_variable>
 #include <iostream>
+#include <mutex>
 #include <string>
 
 namespace {
 
 int failures = 0;
+std::mutex event_mutex;
+std::condition_variable event_cv;
 int event_count = 0;
 std::string last_event;
 
@@ -68,13 +73,26 @@ void TestSettings() {
 }
 
 void OnEvent(void*, const char*, const char* json) {
-  ++event_count;
-  last_event = json != nullptr ? json : "";
+  {
+    std::lock_guard<std::mutex> lock(event_mutex);
+    ++event_count;
+    last_event = json != nullptr ? json : "";
+  }
+  event_cv.notify_all();
+}
+
+bool WaitForEvents(int count) {
+  std::unique_lock<std::mutex> lock(event_mutex);
+  return event_cv.wait_for(lock, std::chrono::seconds(3),
+                           [count] { return event_count >= count; });
 }
 
 void TestCApi() {
-  event_count = 0;
-  last_event.clear();
+  {
+    std::lock_guard<std::mutex> lock(event_mutex);
+    event_count = 0;
+    last_event.clear();
+  }
   rtcwin_options options{};
   options.struct_size = sizeof(options);
   options.abi_version = RTCWIN_ABI_VERSION;
@@ -83,11 +101,18 @@ void TestCApi() {
   Check(handle != nullptr, "C ABI create");
   if (handle == nullptr) return;
   const uint64_t ping = rtcwin_submit(handle, "engine.ping", "{}", 1000);
-  Check(ping != 0 && event_count == 1, "C ABI ping");
+  const bool ping_event = WaitForEvents(1);
+  Check(ping != 0 && ping_event, "C ABI ping response");
   const uint64_t unsupported =
       rtcwin_submit(handle, "session.connectAndJoin", "{}", 1000);
-  Check(unsupported != 0 && event_count == 2 &&
-            last_event.find("\"ok\":false") != std::string::npos,
+  const bool unsupported_event = WaitForEvents(2);
+  std::string final_event;
+  {
+    std::lock_guard<std::mutex> lock(event_mutex);
+    final_event = last_event;
+  }
+  Check(unsupported != 0 && unsupported_event &&
+            final_event.find("\"ok\":false") != std::string::npos,
         "C ABI unsupported result");
   rtcwin_destroy(handle);
 }

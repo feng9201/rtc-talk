@@ -6,6 +6,8 @@
 #include <QCommandLineParser>
 #include <QDir>
 #include <QFileInfo>
+#include <QPixmap>
+#include <QScreen>
 #include <QSurfaceFormat>
 #include <QTimer>
 
@@ -42,6 +44,9 @@ int main(int argc, char** argv) {
   parser.addOption(QCommandLineOption(
       QStringLiteral("smoke-seconds"), QStringLiteral("自动退出秒数"),
       QStringLiteral("seconds")));
+  parser.addOption(QCommandLineOption(
+      QStringLiteral("auto-preview"),
+      QStringLiteral("设备枚举完成后自动启动 muxPlayer 本地预览")));
   parser.process(app);
 
   rtcwin::ui::theme::Apply(app);
@@ -62,6 +67,8 @@ int main(int argc, char** argv) {
   if (parser.isSet(QStringLiteral("room-preview"))) {
     QTimer::singleShot(0, &window,
                        &rtcwin::ui::MainWindow::ShowRoomPreview);
+  } else if (parser.isSet(QStringLiteral("auto-preview"))) {
+    window.EnableCameraPreview();
   }
 
   const QString screenshot = parser.value(QStringLiteral("screenshot"));
@@ -73,7 +80,11 @@ int main(int argc, char** argv) {
                        [&app, &window, screenshot] {
       const QString path = QFileInfo(screenshot).absoluteFilePath();
       QDir().mkpath(QFileInfo(path).absolutePath());
-      const bool saved = window.grab().save(path);
+      QPixmap pixmap = window.grab();
+      if (pixmap.isNull() && window.screen() != nullptr) {
+        pixmap = window.screen()->grabWindow(window.winId());
+      }
+      const bool saved = pixmap.save(path);
       app.exit(saved ? 0 : 3);
     });
   } else if (parser.isSet(QStringLiteral("smoke-seconds"))) {

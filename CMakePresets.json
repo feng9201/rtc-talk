@@ -3,13 +3,18 @@
   "configurePresets": [
     {
       "name": "windows-x64",
-      "displayName": "Windows x64 (VS2022)",
+      "displayName": "Windows x64 (VS2022 + vcpkg)",
       "generator": "Visual Studio 17 2022",
       "architecture": "x64",
       "binaryDir": "${sourceDir}/build/windows-x64",
       "cacheVariables": {
-        "CMAKE_PREFIX_PATH": "C:/Qt/5.15.2/msvc2019_64",
-        "RTCWIN_BUILD_TESTS": "ON"
+        "CMAKE_PREFIX_PATH": "$env{QTDIR}",
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_TARGET_TRIPLET": "x64-windows",
+        "VCPKG_INSTALLED_DIR": "${sourceDir}/build/vcpkg_installed",
+        "VCPKG_MANIFEST_MODE": "ON",
+        "RTCWIN_BUILD_TESTS": "ON",
+        "RTCWIN_BUILD_MUXPLAYER": "ON"
       }
     }
   ],

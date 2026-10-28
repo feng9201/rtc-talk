@@ -4,8 +4,10 @@
 
 #include <QJsonObject>
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 
 struct rtcwin_handle;
 struct rtcwin_frame_view;
@@ -29,6 +31,9 @@ class CAbiEngineClient final : public application::EngineClient {
   void RequestFloor() override;
   void ReleaseFloor() override;
   void SelectPeer(const std::string& uid) override;
+  void RefreshCameras() override;
+  void StartCameraPreview(int device_index) override;
+  void StopCameraPreview() override;
 
  private:
   struct CallbackContext;
@@ -38,9 +43,13 @@ class CAbiEngineClient final : public application::EngineClient {
   uint64_t Submit(const QString& method,
                   const QJsonObject& payload = QJsonObject());
   void HandleEvent(const QString& method, const QJsonObject& event);
+  void DrainLatestLocalFrame();
 
   std::unique_ptr<CallbackContext> context_;
   rtcwin_handle* handle_ = nullptr;
+  std::mutex local_frame_mutex_;
+  std::shared_ptr<domain::VideoFrame> latest_local_frame_;
+  std::atomic<bool> local_frame_post_pending_{false};
 };
 
 }  // namespace rtcwin::client_gateway

@@ -30,6 +30,10 @@ void UnavailableEngineClient::ToggleShare() {}
 void UnavailableEngineClient::ToggleDeafened() {}
 void UnavailableEngineClient::RequestFloor() {}
 void UnavailableEngineClient::ReleaseFloor() {}
+void UnavailableEngineClient::RefreshCameras() {}
+void UnavailableEngineClient::StartCameraPreview(int device_index) { Q_UNUSED(device_index); }
+void UnavailableEngineClient::StopCameraPreview() {}
+
 void UnavailableEngineClient::SelectPeer(const std::string& uid) {
   Q_UNUSED(uid);
 }

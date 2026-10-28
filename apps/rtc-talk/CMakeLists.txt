@@ -18,3 +18,11 @@ add_custom_command(TARGET rtc-talk POST_BUILD
           $<TARGET_FILE:rtcwin_engine>
           $<TARGET_FILE_DIR:rtc-talk>
 )
+if(RTCWIN_BUILD_MUXPLAYER AND
+   EXISTS "${RTCWIN_FFMPEG_RUNTIME_DIR}/avutil-59.dll")
+  add_custom_command(TARGET rtc-talk POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${RTCWIN_FFMPEG_RUNTIME_DIR}/avutil-59.dll"
+            "$<TARGET_FILE_DIR:rtc-talk>/avutil-59.dll"
+  )
+endif()

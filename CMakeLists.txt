@@ -29,11 +29,29 @@ foreach(config Debug Release RelWithDebInfo MinSizeRel)
       "${CMAKE_BINARY_DIR}/bin/${config}")
 endforeach()
 
-find_package(Qt5 5.15 REQUIRED COMPONENTS Core Gui Widgets)
+find_package(Qt5 5.15 REQUIRED COMPONENTS Core Gui Widgets Network OpenGL)
+find_package(OpenGL REQUIRED)
 
 add_subdirectory(libs/domain)
 add_subdirectory(libs/application)
 add_subdirectory(libs/client_api)
+add_subdirectory(libs/camera_win)
+
+if(RTCWIN_BUILD_MUXPLAYER)
+  find_package(FFMPEG REQUIRED)
+
+  if(FFMPEG_INCLUDE_DIRS)
+    list(GET FFMPEG_INCLUDE_DIRS 0 RTCWIN_FFMPEG_INCLUDE_DIR)
+    get_filename_component(RTCWIN_FFMPEG_PREFIX
+      "${RTCWIN_FFMPEG_INCLUDE_DIR}" DIRECTORY)
+    set(RTCWIN_FFMPEG_RUNTIME_DIR "${RTCWIN_FFMPEG_PREFIX}/bin"
+        CACHE PATH "FFmpeg runtime DLL directory")
+  endif()
+
+  add_subdirectory(third_party/muxplayer)
+  add_subdirectory(libs/muxplayer_adapter)
+endif()
+
 add_subdirectory(libs/engine)
 add_subdirectory(libs/client_gateway)
 add_subdirectory(libs/ui)

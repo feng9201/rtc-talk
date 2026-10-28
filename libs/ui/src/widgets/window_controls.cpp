@@ -1,7 +1,5 @@
 #include "rtcwin/ui/widgets/window_controls.h"
 
-#include "rtcwin/ui/theme/theme.h"
-
 #include <QHBoxLayout>
 #include <QPushButton>
 #include <QVariant>
@@ -14,27 +12,23 @@ WindowControls::WindowControls(QWidget* parent) : QWidget(parent) {
   layout->setContentsMargins(0, 0, 0, 0);
   layout->setSpacing(2);
 
-  const auto add_button = [this, layout](theme::Icon icon, const QString& kind,
+  const auto add_button = [this, layout](const QString& text,
+                                         const QString& kind,
                                          const QString& tooltip) {
-    auto* button = new QPushButton(this);
+    auto* button = new QPushButton(text, this);
     button->setProperty("kind", kind);
-    button->setIcon(QIcon(theme::Pixmap(icon, 15)));
-    button->setIconSize(QSize(15, 15));
-    button->setFixedSize(36, 28);
+    button->setFixedSize(34, 28);
+    button->setFocusPolicy(Qt::NoFocus);
     button->setToolTip(tooltip);
-    button->setCursor(Qt::PointingHandCursor);
     layout->addWidget(button);
     return button;
   };
 
-  auto* minimize = add_button(theme::Icon::Minimize,
-                              QStringLiteral("window"),
+  auto* minimize = add_button(QStringLiteral("−"), QStringLiteral("window"),
                               QStringLiteral("最小化"));
-  auto* maximize = add_button(theme::Icon::Maximize,
-                              QStringLiteral("window"),
-                              QStringLiteral("最大化"));
-  auto* close = add_button(theme::Icon::Close,
-                           QStringLiteral("windowClose"),
+  auto* maximize = add_button(QStringLiteral("□"), QStringLiteral("window"),
+                              QStringLiteral("最大化 / 还原"));
+  auto* close = add_button(QStringLiteral("×"), QStringLiteral("windowClose"),
                            QStringLiteral("关闭"));
 
   connect(minimize, &QPushButton::clicked, this,
@@ -43,6 +37,7 @@ WindowControls::WindowControls(QWidget* parent) : QWidget(parent) {
           &WindowControls::MaximizeRequested);
   connect(close, &QPushButton::clicked, this,
           &WindowControls::CloseRequested);
+  setFixedSize(106, 28);
 }
 
 }  // namespace rtcwin::ui

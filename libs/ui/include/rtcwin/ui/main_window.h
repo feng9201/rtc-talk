@@ -27,6 +27,7 @@ class MainWindow final : public FramelessWindow {
 
   void BeginJoin(const domain::PrejoinOptions& options);
   void ShowRoomPreview();
+  void EnableCameraPreview();
 
  protected:
   void resizeEvent(QResizeEvent* event) override;
@@ -38,12 +39,14 @@ class MainWindow final : public FramelessWindow {
   void ShowRoomPage();
   void PositionWindowControls();
   void UpdateStatus(const QString& text, const QString& tone = {});
+  bool StartSelectedCameraPreview();
 
   QStackedWidget* stack_ = nullptr;
   PrejoinPage* prejoin_page_ = nullptr;
   RoomPage* room_page_ = nullptr;
   WindowControls* window_controls_ = nullptr;
   std::unique_ptr<application::AppController> controller_;
+  bool auto_preview_ = false;
 };
 
 }  // namespace rtcwin::ui

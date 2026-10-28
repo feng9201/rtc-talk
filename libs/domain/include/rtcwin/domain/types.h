@@ -172,6 +172,19 @@ struct VideoStreamState {
   std::int64_t last_frame_ms = 0;
 };
 
+struct VideoFrame {
+  std::string mid;
+  VideoSource source = VideoSource::Camera;
+  int width = 0;
+  int height = 0;
+  int stride_y = 0;
+  int stride_u = 0;
+  int stride_v = 0;
+  std::vector<std::uint8_t> y;
+  std::vector<std::uint8_t> u;
+  std::vector<std::uint8_t> v;
+  std::int64_t timestamp_us = 0;
+};
 struct SessionSnapshot {
   ConnectionPhase connection = ConnectionPhase::Disconnected;
   JoinPhase join = JoinPhase::NotJoined;

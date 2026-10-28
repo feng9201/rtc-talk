@@ -1,0 +1,16 @@
+{
+  "name": "rtc-talk-win",
+  "version-string": "0.1.0",
+  "dependencies": [
+    {
+      "name": "ffmpeg",
+      "default-features": false
+    }
+  ],
+  "overrides": [
+    {
+      "name": "ffmpeg",
+      "version-string": "7.1.4#5"
+    }
+  ]
+}

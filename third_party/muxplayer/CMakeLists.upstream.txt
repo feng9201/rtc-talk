@@ -1,0 +1,153 @@
+cmake_minimum_required(VERSION 3.17)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+if(MSVC)
+add_compile_options("$<$<C_COMPILER_ID:MSVC>:/utf-8>")
+add_compile_options("$<$<CXX_COMPILER_ID:MSVC>:/utf-8>")
+SET( CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /level='requireAdministrator' /uiAccess='false' /SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup" )
+endif()
+
+# ── WGL_NV_DX_interop + Qt OpenGL 编译选项 ──
+# 启用后 muxPlayer 库将包含 GLInterop + GLPlayWidget 类
+# 要求：Qt5 (Core/Gui/Widgets/OpenGL)、OpenGL
+option(ENABLE_WGL_INTEROP "Enable WGL_NV_DX_interop OpenGL rendering support" ON)
+
+# ── HTTP-FLV 拉流功能开关 ──
+option(MUXPLAY_ENABLE_FLV "Enable HTTP-FLV streaming support" ON)
+
+find_package(FFMPEG REQUIRED)
+find_package(mttool CONFIG REQUIRED)
+find_package(fdk-aac CONFIG REQUIRED)
+find_package(log-cpp CONFIG REQUIRED)
+if(MUXPLAY_ENABLE_FLV)
+    find_package(cpr CONFIG REQUIRED)
+    find_package(OpenSSL REQUIRED)
+endif()
+
+file(GLOB_RECURSE CPPSRC_DIR_LIST "*.cpp" )
+file(GLOB_RECURSE HEADERSRC_DIR_LIST "*.h" )
+
+# ── 根据 ENABLE_WGL_INTEROP 过滤源码 ──
+if(NOT ENABLE_WGL_INTEROP)
+    list(FILTER CPPSRC_DIR_LIST EXCLUDE REGEX "gl_interop|gl_play")
+    list(FILTER HEADERSRC_DIR_LIST EXCLUDE REGEX "gl_interop|gl_play")
+endif()
+
+# FLV 关闭时排除 flv_demuxing 文件
+if(NOT MUXPLAY_ENABLE_FLV)
+    list(FILTER CPPSRC_DIR_LIST EXCLUDE REGEX "flv_demuxing")
+    list(FILTER HEADERSRC_DIR_LIST EXCLUDE REGEX "flv_demuxing")
+endif()
+
+set(AllFile ${HEADERSRC_DIR_LIST} ${CPPSRC_DIR_LIST})
+foreach(fileItem ${AllFile})
+    # Get the directory of the source file
+    get_filename_component(PARENT_DIR "${fileItem}" DIRECTORY)
+    # Remove common directory prefix to make the group
+    string(REPLACE "${CMAKE_CURRENT_SOURCE_DIR}" "" GROUP "${PARENT_DIR}")
+    # Make sure we are using windows slashes
+    string(REPLACE "/" "\\" GROUP "${GROUP}")
+    # Group into "Source Files" and "Header Files"
+    set(GROUP "${GROUP}")
+    source_group("${GROUP}" FILES "${fileItem}")
+endforeach()
+
+# 添加库
+if(MUXPLAY_BUILD_SHARED)
+add_library(muxPlayer SHARED 
+    ${HEADERSRC_DIR_LIST}
+    ${CPPSRC_DIR_LIST})
+else()
+add_library(muxPlayer 
+    STATIC
+    ${HEADERSRC_DIR_LIST}
+    ${CPPSRC_DIR_LIST})
+endif()
+
+# 设置导出宏
+target_compile_definitions(muxPlayer
+    PRIVATE
+        DX_PLAYER_LIBRARY
+    PUBLIC
+        $<INSTALL_INTERFACE:>
+        $<$<BOOL:${MUXPLAY_ENABLE_FLV}>:MUXPLAY_ENABLE_FLV>
+)
+
+# ── WGL interop：Qt 依赖 + OpenGL + MOC 支持 ──
+if(ENABLE_WGL_INTEROP)
+    # Qt 路径（由顶层 -DQT5_PATH=... 传入）
+    if(QT5_PATH)
+        set(CMAKE_PREFIX_PATH ${QT5_PATH})
+    endif()
+    find_package(Qt5 COMPONENTS Core Gui Widgets OpenGL REQUIRED)
+    find_package(OpenGL REQUIRED)
+
+    set_target_properties(muxPlayer PROPERTIES
+        AUTOMOC ON
+    )
+
+    target_compile_definitions(muxPlayer
+        PUBLIC
+            ENABLE_WGL_INTEROP
+    )
+
+    target_link_libraries(muxPlayer
+        PUBLIC
+            Qt5::Core
+            Qt5::Gui
+            Qt5::Widgets
+            Qt5::OpenGL
+            OpenGL::GL
+            log-cpp::log-cpp
+    )
+
+endif()
+
+# 包含头文件目录
+target_include_directories(muxPlayer
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${FFMPEG_INCLUDE_DIRS}
+)
+
+# 链接库
+target_link_libraries(muxPlayer
+    PUBLIC
+    mttool::mttool
+    ${FFMPEG_LIBRARIES}
+    mtAudio
+    FDK-AAC::fdk-aac
+    d3dcompiler
+    tmcore      # GPU 枚举 / D3D11 设备创建
+)
+
+# FLV 依赖（仅在开启时链接）
+if(MUXPLAY_ENABLE_FLV)
+    target_link_libraries(muxPlayer
+        PUBLIC
+            cpr::cpr
+            OpenSSL::SSL
+            OpenSSL::Crypto
+            flvParser
+    )
+endif()
+
+# 设置 Windows 导出符号
+if(WIN32)
+    set_target_properties(muxPlayer PROPERTIES
+        WINDOWS_EXPORT_ALL_SYMBOLS ON
+        DEFINE_SYMBOL IPC_SERVICE_LIBRARY
+    )
+endif()
+
+# 设置版本信息
+set_target_properties(muxPlayer PROPERTIES
+    VERSION ${PROJECT_VERSION}
+    SOVERSION ${PROJECT_VERSION_MAJOR}
+    OUTPUT_NAME "muxPlayer"
+)
