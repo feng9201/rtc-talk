@@ -7,6 +7,8 @@
 #include <QVector>
 #include <QWidget>
 
+#include <memory>
+
 class QGridLayout;
 
 namespace rtcwin::ui {
@@ -18,6 +20,7 @@ class VideoGrid final : public QWidget {
   explicit VideoGrid(QWidget* parent = nullptr);
 
   void SetState(const domain::SessionSnapshot& snapshot);
+  void SetFrame(const domain::VideoFrame& frame);
   void SetLayoutMode(domain::StageLayout layout);
   void SetFilter(domain::StageFilter filter);
 
@@ -34,12 +37,14 @@ class VideoGrid final : public QWidget {
   void Rebuild();
   void ApplyPlacement();
   VideoTile* EnsureTile(const domain::PeerState& member);
+  void ApplyFrame(VideoTile* tile, const domain::PeerState& member);
 
   domain::SessionSnapshot snapshot_;
   domain::StageLayout layout_ = domain::StageLayout::Grid;
   domain::StageFilter filter_ = domain::StageFilter::All;
   QGridLayout* layout_engine_ = nullptr;
   QHash<QString, VideoTile*> tiles_;
+  QHash<QString, std::shared_ptr<domain::VideoFrame>> frames_;
 };
 
 }  // namespace rtcwin::ui

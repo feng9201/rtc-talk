@@ -1,8 +1,8 @@
 # rtc-talk-win 详细开发计划（muxPlayer 优先）
 
-> 状态：S1、S2、S3.1 已完成；S3.2 音频 P2P/SFU 主链路已提交，待完整设备和恢复验收。
+> 状态：S1、S2、S3.1 已完成；S3.2 音频 P2P/SFU 主链路已提交；S4.1 摄像头 SFU 发布与远端 muxPlayer 渲染已通过双端短链路验证；B1-B3 生产化拆分已完成，S4 的屏幕共享、P2P 视频和多路压力验收仍待完成。
 > 日期：2026-10-29
-> 当前代码基线：`rtc-talk-win@5ab73fa`
+> 当前代码基线：`rtc-talk-win@01be148` + S4.1/B1-B3 工作树
 > 第一验收目标：完成 muxPlayer 接入，并用本机摄像头完成真实预览联调。
 > 约束：WebRTC 音频仍由 WebRTC AudioDeviceModule 处理；muxPlayer 只作为视频渲染基础设施。
 
@@ -703,6 +703,46 @@ S1 未通过，不进入 S2。
 - 关闭和重连不泄漏 PeerConnection。
 
 ### S4：视频发布与远端 muxPlayer 渲染（4–5 天）
+
+当前进度（S4.1，已完成短链路验证）：
+
+- `AudioMediaSession` 已重构为 `MediaSession`，音频和摄像头共用同一 SFU
+  PeerConnection，避免独立视频 transport 的 DTLS/mediasoup 绑定冲突。
+- 注入 Media Foundation H.264 单层编码器和解码器，固定
+  `packetization-mode=1 / profile-level-id=42e01f`，与 SFU Router 一致。
+- Engine 将 `camera_win` 的 I420 帧送入 `AdaptedVideoTrackSource`，切换
+  `media.setMute{source:"camera"}` 控制 producer 与本地 sender。
+- 解析 `sfu.offer.consumers[]` 的 `mid/uid/kind/source`，远端 I420 通过
+  版本化 C ABI 回到 Qt UI，按 `uid + source` 注入 muxPlayer。
+- 房间页的视频 tile 已使用 `MuxVideoSurface`，不再用 QImage 作为远端视频
+  生产渲染路径。
+- `log-cpp[shared]@1.0.0#4` 改由私有 vcpkg registry 提供；新增
+  `rtcwin_log_adapter.dll` C ABI 边界，避免 `/MT` Engine 与 `/MD` log-cpp
+  跨 CRT 传递 STL 类型。
+- Release/Debug 全量构建通过，CTest 5/5 通过（新增状态机测试）。
+- 测试服双客户端验证：发送端 `camera_frames=31 -> 179`、
+  `video_packets_sent=14 -> 293`；接收端
+  `video_packets_received=53 -> 325`，远端摄像头画面正常显示。
+
+仍未完成：
+
+- 屏幕共享采集、发布、订阅和停止后立即清屏。
+- P2P 视频支路。
+- 多路视频 session pool、9 路性能、5 秒无帧回收和长时间稳定性。
+- `EngineCore` 拆分。B3 后该文件约 1598 行，仍是媒体编排、P2P/SFU 切换、
+  摄像头控制和统计的集中点；进入 S4.2 前继续 B4 Media Orchestrator 拆分。
+
+S4.1 后的重构进度：
+
+- B1 Command/Event Facade 已完成。
+- `EngineCommandRouter` 统一命令注册和分发。
+- `EngineEventSink` 统一 C ABI 响应/通知信封。
+- 所有 Engine 命令与事件 JSON 改用 nlohmann，已删除手拼 JSON 和字符串解析。
+- B2 Signaling Transport 已完成。
+- `SignalingTransport` 独占 io_context、信令线程、SignalingClient 和停止生命周期。
+- B3 Session State Machine 已完成。
+- `SessionStateMachine` 用显式 phase/media mode 和 generation 管理连接、入房、
+  离房、失败与媒体就绪状态；旧回调不能污染新会话。
 
 交付：
 

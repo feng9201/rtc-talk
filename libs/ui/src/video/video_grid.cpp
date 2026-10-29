@@ -9,6 +9,14 @@
 #include <cmath>
 
 namespace rtcwin::ui {
+namespace {
+
+QString FrameKey(const QString& uid, domain::VideoSource source) {
+  return uid + QLatin1Char('|') +
+         QString::fromStdString(domain::VideoSourceName(source));
+}
+
+}  // namespace
 
 VideoGrid::VideoGrid(QWidget* parent) : QWidget(parent) {
   setMinimumSize(360, 240);
@@ -23,6 +31,30 @@ void VideoGrid::SetState(const domain::SessionSnapshot& snapshot) {
   Rebuild();
   ApplyPlacement();
   update();
+}
+
+void VideoGrid::SetFrame(const domain::VideoFrame& frame) {
+  QString uid = QString::fromStdString(frame.uid);
+  if (uid.isEmpty()) uid = QString::fromStdString(snapshot_.self_uid);
+  if (uid.isEmpty()) return;
+  frames_.insert(FrameKey(uid, frame.source),
+                 std::make_shared<domain::VideoFrame>(frame));
+  VideoTile* tile = tiles_.value(uid, nullptr);
+  if (tile == nullptr) return;
+  domain::PeerState member;
+  if (uid == QString::fromStdString(snapshot_.self_uid)) {
+    member.uid = snapshot_.self_uid;
+    member.camera_on = snapshot_.camera_on;
+    member.screen_on = snapshot_.sharing;
+  } else {
+    for (const auto& peer : snapshot_.peers) {
+      if (QString::fromStdString(peer.uid) == uid) {
+        member = peer;
+        break;
+      }
+    }
+  }
+  ApplyFrame(tile, member);
 }
 
 void VideoGrid::SetLayoutMode(domain::StageLayout layout) {
@@ -69,15 +101,44 @@ void VideoGrid::Rebuild() {
                     member.uid == snapshot_.self_uid,
                     QString::fromStdString(member.uid) ==
                         QString::fromStdString(snapshot_.selected_uid));
+    ApplyFrame(tile, member);
   }
   for (auto it = tiles_.begin(); it != tiles_.end();) {
     if (!ids.contains(it.key())) {
+      const QString prefix = it.key() + QLatin1Char('|');
+      for (auto frame_it = frames_.begin(); frame_it != frames_.end();) {
+        if (frame_it.key().startsWith(prefix)) {
+          frame_it = frames_.erase(frame_it);
+        } else {
+          ++frame_it;
+        }
+      }
       it.value()->deleteLater();
       it = tiles_.erase(it);
     } else {
       ++it;
     }
   }
+}
+
+void VideoGrid::ApplyFrame(VideoTile* tile, const domain::PeerState& member) {
+  if (tile == nullptr) return;
+  const QString uid = QString::fromStdString(member.uid);
+  if (member.screen_on) {
+    if (auto frame =
+            frames_.value(FrameKey(uid, domain::VideoSource::Screen), nullptr)) {
+      tile->SetFrame(*frame);
+      return;
+    }
+  }
+  if (member.camera_on) {
+    if (auto frame =
+            frames_.value(FrameKey(uid, domain::VideoSource::Camera), nullptr)) {
+      tile->SetFrame(*frame);
+      return;
+    }
+  }
+  tile->ClearFrame();
 }
 
 VideoTile* VideoGrid::EnsureTile(const domain::PeerState& member) {

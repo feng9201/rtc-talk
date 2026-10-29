@@ -3,9 +3,9 @@
 > 快照日期：2026-10-29  
 > 仓库：`D:\google\webrtc-win-client\rtc-talk-win`  
 > 分支：`rtc-talk-win`  
-> 已推送音频基线：`5ab73fa feat: 接入WASAPI系统音采集`
+> 本地最新提交：`01be148 feat: 接入log-cpp诊断日志`
 >
-> 当前状态：S3.2 核心音频链路已通过 1v1 P2P、第三人切 SFU 和静音停发短链路验证；收听、音量、设备异常和完整恢复仍需继续验收。
+> 当前状态：S3.2 音频主链路已通过短链路验证；S4.1 摄像头 SFU 发布、远端 I420 回传和 muxPlayer 房间渲染已通过双端验证；B1-B3（命令/事件门面、信令传输、会话状态机）已完成。屏幕共享、P2P 视频和多路压力仍未完成。
 > 旧工程：`D:\google\webrtc-win-client\rtc-talk`，只读参考，禁止修改或提交。
 
 本文档面向后续接入业务、继续媒体开发、做代码评审或发布验收的工程师。它描述当前真实代码状态，不把计划中的能力写成已完成能力。
@@ -17,7 +17,7 @@
 
 | 类别 | 仓库 / 分支 / 提交 | 本工程中的用途 | 权限 |
 |---|---|---|---|
-| 当前生产工程 | `D:\google\webrtc-win-client\rtc-talk-win` / `rtc-talk-win` / `5ab73fa` | 真正交付工程、当前开发分支 | 可开发、可提交到 `rtc-talk-win` |
+| 当前生产工程 | `D:\google\webrtc-win-client\rtc-talk-win` / `rtc-talk-win` / `01be148` + S4.1/B1-B3 工作树 | 真正交付工程、当前开发分支 | 可开发、可提交到 `rtc-talk-win` |
 | 服务端权威参考 | `D:\google\webrtc-win-client\rtc-talk` / `origin/main` / `8e6ff57` | 服务端行为、协议口径、S4 差异和联调依据 | 只读 |
 | 旧 Windows 客户端功能参考 | `origin/feat/windows-client` / `df22708` | `client-win` demo、既有音视频功能和联调逻辑参考 | 只读 |
 | 旧 Windows 生产实现参考 | `origin/codex/feat/windows-production-client` / `bbb3891` | P5 UI、生产模块、历史改造和验收记录参考 | 只读 |
@@ -72,8 +72,9 @@
 | S1 | muxPlayer、本地摄像头、C ABI、P5 UI | 已完成并推送 | `de3a7f1`、摄像头预览、muxPlayer 截图 | 长稳定性测试按用户要求另行安排 |
 | S2 | 信令、认证、房间生命周期、成员快照 | 已完成并推送 | `98f1ee8`、`rtcwin_signaling_tests`、双客户端联调 | 无 |
 | S3.1 | libwebrtc 音频设备枚举与预入会选择 | 已完成并推送 | `53a8fdd`、`rtcwin_audio_devices_probe` | 无 |
-| S3.2 | 音频 PeerConnection、P2P/SFU、静音、音量、收听、系统音 | 核心完成并推送，待完整人工验收 | `5ab73fa`、`AudioMediaSession`、WASAPI loopback | 收听/音量听音、设备异常、离房重进和恢复 |
-| S4 | 视频发布、远端视频、muxPlayer 渲染、屏幕共享 | 未开始 | 当前只有本地摄像头预览 | SFU video、P2P video、consume mid 映射、画面回收 |
+| S3.2 | 音频 PeerConnection、P2P/SFU、静音、音量、收听、系统音 | 核心完成并推送，待完整人工验收 | `5ab73fa`、`MediaSession`、WASAPI loopback | 收听/音量听音、设备异常、离房重进和恢复 |
+| S4.1 | 摄像头 SFU 发布、远端 I420、muxPlayer 房间渲染 | 代码完成，双端短链路通过 | `MediaSession`、MF H.264、`RemoteVideoSink`、`MuxVideoSurface` | 设备切换、离房重进、异常恢复 |
+| S4.2 | 屏幕共享、P2P 视频、多路视频池和压力 | 未开始 | 当前仅摄像头 SFU 路径 | screen publish/consume、P2P video、9 路性能、无帧回收 |
 | S5 | 成员、发言权、主持人、PTT/审核模式 | 部分完成 | 房间成员/策略/floor 快照已有；floor 请求仍为 501 | floor.request/release、revoked、keepalive、主持人操作 |
 | S6 | 设备、统计、日志和诊断 | 部分完成 | 摄像头/音频设备枚举、`media.stats` 基础字段 | RTCStats、设备热插拔、设置弹窗、脱敏日志、诊断面板 |
 | S7 | 重连、resume、ICE refresh、安全 | 未开始 | 当前关闭后重置媒体，无 resume | generation guard、WSS、resume、ICE restart、错误恢复 |
@@ -81,7 +82,7 @@
 | P0 | 计划与依赖审计 | 已完成 | 本工程依赖边界和构建脚本 | 后续计划变更时维护 |
 | P1 | muxPlayer 可构建 | 已完成并推送 | `de3a7f1` | 无 |
 | P2 | muxPlayer 原始帧注入 | 已完成并推送 | `de3a7f1` | 远端帧接入在 S4 完成 |
-| P3 | 本地摄像头采集与 C ABI | 已完成并推送 | `de3a7f1` | WebRTC 视频发布在 S4 完成 |
+| P3 | 本地摄像头采集与 C ABI | 已完成并推送 | `de3a7f1`、S4.1 增加远端帧 ABI v2 | 无 |
 | P4 | UI 本地预览联调 | 已完成并推送 | P5 预入会页、真实摄像头截图 | 视觉改动必须继续对照 P5 |
 | P5 | 第一里程碑稳定性与提交验收 | 已完成阶段验收 | Release/Debug 构建、既有联调 | 长稳定性测试按用户明确要求执行 |
 
@@ -89,11 +90,11 @@
 
 必须明确记录以下偏差：
 
-1. `plan/production-plan.md` 已同步到 `rtc-talk-win@5ab73fa`，后续提交仍需持续维护基线。
-2. `talk-protocol.md` 定义了 resume、ICE restart、P2P/SFU 先建后断、视频 m-line 等完整约束，当前 S3.2 只实现音频主链路。
+1. `plan/production-plan.md` 已补充 S4.1 状态；提交后仍应把基线 SHA 更新到实际提交。
+2. `talk-protocol.md` 定义了 resume、ICE restart、P2P/SFU 先建后断、视频 m-line 等完整约束，当前已实现 SFU 摄像头，但尚未覆盖 P2P 视频和屏幕共享。
 3. 第三人加入“先建 SFU、确认可用、再关 P2P”已在短链路验证，后续仍需覆盖网络异常和重复切换。
 4. 服务端计划包含 `p2p.state`、P2P 失败回退、10 秒超时和 candidate 缓存等约束，当前客户端只完成基础转发，没有完整恢复策略。
-5. 计划中的 S5-S8、视频、设备热插拔、WSS、resume 和安装包均不能在交接中写成已完成。
+5. 计划中的 S5-S8、S4.2 屏幕共享/P2P 视频、设备热插拔、WSS、resume 和安装包均不能在交接中写成已完成。
 
 ---
 
@@ -113,7 +114,7 @@
 - 房间成员、角色、策略、发言权、媒体模式等快照与增量通知。
 - libwebrtc M146 的 Windows Core Audio 设备枚举。
 - 预入会页真实录音/播放设备列表。
-- 独立 `AudioMediaSession`：
+- 统一 `MediaSession`：
   - Windows Core Audio ADM。
   - Opus 编解码工厂。
   - APM/3A。
@@ -123,6 +124,9 @@
   - P2P offer/answer/ICE candidate。
   - 静音、收听静音、音量、SFU 暂停。
   - P2P 连通后暂停 SFU 音频，避免双路重复播放。
+  - Media Foundation H.264 编解码工厂。
+  - 同一 SFU PeerConnection 内的摄像头视频轨。
+  - 远端视频 I420 拆包和 frame callback。
 - Engine 内已接入：
   - `sfu.publish`
   - 服务端 `sfu.offer`
@@ -139,6 +143,21 @@
   - `media.muted`
   - `media.deafened`
   - `media.error`
+- S4.1 摄像头视频链路：
+  - `MediaSession` 在同一 PeerConnection 内发布音频和摄像头 H.264。
+  - Media Foundation H.264 编码/解码工厂。
+  - `AdaptedVideoTrackSource` 接收 Engine 摄像头 I420。
+  - `sfu.offer.consumers[]` 的 `mid/uid/kind/source` 映射。
+  - 远端 I420 经 C ABI v2 返回 UI。
+  - 房间页 `VideoGrid`/`VideoTile` 通过 `MuxVideoSurface` 显示本地和远端视频。
+- 服务端 S4.1 双端短链路已验证：
+  - 发送端 `camera_frames=31 -> 179`。
+  - 发送端 `video_packets_sent=14 -> 293`。
+  - 接收端 `video_packets_received=53 -> 325`。
+- 诊断日志依赖：
+  - `log-cpp[shared]@1.0.0#4` 由私有 vcpkg registry 引入。
+  - Engine 通过 `rtcwin_log_adapter.dll` C ABI 调用 log-cpp。
+  - `/MT` Engine 与 `/MD` log-cpp 之间不传递 STL 类型。
 
 ### 1.2 当前还没有验收
 
@@ -147,20 +166,23 @@
 - 服务端强制静音、收听静音和音量的端到端人工听音。
 - 设备拔出、设备占用、默认设备切换。
 - 断线重连/resume。
-- 摄像头和屏幕共享接入 WebRTC 发布/订阅。
-- 远端视频经 muxPlayer 播放。
+- 屏幕共享接入 WebRTC 发布/订阅。
+- P2P 视频支路。
+- 多路视频 session pool、9 路性能和 5 秒无帧回收。
 - WSS/TLS 信令。
 - 完整生产诊断、打包和安装。
 
 ### 1.3 当前工作树状态
 
-S3.2 音频修复已经提交并推送为 `3b79703`。当前代码基线包含：
+最新本地提交为 `01be148`，S4.1 修改在提交前的工作树中。当前代码基线包含：
 
-- 独立 `AudioMediaSession` 与真实 ADM 音频链路。
+- `MediaSession` 与真实 ADM 音频链路。
 - P2P/SFU 双向音频、静音门和 RTP 诊断。
 - P2P -> SFU 先建后断切换。
 - trace 脱敏、`none` 后端和远端音轨生命周期修复。
-- Release/Debug 构建与 CTest 3/3 通过。
+- 摄像头 SFU H.264 发布、远端 I420 注入 muxPlayer。
+- C ABI v2：`rtcwin_frame_view.uid`。
+- Release/Debug 构建与 CTest 5/5 通过。
 
 ---
 
@@ -243,7 +265,7 @@ flowchart LR
     Core[EngineCore]
     Worker[Engine command worker]
     SigWorker[Signaling io_context thread]
-    Audio[AudioMediaSession]
+    Audio[MediaSession]
     Camera[CameraCaptureSession]
     Core --> Worker
     Core --> SigWorker
@@ -265,10 +287,11 @@ flowchart LR
 | Client API | `libs/client_api` | 稳定 C ABI |
 | Engine | `libs/engine` | 命令队列、信令编排、房间/媒体状态、C ABI 实现 |
 | Client Gateway | `libs/client_gateway` | `QNetworkAccessManager` 开发 Token、C ABI -> Qt signal |
+| Log Adapter | `libs/log_adapter` | `/MD` 日志 DLL，隔离 vcpkg log-cpp 与 `/MT` Engine |
 | UI | `libs/ui` | P5 Qt Widgets 页面、主题、控件、muxPlayer surface |
 | Camera | `libs/camera_win` | Media Foundation 枚举和采集 |
 | Signaling | `libs/signaling` | WebSocket、信封校验、请求应答、心跳基础 |
-| WebRTC Media | `libs/webrtc_media` | ADM、音频会话、SFU/P2P 音频 |
+| WebRTC Media | `libs/webrtc_media` | ADM、音视频会话、H.264、SFU/P2P 媒体 |
 | Mux Adapter | `libs/muxplayer_adapter` | I420 到 muxPlayer raw frame 注入 |
 
 ### 3.3 线程模型
@@ -280,14 +303,14 @@ flowchart LR
 | Qt GUI 线程 | `rtc-talk.exe` | QWidget、信号槽、画面提交 |
 | Engine command worker | `EngineCore::worker_` | C ABI 命令、媒体对象生命周期、设备操作 |
 | Signaling io_context | `EngineCore::signaling_thread_` | WebSocket、请求应答、心跳 timer |
-| libwebrtc network thread | `AudioMediaSession` | ICE/DTLS/RTP 网络 |
-| libwebrtc worker thread | `AudioMediaSession` | ADM、PeerConnection 工作 |
-| libwebrtc signaling thread | `AudioMediaSession` | PeerConnection/SDP 操作 |
+| libwebrtc network thread | `MediaSession` | ICE/DTLS/RTP 网络 |
+| libwebrtc worker thread | `MediaSession` | ADM、编解码、PeerConnection 工作 |
+| libwebrtc signaling thread | `MediaSession` | PeerConnection/SDP 操作 |
 | Audio capture/render | Windows/libwebrtc | Core Audio 实时回调 |
 
 关键线程规则：
 
-1. `AudioMediaSession` 的公开控制方法必须由 Engine worker 串行调用。
+1. `MediaSession` 的公开控制方法必须由 Engine worker 串行调用。
 2. `SignalingClient` 只在 `signaling_io_` 线程访问。
 3. 信令回调不能在 signaling 线程直接操作媒体，必须 `PostToWorker(...)`。
 4. 媒体事件回调不能在 libwebrtc 线程直接操作 Engine，必须 `PostToWorker(...)`。
@@ -300,6 +323,8 @@ flowchart LR
 - Engine：`/MT` 或 `/MTd`。
 - UI：`/MD` 或 `/MDd`，不得直接链接 WebRTC。
 - `libs/webrtc_media`：C++20、`/MT`、`/EHs-c-`、RTTI 开启。
+- `libs/log_adapter`：`/MD` 或 `/MDd`，只暴露 C ABI。
+- Engine 只向日志适配层传 `const char*`，不得跨 DLL 传 `std::string`、异常或 STL 容器。
 - Debug 必须定义 `_HAS_ITERATOR_DEBUGGING=0`。
 - WebRTC SDK 当前版本：M146。
 - SDK 路径通过 `WEBRTC_SDK_DIR` 注入。
@@ -339,7 +364,7 @@ Engine 当前关键职责：
 
 - `HandleSessionConnectAndJoin`
 - `FinalizeJoin`
-- `InitializeAudioMedia`
+- `InitializeMedia`
 - `PublishSfu`
 - `ApplySfuAnswer`
 - `StartP2p`
@@ -348,7 +373,7 @@ Engine 当前关键职责：
 - `ApplyP2pCandidate`
 - `HandleMediaModeRequest`
 - `HandleSfuOfferRequest`
-- `HandleAudioMediaEvent`
+- `HandleMediaEvent`
 - `HandleMediaSetMute`
 - `HandleMediaSetVolume`
 - `HandleMediaSetDeafened`
@@ -369,18 +394,21 @@ Engine 当前关键职责：
 - 尚未实现完整重连、resume、generation guard。
 - 请求超时 10 秒，SFU 方法 15 秒。
 
-### 4.4 音频媒体
+### 4.4 音视频媒体
 
 核心文件：
 
 ```text
-libs/webrtc_media/include/rtcwin/webrtc_media/audio_media_session.h
-libs/webrtc_media/src/audio_media_session.cpp
+libs/webrtc_media/include/rtcwin/webrtc_media/media_session.h
+libs/webrtc_media/src/media_session.cpp
 libs/webrtc_media/include/rtcwin/webrtc_media/audio_device_service.h
 libs/webrtc_media/src/audio_device_service.cpp
+libs/webrtc_media/src/video_track_source.cpp
+libs/webrtc_media/src/remote_video_sink.cpp
+libs/webrtc_media/src/video/webrtc_h264_factory.cpp
 ```
 
-`AudioMediaSession` 是音频-only、PImpl、无 libwebrtc 公共类型泄漏的媒体运行时。
+`MediaSession` 是音视频统一、PImpl、无 libwebrtc 公共类型泄漏的媒体运行时。
 
 内部组成：
 
@@ -390,10 +418,13 @@ libs/webrtc_media/src/audio_device_service.cpp
 - APM：AEC、NS、AGC2、高通。
 - `CaptureGate`：编码前静音和采集帧计数。
 - 本地 `AudioTrackInterface`。
+- 本地 `CameraVideoTrackSource` 和 `VideoTrackInterface`。
+- Media Foundation H.264 encoder/decoder factory。
 - `sfu-send` PeerConnection。
 - `sfu-recv` PeerConnection。
 - `p2p` PeerConnection。
 - 远端音频轨列表、音量和收听静音。
+- 远端视频轨、consumer metadata 和 `RemoteVideoSink`。
 - 5 秒 SDP 超时保护。
 
 重要实现细节：
@@ -408,6 +439,10 @@ libs/webrtc_media/src/audio_device_service.cpp
 - 服务端拒绝开麦时会保持静音，避免误开麦。
 - `SetSfuPaused(true)` 只暂停 SFU 收发，不影响已连通的 P2P 音频。
 - `SetDeafened(true)` 只影响远端音频轨，不停止本地麦克风发送。
+- 摄像头 sender、音频 sender 共用 `sfu-send` PeerConnection；不能为视频新建独立
+  PC，否则 mediasoup transport 的 DTLS 绑定不一致。
+- 摄像头帧时间戳在媒体边界统一改成本地单调时钟，不能直接使用可能回退的 MF
+  device timestamp。
 
 ### 4.5 摄像头与 muxPlayer
 
@@ -416,8 +451,8 @@ libs/webrtc_media/src/audio_device_service.cpp
 - `libs/camera_win` 使用 Media Foundation。
 - 输出 I420。
 - Engine 通过 `rtcwin_options.on_local_frame` 交给 UI。
-- 当前用于预入会本地预览。
-- 尚未把同一采集源作为 WebRTC video track 发送。
+- 房间内开启摄像头后，同一 I420 帧同时进入 `MediaSession` 编码和本地预览。
+- 远端 I420 通过 `rtcwin_options.on_remote_frame` 回到 Gateway。
 
 muxPlayer：
 
@@ -439,13 +474,21 @@ CameraCaptureSession
   -> MuxPlayer Adapter
   -> muxPlayer raw I420 live render
   -> GL surface
+
+sfu.offer.consumers[]
+  -> mid/uid/source registry
+  -> MediaSession RemoteVideoSink
+  -> C ABI v2 remote I420 callback
+  -> CAbiEngineClient latest-frame-per-stream bridge
+  -> MuxVideoSurface
 ```
 
 原则：
 
 - 不复用 muxPlayer 的 H.264/H.265 输入接口做“WebRTC 解码后再编码再解码”。
 - WebRTC 已解码的 I420 应直接注入 muxPlayer。
-- 当前只完成本地摄像头预览；远端视频和屏幕共享未接入 WebRTC。
+- 摄像头 SFU 发布和远端 muxPlayer 渲染已完成短链路验证。
+- 屏幕共享和 P2P 视频仍未接入。
 
 ---
 
@@ -473,6 +516,7 @@ CameraCaptureSession
 | CMake | 本机 | 构建系统 |
 | libwebrtc M146 | `WEBRTC_SDK_DIR` | 开源外部 SDK，约 2.3 GiB；不复制源码/二进制到仓库 |
 | FFmpeg | 私有 vcpkg registry | 通过 `vcpkg.json` 固定版本 |
+| log-cpp | 私有 vcpkg registry | `log-cpp[shared]@1.0.0#4`，与 demo 一致 |
 | asio | vcpkg | signaling |
 | nlohmann-json | vcpkg | 协议和 JSON |
 
@@ -495,21 +539,25 @@ $env:WEBRTC_SDK_DIR = 'D:\google\webrtc_sdk_hevc'
 实际使用：
 
 ```text
-build/vcpkg-windows-x64
+build/windows-x64
 ```
 
 Release 产物：
 
 ```text
-build/vcpkg-windows-x64/bin/Release/rtc-talk.exe
-build/vcpkg-windows-x64/bin/Release/rtcwin_engine.dll
+build/windows-x64/bin/Release/rtc-talk.exe
+build/windows-x64/bin/Release/rtcwin_engine.dll
+build/windows-x64/bin/Release/rtcwin_log_adapter.dll
+build/windows-x64/bin/Release/log-cpp.dll
 ```
 
 Debug 产物：
 
 ```text
-build/vcpkg-windows-x64/bin/Debug/rtc-talk.exe
-build/vcpkg-windows-x64/bin/Debug/rtcwin_engine.dll
+build/windows-x64/bin/Debug/rtc-talk.exe
+build/windows-x64/bin/Debug/rtcwin_engine.dll
+build/windows-x64/bin/Debug/rtcwin_log_adapter.dll
+build/windows-x64/bin/Debug/log-cpp.dll
 ```
 
 ### 6.2 配置
@@ -550,20 +598,20 @@ $env:PATH = "$env:QTDIR\bin;" + $env:PATH
 默认 fake ADM，不依赖真实设备：
 
 ```powershell
-.\build\vcpkg-windows-x64\bin\Release\rtcwin_audio_media_smoke.exe
+.\build\vcpkg-windows-x64\bin\Release\rtcwin_media_session_smoke.exe
 ```
 
 可选真实设备：
 
 ```powershell
 $env:RTCWIN_AUDIO_BACKEND = 'wasapi'
-.\build\vcpkg-windows-x64\bin\Release\rtcwin_audio_media_smoke.exe
+.\build\vcpkg-windows-x64\bin\Release\rtcwin_media_session_smoke.exe
 Remove-Item Env:RTCWIN_AUDIO_BACKEND
 ```
 
 该探针会：
 
-- 初始化 AudioMediaSession。
+- 初始化 MediaSession。
 - 生成 SFU publish offer。
 - 用第二个 fake 会话生成 SFU subscribe answer。
 - 应用 answer。
@@ -607,7 +655,7 @@ sequenceDiagram
   participant GW as CAbiEngineClient
   participant E as EngineCore
   participant S as Signaling
-  participant M as AudioMediaSession
+  participant M as MediaSession
 
   UI->>GW: ConnectAndJoin(options)
   GW->>GW: /dev/token（可选）
@@ -673,7 +721,7 @@ sequenceDiagram
 - 入房初始麦克风是静音状态。
 - 媒体初始化完成后，`session.connectAndJoin` response 会附加 `media_enabled`。
 - 如果音频初始化失败，当前实现仍允许房间入房成功，但 `media_enabled=false` 并发送 `media.error`。后续是否改为入房失败需要产品确认。
-- `p2p_video=false`，因为当前只接入了 P2P 音频，视频仍只有本地预览。
+- `p2p_video=false`，因为当前只接入了 P2P 音频；视频只走 SFU。
 
 ### 7.2 服务端请求
 
@@ -688,7 +736,7 @@ sequenceDiagram
 风险：
 
 - 当前 `room.mediaMode=sfu` 在本地 offer 创建后立即返回成功，不等待订阅链路真正完成。旧 demo 的实现更严格，后续应改成等待 SFU subscribe 成功或超时再响应。
-- `sfu.offer` 若在 `AudioMediaSession` 初始化前到达，会返回 409。需要确认服务端是否重试。
+- `sfu.offer` 若在 `MediaSession` 初始化前到达，会返回 409。需要确认服务端是否重试。
 
 ### 7.3 P2P 通知
 
@@ -696,7 +744,7 @@ sequenceDiagram
 |---|---|---|
 | `p2p.offer` | server -> client | answerer 创建 answer，回 `p2p.answer` |
 | `p2p.answer` | server -> client | offerer 应用 answer |
-| `p2p.candidate` | server -> client | 转交 AudioMediaSession |
+| `p2p.candidate` | server -> client | 转交 MediaSession |
 | `p2p.state` | client -> server | 上报连接状态 |
 | `p2p.close` | server -> client | 只关闭 P2P PC，不销毁 SFU/音频设备 |
 
@@ -857,12 +905,12 @@ Notification：
 
 ---
 
-## 9. AudioMediaSession 使用规则
+## 9. MediaSession 使用规则
 
 ### 9.1 初始化
 
 ```cpp
-AudioMediaConfig config;
+MediaConfig config;
 config.audio_backend = "wasapi";
 config.audio_source = "mic";
 config.recording_device = "<guid-or-name>";
@@ -871,9 +919,9 @@ config.volume = 60;
 config.muted = true;
 config.ice_servers = ...;
 
-AudioMediaSession session;
-AudioMediaError error;
-session.Initialize(config, event_callback, &error);
+MediaSession session;
+MediaError error;
+session.Initialize(config, event_callback, remote_video_callback, &error);
 ```
 
 初始化会：
@@ -889,19 +937,19 @@ session.Initialize(config, event_callback, &error);
 
 ### 9.2 生命周期
 
-- 一个房间会话创建一个 `AudioMediaSession`。
+- 一个房间会话创建一个 `MediaSession`。
 - `Shutdown()` 可重复调用。
 - `Shutdown()` 必须从 Engine worker 调用，不要从 WebRTC 回调调用。
 - `CloseP2p()` 只关闭 P2P，不影响 SFU 和设备。
-- `ResetAudioMedia()` 关闭全部媒体并清空状态。
+- `ResetMedia()` 关闭全部媒体并清空状态。
 
 ### 9.3 API 语义
 
 | API | 语义 |
 |---|---|
-| `CreateSfuPublishOffer` | 创建/复用 sfu-send PC，添加本地音轨，生成本地 offer |
+| `CreateSfuPublishOffer` | 创建/复用 sfu-send PC，添加音频和摄像头轨，生成本地 offer |
 | `ApplySfuPublishAnswer` | 应用 SFU answer，恢复 sender 状态 |
-| `CreateSfuSubscribeAnswer` | 创建/复用 sfu-recv PC，应用远端 offer，生成 answer |
+| `CreateSfuSubscribeAnswer` | 创建/复用 sfu-recv PC，写入 consumers mid/uid/source 映射，应用远端 offer，生成 answer |
 | `CreateP2pOffer` | 新 PC、sendrecv 音频轨、生成本地 offer |
 | `CreateP2pAnswer` | 新 PC、先应用远端 offer、AddTrack、生成 answer |
 | `ApplyP2pAnswer` | offerer 应用 answer |
@@ -910,6 +958,8 @@ session.Initialize(config, event_callback, &error);
 | `SetDeafened` | 控制全部远端音频轨 |
 | `SetSfuPaused` | 控制 SFU 上行和 SFU 远端轨，不影响 P2P |
 | `SetVolume` | 0.0 - 1.0 |
+| `SetCameraEnabled` | 控制摄像头 RTP sender 和本地编码开关 |
+| `PushCameraFrame` | 将 Engine 的 I420 摄像头帧送入视频源 |
 
 ### 9.4 当前限制
 
@@ -920,6 +970,8 @@ session.Initialize(config, event_callback, &error);
 - 没有显式 audio jitter buffer 调优。
 - 没有服务端 ICE restart/DTLS 重建策略。
 - P2P 和 SFU 的 candidate 事件只转发了必要的 P2P 字段。
+- 视频只支持 SFU 摄像头；屏幕共享和 P2P 视频未实现。
+- 多路视频仍是一路一个 muxPlayer surface，尚未做 session pool 和 9 路压力验收。
 
 ---
 
@@ -931,10 +983,12 @@ session.Initialize(config, event_callback, &error);
 
 - Release 全量构建：通过。
 - Debug 全量构建：通过。
-- `rtcwin_audio_media_smoke` Release：通过。
-- `rtcwin_audio_media_smoke` Debug：通过。
-- `ctest` Release：3/3 通过。
-- `ctest` Debug：3/3 通过。
+- `rtcwin_media_session_smoke` Release：通过。
+- `rtcwin_media_session_smoke` Debug：通过。
+- `rtcwin_log_adapter_smoke` Release：通过。
+- `rtcwin_log_adapter_smoke` Debug：通过。
+- `ctest` Release：4/4 通过。
+- `ctest` Debug：4/4 通过。
 - `git diff --check`：通过。
 
 ### 10.2 fake ADM 短链路
@@ -942,17 +996,18 @@ session.Initialize(config, event_callback, &error);
 测试输出：
 
 ```text
-audio media smoke ok sfu_sdp=1012 p2p_sdp=1022 recording=fake-microphone playout=fake-speaker
+audio media smoke ok sfu_sdp=2658 p2p_sdp=1024 recording=fake-microphone playout=fake-speaker
 ```
 
 含义：
 
 - 初始化成功。
-- SFU publish offer 生成成功。
+- SFU publish offer 生成成功，包含音频和 H.264 视频 m-line。
 - 第二个会话生成 SFU subscribe answer 成功。
 - 第一个会话应用 SFU answer 成功。
 - P2P offer/answer 成功。
 - 静音、收听、SFU pause、音量 API 成功。
+- 摄像头源接收合成 I420 帧成功。
 - 未验证真实 ICE 连通。
 
 ### 10.3 真实 Windows Core Audio 短链路
@@ -961,7 +1016,7 @@ audio media smoke ok sfu_sdp=1012 p2p_sdp=1022 recording=fake-microphone playout
 
 ```powershell
 $env:RTCWIN_AUDIO_BACKEND = 'wasapi'
-.\build\vcpkg-windows-x64\bin\Release\rtcwin_audio_media_smoke.exe
+.\build\vcpkg-windows-x64\bin\Release\rtcwin_media_session_smoke.exe
 ```
 
 结果：
@@ -1036,7 +1091,8 @@ real audio device smoke ok sfu_sdp=1012 recording=麦克风 (5- Logitech Webcam 
 ### P1：生产架构风险
 
 1. `EngineCore` 仍然过大。
-   - 命令、信令、房间、媒体、心跳都在一个类。
+   - B1-B3 已移出命令/事件门面、信令运行时和会话生命周期状态。
+   - 房间编排、媒体协调、P2P/SFU 切换、设备控制和统计仍在 `EngineCore`。
    - 建议下一步拆：
      - `SessionController`
      - `RoomController`
@@ -1055,16 +1111,16 @@ real audio device smoke ok sfu_sdp=1012 recording=麦克风 (5- Logitech Webcam 
 4. 未实现完整重连/resume。
    - `session.hello` 没有 `resume.session_id`。
    - 信令关闭后当前实现直接重置媒体和房间。
-   - 需要 generation/epoch，防止旧回调污染新连接。
+   - B3 已加入会话 generation，旧回调不能污染新连接；resume 和重连策略仍未实现。
 
 5. 没有服务端请求和本地操作的完整 correlation。
-   - 媒体切换、静音、视频启动需要 generation token。
-   - 当前 `mute_generation_` 只是局部保护。
+   - 会话级 generation 已覆盖信令、媒体初始化和异步回调。
+   - 命令级 correlation、超时后的服务端确认态和媒体切换回滚仍未统一。
 
 6. 设备热插拔未实现。
    - 默认设备变化、设备拔出、设备占用需要重新初始化 ADM 或回退。
 
-7. `AudioMediaSession` 没有 RTCStats 完整报告。
+7. `MediaSession` 没有 RTCStats 完整报告。
    - 生产诊断至少需要：
      - RTT
      - selected candidate pair
@@ -1075,10 +1131,10 @@ real audio device smoke ok sfu_sdp=1012 recording=麦克风 (5- Logitech Webcam 
 
 ### P2：功能缺口
 
-1. 摄像头没有作为 WebRTC video track 发布。
-2. 远端视频没有注入 muxPlayer。
-3. 屏幕共享未实现。
-4. `media.toggleCamera`、`media.toggleScreenShare`、floor 请求仍返回 501。
+1. 屏幕共享未实现。
+2. P2P 视频未实现；当前 `session.hello.caps.p2p_video=false`。
+3. `media.toggleScreenShare`、floor 请求仍返回 501。
+4. 多路视频池、9 路性能、5 秒无帧回收未验收。
 5. 设置弹窗目前只是占位。
 6. PTT/主持人审核模式下，本地采集门与服务端 floor 状态还需要完整联调。
 7. 系统音 loopback 已接入；非默认播放端点和设备热切换仍需继续验收。
@@ -1228,8 +1284,8 @@ client-b / room-demo / uid-b
 - [ ] `VCPKG_ROOT` 指向本地 vcpkg。
 - [ ] Release 构建通过。
 - [ ] Debug 构建通过。
-- [ ] Release CTest 3/3。
-- [ ] Debug CTest 3/3。
+- [ ] Release CTest 5/5（包含 `rtcwin_session_state_tests`）。
+- [ ] Debug CTest 5/5（包含 `rtcwin_session_state_tests`）。
 - [ ] fake 音频探针通过。
 - [ ] 真实 wasapi 短链路通过。
 - [ ] 双客户端真实音频联调完成后再宣布 S3.2 完成。
@@ -1286,8 +1342,8 @@ plan/production-plan.md
 重点代码：
 
 ```text
-libs/webrtc_media/include/rtcwin/webrtc_media/audio_media_session.h
-libs/webrtc_media/src/audio_media_session.cpp
+libs/webrtc_media/include/rtcwin/webrtc_media/media_session.h
+libs/webrtc_media/src/media_session.cpp
 libs/engine/include/rtcwin/engine/engine_core.h
 libs/engine/src/engine_core.cpp
 libs/client_gateway/src/c_abi_engine_client.cpp
@@ -1312,17 +1368,17 @@ tests/signaling_smoke.cpp
 
 合理并应保持的部分：
 
-1. C ABI DLL 边界解决真问题：libwebrtc ABI 要求（`/EHs-c-`、`/MT`、RTTI）与 Qt/MSVC 默认（`/EHsc`、`/MD`）在同一二进制内不可调和，DLL + C ABI 隔离是唯一正解；`audio_media_session.h` PImpl 做到公共头零 libwebrtc 类型泄漏。
+1. C ABI DLL 边界解决真问题：libwebrtc ABI 要求（`/EHs-c-`、`/MT`、RTTI）与 Qt/MSVC 默认（`/EHsc`、`/MD`）在同一二进制内不可调和，DLL + C ABI 隔离是唯一正解；`media_session.h` PImpl 做到公共头零 libwebrtc 类型泄漏。
 2. 线程模型：GUI / engine worker / signaling io / libwebrtc 三线程 + 所有回调 `PostToWorker` + 析构顺序 + ADM 线程亲和，事故高发区已全覆盖。
 3. 三 PC 角色分离（`sfu-send` / `sfu-recv` / `p2p`）与 mediasoup send/recv 分离语义精确对齐；`Submit()` 命令队列把媒体操作串行化到 worker。
-4. 探针式测试（`rtcwin_audio_media_smoke` 等）可不碰 UI 验证媒体链路。
+4. 探针式测试（`rtcwin_media_session_smoke` 等）可不碰 UI 验证媒体链路。
 
 债务清单（按严重度）：
 
-1. **`EngineCore` 上帝类**：`engine_core.cpp` 已 1208 行，命令分发、信令编排、房间状态、媒体协调、心跳在一个类；会话/房间状态用散的 `bool`/`string` 成员表达，非法状态组合没有类型层防线。必须在阶段 C（视频）之前拆分，否则视频接入会再翻一倍。`heartbeat_timer_{signaling_io_}` 等 asio 对象直接挂在 EngineCore 成员上，与 signaling 线程生命周期强耦合，是拆分的第一刀。
+1. **`EngineCore` 上帝类（部分缓解）**：截至 B3，命令/事件门面、信令传输和会话状态机已迁出；`engine_core.cpp` 仍约 1598 行，媒体编排、P2P/SFU 切换、摄像头控制、统计和设备生命周期仍集中在 `EngineCore`。会话状态已不再使用散的 `bool`/`string` 组合，下一阶段仍需 B4 Media Orchestrator 拆分。
 2. **信令层未执行依赖隔离纪律**：`signaling_client.h` 公共头直接 `#include <asio.hpp>` 与 `<websocketpp/...>`，`webrtc_media` 做到了零泄漏而 signaling 没有，需 PImpl 化。
-3. **协议健壮性缺口**（见 17.2 第 3 条裁决）：无 resume/generation guard，断线即整场重置；`mute_generation_` 只是局部补丁；静音 UI 乐观更新未区分请求态/确认态（老工程 PTT 踩过同款坑）。
-4. 视频路径仅完成本地预览（MF 采集 → C ABI → muxPlayer），远端视频未接入；结构上预留的“I420 直注入 muxPlayer raw render、不重编码”方向正确。
+3. **协议健壮性缺口（部分解决）**（见 17.2 第 3 条裁决）：B3 已补齐会话 generation guard，旧信令、媒体和帧回调会被隔离；仍未实现 resume，断线仍整场重置；`mute_generation_` 仍只是局部保护；静音 UI 乐观更新未区分请求态/确认态（老工程 PTT 踩过同款坑）。
+4. 该 review 完成时视频路径仅完成本地预览；S4.1 后续已补上 SFU 摄像头发布、consumer 映射和远端 I420 直注入 muxPlayer。屏幕共享与 P2P 视频仍是后续债务。
 
 ### 17.2 裁决与开发决策
 
@@ -1343,7 +1399,7 @@ tests/signaling_smoke.cpp
 | 项 | 结果 |
 |---|---|
 | 构建校验 | `6ed604e` 后源码与产物一致，增量重建通过 |
-| 探针基线 | Release ctest 3/3 通过（`rtcwin_tests` / `rtcwin_signaling_tests` / `rtcwin_audio_media_smoke`，fake ADM） |
+| 探针基线 | Release ctest 3/3 通过（`rtcwin_tests` / `rtcwin_signaling_tests` / `rtcwin_media_session_smoke`，fake ADM） |
 | 真实信令冒烟 | `rtcwin_signaling_smoke` 对 `ws://47.117.159.193:8080/talk/v1/ws`：`hello ok → room.join ok mode=sfu → room.leave ok`；服务端 `healthz` 为 `4a24f30` / mediasoup 3.30.1 |
 | 双开入房 | 本机双开 `rtc-talk.exe`（`rtcwin-stagea` / `rtcwin-stageb`，同房 `stagea-room`，auto 模式，WASAPI 后端） |
 | P2P 切换 | 干净房间 2 人 auto：服务端正确切 P2P（B 的 join 应答携带 `media_mode:"p2p"`、`p2p.started`）；双方 `pc:p2p` 均 `connected` |
@@ -1378,7 +1434,7 @@ $env:PATH = "C:\Qt\5.15.2\msvc2019_64\bin;" + $env:PATH
 
 ### 18.4 下一步
 
-1. 排查 `capture_frames=0`：先跑 `rtcwin_audio_devices_probe` 确认设备，再对照 `AudioMediaSession::Initialize` 的 `InitRecording/StartRecording` 路径与 CaptureGate 计数位置（含 WASAPI 后端下 `SetMuted(false)` 是否真正走到 ADM 起录）。
+1. 排查 `capture_frames=0`：先跑 `rtcwin_audio_devices_probe` 确认设备，再对照 `MediaSession::Initialize` 的 `InitRecording/StartRecording` 路径与 CaptureGate 计数位置（含 WASAPI 后端下 `SetMuted(false)` 是否真正走到 ADM 起录）。
 2. 查 B 端 sfu-recv 轨来源（18.3.3）。
 3. capture_frames>0 后：真人听音确认双向有声，再做第三人加入切 SFU 的场景。
 4. 全部通过后按 §17.2 提交规范提交阶段 A 改动（含 18.2 的两个联调工具改动）。
@@ -1393,7 +1449,7 @@ $env:PATH = "C:\Qt\5.15.2\msvc2019_64\bin;" + $env:PATH
 
 修复内容：
 
-1. ADM playout 不再在 `AudioMediaSession::Initialize` 中提前启动。现在在 SFU/P2P PeerConnection 创建后、添加音轨前启动，与已验证的旧实现顺序一致。
+1. ADM playout 不再在 `MediaSession::Initialize` 中提前启动。现在在 SFU/P2P PeerConnection 创建后、添加音轨前启动，与已验证的旧实现顺序一致。
 2. fake ADM 不要求启动物理 playout。
 3. 恢复 `CaptureGate`，在编码前执行静音门并统计真实 10ms 采集帧。
 4. 增加 `RTCWIN_WEBRTC_LOG=1` 联调开关，默认关闭。
@@ -1463,3 +1519,140 @@ $env:PATH = "C:\Qt\5.15.2\msvc2019_64\bin;" + $env:PATH
 1. 只跟随 Windows 默认播放设备，尚未提供独立“系统音播放端点”选择。
 2. 运行时在麦克风/系统音之间切换尚未暴露 C ABI；当前在入房前选择。
 3. 非默认端点选择、设备热插拔和独占模式应用兼容性仍需继续测。
+
+### 18.8 S4.1 摄像头 SFU 与远端 muxPlayer（2026-10-29）
+
+本阶段只关闭“摄像头 SFU 发布 + 远端显示”，不把屏幕共享和 P2P 视频计为完成。
+
+实现结构：
+
+```text
+Media Foundation camera
+  -> camera_win I420
+  -> Engine OnCameraFrame
+  -> MediaSession::PushCameraFrame
+  -> CameraVideoTrackSource
+  -> MF H.264 encoder
+  -> sfu-send PeerConnection
+  -> mediasoup
+  -> sfu-recv PeerConnection
+  -> RemoteVideoSink
+  -> C ABI v2 remote frame
+  -> CAbiEngineClient latest-frame-per-stream
+  -> MuxVideoSurface
+  -> VideoTile
+```
+
+关键改动：
+
+1. `AudioMediaSession` 重命名为 `MediaSession`，音频与摄像头共用一个 SFU send
+   PeerConnection。视频不能另建 PC，否则 mediasoup send transport 的 DTLS
+   fingerprint/ICE ufrag 无法同时绑定两个 PeerConnection。
+2. 新增 `CameraVideoTrackSource`。摄像头时间戳在媒体边界统一使用
+   `webrtc::TimeMicros()`；MF device timestamp 可能重复或回退，曾导致编码器
+   不出包。
+3. 新增 Media Foundation H.264 encoder/decoder factory，只声明
+   `H264/90000`、`packetization-mode=1`、`profile-level-id=42e01f`。
+4. `sfu.publish.tracks` 从仅音频扩展为 `audio + camera`；camera producer 初始
+   paused，开启摄像头后发送 `media.setMute{source:"camera",muted:false}`。
+5. 解析 `sfu.offer.consumers[]` 的 `mid/uid/kind/source`，作为远端视频帧的
+   路由元数据。
+6. C ABI 版本从 1 升到 2，`rtcwin_frame_view` 新增 `uid`。Engine DLL 与
+   `rtc-talk.exe` 必须同时更新。
+7. 房间 `VideoTile` 改用 `MuxVideoSurface`，远端视频不再走 QImage 生产渲染。
+8. `log-cpp` 初始化增加失败降级：日志目录不可写时回退 console sink，不允许
+   因日志初始化失败阻断 Engine 创建。
+
+验证结果：
+
+| 项 | 结果 |
+|---|---|
+| Release 全量构建 | 通过 |
+| Debug 全量构建 | 通过 |
+| Release CTest（B3 后） | 5/5 通过 |
+| Debug CTest（B3 后） | 5/5 通过 |
+| `rtcwin_media_session_smoke` | SDP 含 `m=audio`、`m=video`、`H264/90000`；合成 I420 推帧成功 |
+| 发送端摄像头采集 | `camera_frames=31 -> 179` |
+| 发送端视频上行 | `video_packets_sent=14 -> 293` |
+| 接收端视频下行 | `video_packets_received=53 -> 325` |
+| 接收端截图 | 远端摄像头画面正常显示在 muxPlayer surface |
+
+证据文件：
+
+```text
+build/windows-x64/s4-smoke2/a-view.png
+build/windows-x64/s4-smoke2/b-view.png
+build/windows-x64/s4-smoke2/a-engine.log
+build/windows-x64/s4-smoke2/b-engine.log
+```
+
+仍未完成：
+
+1. 屏幕共享采集、发布、订阅和 paused 清屏。
+2. P2P 视频。
+3. 多路视频 session pool、9 路性能、5 秒无帧回收。
+4. 摄像头设备切换、离房重进、异常恢复的重复验收。
+5. 当前视频 tile 每路一个 GL surface；多路规模扩大前需要 session pool。
+6. 当前摄像头 video m-line 在首次 SFU publish 时预创建并保持 producer paused，
+   会占用服务端 `video_max_publishers` 的“新视频轨”判断名额。若房间策略允许的
+   发布者数小于成员数，后续需要改为首次开摄像头时再重协商添加 video m-line。
+
+### 18.9 EngineCore 生产化拆分计划（待执行）
+
+当前体量：
+
+| 文件 | 行数 | 问题 |
+|---|---:|---|
+| `libs/engine/src/engine_core.cpp` | 1507 | 编排、状态、设备、媒体和 timer 仍集中；命令、事件和信令运行时已移出 |
+| `libs/webrtc_media/src/media_session.cpp` | 1783 | 音频、视频、SDP、Peer、Stats 集中在一个 PImpl |
+| `libs/client_gateway/src/c_abi_engine_client.cpp` | 872 | C ABI 解析、HTTP、帧邮箱和快照更新集中 |
+
+拆分顺序：
+
+1. **B1 Command/Event Facade（已完成）**：抽出 `EngineCommandRouter` 与
+   `EngineEventSink`。C ABI 命令统一由 nlohmann JSON 解析，事件信封统一由
+   nlohmann JSON 构造，已删除 `EngineCore` 内手拼 JSON、`EscapeJson` 和
+   `ParseIntField`。
+2. **B2 Signaling Transport（已完成）**：抽出 `SignalingTransport`，由其独占
+   `asio::io_context`、信令线程、`SignalingClient`、连接/请求/通知/发送和停止
+   生命周期。EngineCore 不再直接持有 `signaling_io_`、`signaling_thread_`、
+   `signaling_work_` 或 `signaling_` 指针。
+3. **B3 Session State Machine（已完成）**：新增 `SessionStateMachine`，用显式
+   `SessionPhase` / `SessionMediaMode` 和 generation 表达 connecting、
+   signaling-ready、joining、joined、leaving、failed；join command 与 generation
+   绑定，信令、媒体事件、远端帧和定时器回调均先校验 generation。
+   已删除 `EngineCore` 内的 `session_ready_`、`room_joined_`、
+   `media_enabled_`、`media_mode_` 和独立 `session_command_id_`。
+4. **B4 Media Orchestrator**：抽出发布/订阅、P2P 到 SFU 切换、camera/screen
+   控制；MediaSession 仍负责 libwebrtc，但不再承载业务时序。
+5. **B5 MediaSession 内聚拆分**：`AudioPipeline`、`VideoPipeline`、
+   `SdpNegotiator`、`MediaPeer`、`RemoteTrackRegistry`、`StatsCollector`。
+6. 每步只做结构迁移，行为不变；每步后跑 Release/Debug CTest、短双端
+   camera smoke，并保持 C ABI 不破坏。
+
+目标：
+
+- `engine_core.cpp` 降到 300 行以内，只保留装配、线程和命令入口。
+- 不允许在 `EngineCore` 内直接拼 JSON 或处理 SDP。
+- P2P/SFU 切换、摄像头控制不再依赖隐式 bool 时序。
+
+当前验证：
+
+- Release/Debug 全量构建通过。
+- Release/Debug CTest 5/5（新增 `rtcwin_session_state_tests`）。
+- B3 双客户端短链路通过：A `camera_frames=27 -> 140`、
+  `video_packets_sent=15 -> 246`；B `video_packets_received=100`；
+  两端 `room.leave ok=true`。
+- B3 证据目录：`build/windows-x64/b3-smoke-20261029-220755`。
+- B2 后真实双端 SFU 摄像头回归通过：发送端 `video_packets_sent=40 -> 760`，
+  接收端 `video_packets_received=142 -> 861`。
+
+便携包（包含 B3）：
+
+```text
+D:\google\webrtc-win-client\rtc-talk-win\dist\rtc-talk-win-20261029-221101.zip
+SHA256: C2B0E13718706E17FCF3228EBC1170008AF223E3DACCB266C2D2BE795AD9966A
+```
+
+打包后的 `rtc-talk.exe` 已通过 1440x900 启动截图冒烟，截图位于
+`build/windows-x64/package/package-smoke-b3.png`。

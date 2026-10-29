@@ -36,6 +36,8 @@ AppController::AppController(std::unique_ptr<EngineClient> engine,
           &AppController::CameraPreviewChanged);
   connect(engine_.get(), &EngineClient::LocalFrameReceived, this,
           &AppController::LocalFrameReceived);
+  connect(engine_.get(), &EngineClient::RemoteFrameReceived, this,
+          &AppController::RemoteFrameReceived);
   connect(engine_.get(), &EngineClient::ErrorOccurred, this,
           [this](const domain::AppError& error) {
             busy_ = false;

@@ -17,6 +17,7 @@ target_include_directories(rtcwin_webrtc SYSTEM INTERFACE
   "${WEBRTC_SDK_DIR}/include"
   "${WEBRTC_SDK_DIR}/include/gen"
   "${WEBRTC_SDK_DIR}/include/third_party/abseil-cpp"
+  "${WEBRTC_SDK_DIR}/include/third_party/libyuv/include"
   "${WEBRTC_SDK_DIR}/include/third_party/protobuf/src"
   "${WEBRTC_SDK_DIR}/include/third_party/perfetto/include"
 )

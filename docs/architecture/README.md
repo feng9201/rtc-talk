@@ -79,7 +79,7 @@
 5. **跨线程传值**：UI 与引擎之间只传拷贝后的强类型快照和帧视图。
 6. **失败优先**：每个命令必须定义超时、取消、失败回滚和资源清理。
 7. **可测试性**：核心模块均支持 Fake transport、Fake capture 和 Fake clock。
-8. **渐进替换**：首版 QImage Surface 可用，但不绑定业务；后续可换 D3D/OpenGL。
+8. **统一视频基础设施**：本地预览、远端视频和共享画面统一经 muxPlayer Surface；QImage 只可作为测试占位，不作为生产视频路径。
 9. **不复制 demo 结构**：demo 只提供行为样本，不能作为生产类层次来源。
 10. **基线可追溯**：每个能力、测试和提交映射到需求编号。
 
@@ -96,7 +96,7 @@
 | D-05 | 测试框架 | GoogleTest + QtTest |
 | D-06 | 屏幕共享范围 | 一期仅主屏 |
 | D-07 | 诊断工具 | 独立诊断包，不进入主安装目录 |
-| D-08 | 视频渲染首版 | QImage Surface |
+| D-08 | 视频渲染首版 | muxPlayer Raw I420 + 软件 OpenGL，后续扩展 WGL/D3D11 |
 | D-09 | C ABI 命令/事件编码 | method + JSON 仅限 C ABI 边界 |
 | D-10 | 第三方依赖引入 | vcpkg manifest 锁定 |
 

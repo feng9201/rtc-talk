@@ -17,7 +17,7 @@
 extern "C" {
 #endif
 
-#define RTCWIN_ABI_VERSION 1u
+#define RTCWIN_ABI_VERSION 2u
 
 typedef struct rtcwin_handle rtcwin_handle;
 
@@ -25,6 +25,7 @@ typedef void (*rtcwin_event_fn)(void* userdata, const char* method,
                                 const char* json);
 
 typedef struct rtcwin_frame_view {
+  const char* uid;
   const char* mid;
   const uint8_t* i420_y;
   const uint8_t* i420_u;

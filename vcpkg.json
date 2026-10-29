@@ -8,12 +8,21 @@
     },
     "asio",
     "nlohmann-json",
-    "spdlog"
+    {
+      "name": "log-cpp",
+      "features": [
+        "shared"
+      ]
+    }
   ],
   "overrides": [
     {
       "name": "ffmpeg",
       "version-string": "7.1.4#5"
+    },
+    {
+      "name": "log-cpp",
+      "version-string": "1.0.0#4"
     }
   ]
 }

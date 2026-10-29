@@ -173,6 +173,7 @@ struct VideoStreamState {
 };
 
 struct VideoFrame {
+  std::string uid;
   std::string mid;
   VideoSource source = VideoSource::Camera;
   int width = 0;

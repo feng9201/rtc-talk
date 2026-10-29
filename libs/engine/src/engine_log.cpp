@@ -1,7 +1,5 @@
 #include "engine_log.h"
 
-#include <w_log_cpp.h>
-
 #include <filesystem>
 #include <cstdlib>
 #include <mutex>
@@ -71,28 +69,29 @@ std::string BuildLogPath() {
 void InitializeEngineLogging() {
   std::call_once(g_init_once, [] {
     g_log_path = BuildLogPath();
-    w_log_cpp::InitConfig config;
-    config.name = "rtcwin";
-    config.enable_console = false;
-    config.file_path = g_log_path;
-    config.max_file_size = 5 * 1024 * 1024;
-    config.max_file_num = 5;
-    config.level = w_log_cpp::Level::Trace;
-    config.file_level = w_log_cpp::Level::Debug;
-    config.overflow = w_log_cpp::Overflow::OverrunOldest;
-    w_log_cpp::init(config);
-    w_log_cpp::setFlushOn(w_log_cpp::Level::Info);
-    LOG_INFO("rtcwin logging initialized path={}", g_log_path);
+    const bool initialized =
+        rtcwin_log_initialize(g_log_path.c_str(), 1) != 0;
+    if (initialized && rtcwin_log_mode() == RTCWIN_LOG_MODE_CONSOLE) {
+      g_log_path = "<console>";
+    }
+    if (initialized) {
+      LOG_INFO("rtcwin logging initialized path={}", g_log_path);
+    }
   });
 }
 
 void ShutdownEngineLogging() {
-  if (w_log_cpp::isInitialized()) {
+  if (rtcwin_log_mode() != RTCWIN_LOG_MODE_OFF) {
     LOG_INFO("rtcwin logging shutdown");
-    w_log_cpp::shutdown();
+    rtcwin_log_shutdown();
   }
 }
 
 std::string EngineLogPath() { return g_log_path; }
+
+void WriteEngineLog(int level, const char* file, int line,
+                    const char* function, const char* message) {
+  rtcwin_log_write(level, file, line, function, message);
+}
 
 }  // namespace rtcwin::engine

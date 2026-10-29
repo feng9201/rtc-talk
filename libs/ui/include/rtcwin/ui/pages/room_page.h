@@ -25,6 +25,7 @@ class RoomPage final : public QWidget {
   explicit RoomPage(QWidget* parent = nullptr);
 
   void SetState(const domain::SessionSnapshot& state);
+  void SetVideoFrame(const domain::VideoFrame& frame);
   void SetPreviewMode(bool preview);
   void SetBusy(bool busy);
   void SetControlHint(const QString& text);

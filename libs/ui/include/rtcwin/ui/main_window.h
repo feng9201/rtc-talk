@@ -28,6 +28,7 @@ class MainWindow final : public FramelessWindow {
   void BeginJoin(const domain::PrejoinOptions& options);
   void LeaveRoom();
   void ToggleMicrophone();
+  void ToggleCamera();
   void ShowRoomPreview();
   void EnableCameraPreview();
 

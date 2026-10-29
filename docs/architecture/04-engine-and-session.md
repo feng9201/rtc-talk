@@ -157,6 +157,16 @@ struct ReconnectDecision {
 
 ## 6. SessionLifecycle
 
+当前实现状态（2026-10-29，B3）：
+
+- `libs/engine` 已有 `SessionStateMachine`，实现 `Disconnected`、
+  `Connecting`、`SignalingReady`、`JoiningRoom`、`Joined`、`Leaving`、
+  `Failed` 七个阶段，以及 `Unknown`、`Sfu`、`P2p` 三种媒体模式。
+- 每次连接递增 session generation；join command 与 generation 绑定，
+  信令、媒体、帧和定时器回调先校验 generation。
+- 当前实现尚未包含完整的 `Reconnecting -> resume` 分支；图示中的重连状态
+  仍是后续 S7 的目标设计，不能视为已交付能力。
+
 ```mermaid
 stateDiagram-v2
   [*] --> Disconnected

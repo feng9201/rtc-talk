@@ -1,11 +1,14 @@
 #pragma once
 
 #include "rtcwin/domain/types.h"
-#include "rtcwin/ui/video/video_surface.h"
 
 #include <QWidget>
 
 class QLabel;
+
+namespace rtcwin::muxplayer_adapter {
+class MuxVideoSurface;
+}
 
 namespace rtcwin::ui {
 
@@ -18,7 +21,8 @@ class VideoTile final : public QWidget {
 
   void SetMember(const domain::PeerState& member, bool self, bool selected,
                  bool compact = false);
-  void SetSurface(VideoSurface* surface);
+  void SetFrame(const domain::VideoFrame& frame);
+  void ClearFrame();
   QString uid() const { return uid_; }
 
  signals:
@@ -40,7 +44,7 @@ class VideoTile final : public QWidget {
   bool self_ = false;
   bool selected_ = false;
   bool compact_ = false;
-  VideoSurface* surface_ = nullptr;
+  muxplayer_adapter::MuxVideoSurface* surface_ = nullptr;
   QLabel* name_ = nullptr;
   QLabel* status_ = nullptr;
   QLabel* role_ = nullptr;

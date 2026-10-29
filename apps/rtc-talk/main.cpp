@@ -80,6 +80,10 @@ int main(int argc, char** argv) {
       QStringLiteral("入房后自动再次切换麦克风状态的时间"),
       QStringLiteral("ms")));
   parser.addOption(QCommandLineOption(
+      QStringLiteral("auto-camera-ms"),
+      QStringLiteral("入房后自动开启摄像头的时间"),
+      QStringLiteral("ms")));
+  parser.addOption(QCommandLineOption(
       QStringLiteral("auto-leave-ms"), QStringLiteral("入房后自动离房间隔"),
       QStringLiteral("ms")));
   parser.process(app);
@@ -156,6 +160,15 @@ int main(int argc, char** argv) {
       if (mute_ok && mute_ms >= 0) {
         QTimer::singleShot(mute_ms, &window,
                            &rtcwin::ui::MainWindow::ToggleMicrophone);
+      }
+    }
+    if (parser.isSet(QStringLiteral("auto-camera-ms"))) {
+      bool camera_ok = false;
+      const int camera_ms =
+          parser.value(QStringLiteral("auto-camera-ms")).toInt(&camera_ok);
+      if (camera_ok && camera_ms >= 0) {
+        QTimer::singleShot(camera_ms, &window,
+                           &rtcwin::ui::MainWindow::ToggleCamera);
       }
     }
     if (parser.isSet(QStringLiteral("auto-leave-ms"))) {

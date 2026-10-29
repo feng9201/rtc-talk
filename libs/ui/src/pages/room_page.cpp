@@ -277,6 +277,10 @@ void RoomPage::SetState(const domain::SessionSnapshot& state) {
   RefreshMembers();
 }
 
+void RoomPage::SetVideoFrame(const domain::VideoFrame& frame) {
+  if (video_grid_ != nullptr) video_grid_->SetFrame(frame);
+}
+
 void RoomPage::SetPreviewMode(bool preview) {
   preview_mode_ = preview;
   UpdateHeader();
@@ -343,9 +347,10 @@ void RoomPage::UpdateHeader() {
 void RoomPage::UpdateControls() {
   const bool joined = state_.join == domain::JoinPhase::Joined;
   const bool media = joined && state_.media_enabled;
+  const bool video_enabled = media && state_.policy.video_enabled;
   if (mic_ != nullptr) mic_->setEnabled(joined && !busy_);
-  if (camera_ != nullptr) camera_->setEnabled(media && !busy_);
-  if (share_ != nullptr) share_->setEnabled(media && !busy_);
+  if (camera_ != nullptr) camera_->setEnabled(video_enabled && !busy_);
+  if (share_ != nullptr) share_->setEnabled(video_enabled && !busy_);
   if (listen_ != nullptr) listen_->setEnabled(media && !busy_);
   if (settings_ != nullptr) {
     settings_->setEnabled(joined &&

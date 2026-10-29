@@ -51,6 +51,7 @@ class AppController final : public QObject {
   void CameraPreviewChanged(bool active, const QString& device, int width,
                             int height, int fps);
   void LocalFrameReceived(const rtcwin::domain::VideoFrame& frame);
+  void RemoteFrameReceived(const rtcwin::domain::VideoFrame& frame);
 
  private:
   std::optional<domain::AppError> Validate(

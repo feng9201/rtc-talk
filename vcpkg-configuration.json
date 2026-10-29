@@ -10,7 +10,8 @@
       "repository": "https://github.com/feng9201/vcpkg-registrys.git",
       "baseline": "8334037c2977ae143cfec7b710366dcd7b4d166d",
       "packages": [
-        "ffmpeg"
+        "ffmpeg",
+        "log-cpp"
       ]
     }
   ]

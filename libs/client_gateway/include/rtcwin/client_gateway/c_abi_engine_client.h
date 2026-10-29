@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <mutex>
 
@@ -52,6 +53,7 @@ class CAbiEngineClient final : public application::EngineClient {
   void ApplyJoinData(const QJsonObject& data);
   void ApplyRoomNotification(const QString& method, const QJsonObject& data);
   void DrainLatestLocalFrame();
+  void DrainLatestRemoteFrames();
 
   std::unique_ptr<CallbackContext> context_;
   rtcwin_handle* handle_ = nullptr;
@@ -61,6 +63,9 @@ class CAbiEngineClient final : public application::EngineClient {
   std::mutex local_frame_mutex_;
   std::shared_ptr<domain::VideoFrame> latest_local_frame_;
   std::atomic<bool> local_frame_post_pending_{false};
+  std::mutex remote_frame_mutex_;
+  std::map<std::string, domain::VideoFrame> latest_remote_frames_;
+  std::atomic<bool> remote_frame_post_pending_{false};
 };
 
 }  // namespace rtcwin::client_gateway

@@ -1,12 +1,22 @@
 add_library(rtcwin_webrtc_media STATIC
   include/rtcwin/webrtc_media/audio_device_service.h
-  include/rtcwin/webrtc_media/audio_media_session.h
   include/rtcwin/webrtc_media/loopback_audio_capture.h
+  include/rtcwin/webrtc_media/media_session.h
   include/rtcwin/webrtc_media/switchable_audio_device.h
   src/audio_device_service.cpp
-  src/audio_media_session.cpp
   src/loopback_audio_capture.cpp
+  src/media_session.cpp
+  src/remote_video_sink.cpp
+  src/remote_video_sink.h
   src/switchable_audio_device.cpp
+  src/video_track_source.cpp
+  src/video_track_source.h
+  src/video/h264_bitstream.cpp
+  src/video/h264_bitstream.h
+  src/video/mf_h264_codec.cpp
+  src/video/mf_h264_codec.h
+  src/video/webrtc_h264_factory.cpp
+  src/video/webrtc_h264_factory.h
 )
 
 target_include_directories(rtcwin_webrtc_media
@@ -15,6 +25,10 @@ target_include_directories(rtcwin_webrtc_media
 
 target_link_libraries(rtcwin_webrtc_media PRIVATE
   rtcwin_webrtc
+  mf
+  mfplat
+  mfuuid
+  mfreadwrite
   ole32
 )
 

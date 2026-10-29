@@ -70,6 +70,7 @@ QJsonObject TraceObject(const QJsonObject& object) {
 
 domain::VideoFrame CopyFrame(const rtcwin_frame_view& view) {
   domain::VideoFrame frame;
+  frame.uid = view.uid != nullptr ? view.uid : "";
   frame.mid = view.mid != nullptr ? view.mid : "";
   frame.source = view.source == 1 ? domain::VideoSource::Screen
                                    : domain::VideoSource::Camera;
@@ -324,6 +325,26 @@ void CAbiEngineClient::ApplyRoomNotification(const QString& method,
         snapshot_.self_role =
             ParseRole(data.value(QStringLiteral("role")).toString());
       }
+      if (data.contains(QStringLiteral("display"))) {
+        snapshot_.self_display_name =
+            data.value(QStringLiteral("display"))
+                .toString(QString::fromStdString(snapshot_.self_uid))
+                .toStdString();
+      }
+      const QJsonObject audio = data.value(QStringLiteral("audio")).toObject();
+      if (audio.contains(QStringLiteral("muted"))) {
+        snapshot_.mic_muted =
+            audio.value(QStringLiteral("muted")).toBool(snapshot_.mic_muted);
+      }
+      const QJsonObject video = data.value(QStringLiteral("video")).toObject();
+      if (video.contains(QStringLiteral("camera"))) {
+        snapshot_.camera_on = video.value(QStringLiteral("camera"))
+                                  .toBool(snapshot_.camera_on);
+      }
+      if (video.contains(QStringLiteral("screen"))) {
+        snapshot_.sharing = video.value(QStringLiteral("screen"))
+                                .toBool(snapshot_.sharing);
+      }
     } else {
       for (domain::PeerState& current : snapshot_.peers) {
         if (current.uid == uid) {
@@ -524,8 +545,21 @@ void CAbiEngineClient::OnEvent(void* userdata, const char* method,
 
 void CAbiEngineClient::OnRemoteFrame(void* userdata,
                                      const rtcwin_frame_view* frame) {
-  Q_UNUSED(userdata);
-  Q_UNUSED(frame);
+  auto* context = static_cast<CallbackContext*>(userdata);
+  if (context == nullptr || context->self == nullptr || frame == nullptr) return;
+  domain::VideoFrame copied = CopyFrame(*frame);
+  if (copied.width <= 0 || copied.y.empty()) return;
+  if (copied.uid.empty()) return;
+
+  CAbiEngineClient* self = context->self;
+  const std::string key = copied.uid + "|" + domain::VideoSourceName(copied.source);
+  {
+    std::lock_guard<std::mutex> lock(self->remote_frame_mutex_);
+    self->latest_remote_frames_[key] = std::move(copied);
+  }
+  if (self->remote_frame_post_pending_.exchange(true)) return;
+  QMetaObject::invokeMethod(
+      self, [self] { self->DrainLatestRemoteFrames(); }, Qt::QueuedConnection);
 }
 
 void CAbiEngineClient::OnLocalFrame(void* userdata,
@@ -563,6 +597,28 @@ void CAbiEngineClient::DrainLatestLocalFrame() {
   if (has_newer_frame && !local_frame_post_pending_.exchange(true)) {
     QMetaObject::invokeMethod(
         this, [this] { DrainLatestLocalFrame(); }, Qt::QueuedConnection);
+  }
+}
+
+void CAbiEngineClient::DrainLatestRemoteFrames() {
+  std::map<std::string, domain::VideoFrame> frames;
+  {
+    std::lock_guard<std::mutex> lock(remote_frame_mutex_);
+    frames.swap(latest_remote_frames_);
+  }
+  remote_frame_post_pending_.store(false);
+  for (const auto& item : frames) {
+    emit RemoteFrameReceived(item.second);
+  }
+
+  bool has_newer_frames = false;
+  {
+    std::lock_guard<std::mutex> lock(remote_frame_mutex_);
+    has_newer_frames = !latest_remote_frames_.empty();
+  }
+  if (has_newer_frames && !remote_frame_post_pending_.exchange(true)) {
+    QMetaObject::invokeMethod(
+        this, [this] { DrainLatestRemoteFrames(); }, Qt::QueuedConnection);
   }
 }
 
@@ -654,6 +710,73 @@ void CAbiEngineClient::HandleEvent(const QString& method,
                                  .toBool(snapshot_.deafened);
       }
       emit SnapshotChanged(snapshot_);
+    } else if (method == QStringLiteral("video.state")) {
+      const QJsonObject data =
+          event.value(QStringLiteral("data")).toObject();
+      const QString source = data.value(QStringLiteral("source")).toString();
+      const bool sharing = data.value(QStringLiteral("sharing")).toBool(false);
+      if (source == QStringLiteral("camera")) {
+        snapshot_.camera_on = sharing;
+      } else if (source == QStringLiteral("screen")) {
+        snapshot_.sharing = sharing;
+      }
+      emit SnapshotChanged(snapshot_);
+    } else if (method == QStringLiteral("media.producer")) {
+      const QJsonObject data =
+          event.value(QStringLiteral("data")).toObject();
+      const std::string uid =
+          data.value(QStringLiteral("uid")).toString().toStdString();
+      const QString source = data.value(QStringLiteral("source")).toString();
+      const bool paused = data.value(QStringLiteral("paused")).toBool(true);
+      const bool on = !paused;
+      if (uid == snapshot_.self_uid) {
+        if (source == QStringLiteral("camera")) {
+          snapshot_.camera_on = on;
+        } else if (source == QStringLiteral("screen")) {
+          snapshot_.sharing = on;
+        }
+      } else {
+        for (domain::PeerState& peer : snapshot_.peers) {
+          if (peer.uid != uid) continue;
+          if (source == QStringLiteral("camera")) {
+            peer.camera_on = on;
+          } else if (source == QStringLiteral("screen")) {
+            peer.screen_on = on;
+          }
+          break;
+        }
+      }
+      emit SnapshotChanged(snapshot_);
+    } else if (method == QStringLiteral("media.track")) {
+      const QJsonObject data =
+          event.value(QStringLiteral("data")).toObject();
+      if (data.value(QStringLiteral("kind")).toString() !=
+          QStringLiteral("video")) {
+        return;
+      }
+      const std::string mid =
+          data.value(QStringLiteral("mid")).toString().toStdString();
+      if (!mid.empty()) {
+        domain::VideoStreamState* stream = nullptr;
+        for (domain::VideoStreamState& current : snapshot_.streams) {
+          if (current.mid == mid) {
+            stream = &current;
+            break;
+          }
+        }
+        if (stream == nullptr) {
+          snapshot_.streams.push_back({});
+          stream = &snapshot_.streams.back();
+          stream->mid = mid;
+        }
+        const QString uid = data.value(QStringLiteral("uid")).toString();
+        if (!uid.isEmpty()) stream->uid = uid.toStdString();
+        if (data.value(QStringLiteral("source")).toString() ==
+            QStringLiteral("screen")) {
+          stream->source = domain::VideoSource::Screen;
+        }
+        emit SnapshotChanged(snapshot_);
+      }
     } else if (method == QStringLiteral("media.error")) {
       const QJsonObject data =
           event.value(QStringLiteral("data")).toObject();

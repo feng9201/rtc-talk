@@ -1,5 +1,6 @@
 #include "rtcwin/ui/video/video_tile.h"
 
+#include "rtcwin/muxplayer_adapter/mux_video_surface.h"
 #include "rtcwin/ui/theme/theme.h"
 
 #include <QLabel>
@@ -16,7 +17,7 @@ VideoTile::VideoTile(QWidget* parent) : QWidget(parent) {
   setCursor(Qt::PointingHandCursor);
   setMinimumSize(150, 100);
 
-  surface_ = new ImageVideoSurface(this);
+  surface_ = new muxplayer_adapter::MuxVideoSurface(this);
   surface_->setAttribute(Qt::WA_TransparentForMouseEvents, true);
 
   const auto make_label = [this](const QString& object_name) {
@@ -54,15 +55,14 @@ void VideoTile::SetMember(const domain::PeerState& member, bool self,
   update();
 }
 
-void VideoTile::SetSurface(VideoSurface* surface) {
-  if (surface == nullptr || surface == surface_) return;
-  if (surface_ != nullptr) surface_->deleteLater();
-  surface_ = surface;
-  surface_->setParent(this);
-  surface_->setAttribute(Qt::WA_TransparentForMouseEvents, true);
-  surface_->show();
-  surface_->lower();
-  surface_->setGeometry(rect());
+void VideoTile::SetFrame(const domain::VideoFrame& frame) {
+  if (surface_ != nullptr) surface_->SubmitFrame(frame);
+  update();
+}
+
+void VideoTile::ClearFrame() {
+  if (surface_ != nullptr) surface_->Clear();
+  update();
 }
 
 void VideoTile::UpdateOverlay() {
@@ -85,10 +85,8 @@ void VideoTile::UpdateOverlay() {
                      : QString());
   role_->setVisible(member_.role == domain::RoomRole::Host);
   role_->adjustSize();
-  if (auto* image = qobject_cast<ImageVideoSurface*>(surface_)) {
-    image->SetPlaceholder(compact_ ? QStringLiteral("视频")
-                                   : QStringLiteral("muxPlayer 画面接入点"));
-  }
+  surface_->SetPlaceholder(compact_ ? QStringLiteral("视频")
+                                    : QStringLiteral("等待视频帧"));
   positionOverlays();
 }
 
@@ -116,7 +114,7 @@ void VideoTile::paintEvent(QPaintEvent* event) {
   QPainterPath path;
   path.addRoundedRect(QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5), 12, 12);
   painter.setClipPath(path);
-  if (!surface_->HasFrame()) {
+  if (!surface_->has_frame()) {
     QLinearGradient gradient(rect().topLeft(), rect().bottomRight());
     gradient.setColorAt(0, QColor(QStringLiteral("#18252f")));
     gradient.setColorAt(1, QColor(QStringLiteral("#0a1015")));

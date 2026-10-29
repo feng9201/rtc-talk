@@ -164,6 +164,12 @@ void MainWindow::ConnectSignals() {
           &application::AppController::LocalFrameReceived, prejoin_page_,
           &PrejoinPage::SetPreviewFrame);
   connect(controller_.get(),
+          &application::AppController::LocalFrameReceived, room_page_,
+          &RoomPage::SetVideoFrame);
+  connect(controller_.get(),
+          &application::AppController::RemoteFrameReceived, room_page_,
+          &RoomPage::SetVideoFrame);
+  connect(controller_.get(),
           &application::AppController::CameraPreviewChanged, this,
           [this](bool active, const QString& device, int width, int height,
                  int fps) {
@@ -228,6 +234,7 @@ void MainWindow::BeginJoin(const domain::PrejoinOptions& options) {
 void MainWindow::LeaveRoom() { controller_->LeaveRoom(); }
 
 void MainWindow::ToggleMicrophone() { controller_->ToggleMic(); }
+void MainWindow::ToggleCamera() { controller_->ToggleCamera(); }
 
 void MainWindow::EnableCameraPreview() {
   auto_preview_ = true;
