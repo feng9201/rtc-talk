@@ -2,7 +2,7 @@
 
 > 状态：S1、S2、S3.1 已完成；S3.2 音频 P2P/SFU 主链路已提交；S4.1 摄像头 SFU 发布与远端 muxPlayer 渲染已通过双端短链路验证；B1-B5 生产化拆分已完成，S4 的屏幕共享、P2P 视频和多路压力验收仍待完成。
 > 日期：2026-10-29
-> 当前代码基线：`rtc-talk-win@81cb77c` + S4.1/B1-B5 工作树
+> 当前代码基线：`rtc-talk-win@b3af0e8`
 > 第一验收目标：完成 muxPlayer 接入，并用本机摄像头完成真实预览联调。
 > 约束：WebRTC 音频仍由 WebRTC AudioDeviceModule 处理；muxPlayer 只作为视频渲染基础设施。
 
