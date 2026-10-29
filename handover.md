@@ -3,8 +3,9 @@
 > 快照日期：2026-10-29  
 > 仓库：`D:\google\webrtc-win-client\rtc-talk-win`  
 > 分支：`rtc-talk-win`  
-> 已推送基线：`53a8fdd feat: add libwebrtc audio device discovery`  
-> 当前状态：S3.2 音频 PeerConnection 已实现并通过本地构建/短链路验证，但尚未完成真实双端联调，尚未提交/推送。  
+> 已推送音频基线：`3b79703 fix: 打通真实音频并完善P2P/SFU切换`
+>
+> 当前状态：S3.2 核心音频链路已通过 1v1 P2P、第三人切 SFU 和静音停发短链路验证；收听、音量、设备异常和完整恢复仍需继续验收。
 > 旧工程：`D:\google\webrtc-win-client\rtc-talk`，只读参考，禁止修改或提交。
 
 本文档面向后续接入业务、继续媒体开发、做代码评审或发布验收的工程师。它描述当前真实代码状态，不把计划中的能力写成已完成能力。
@@ -16,7 +17,7 @@
 
 | 类别 | 仓库 / 分支 / 提交 | 本工程中的用途 | 权限 |
 |---|---|---|---|
-| 当前生产工程 | `D:\google\webrtc-win-client\rtc-talk-win` / `rtc-talk-win` / `53a8fdd` + 本文所述未提交 S3.2 改动 | 真正交付工程、当前开发分支 | 可开发、可提交到 `rtc-talk-win` |
+| 当前生产工程 | `D:\google\webrtc-win-client\rtc-talk-win` / `rtc-talk-win` / `3b79703` | 真正交付工程、当前开发分支 | 可开发、可提交到 `rtc-talk-win` |
 | 服务端权威参考 | `D:\google\webrtc-win-client\rtc-talk` / `origin/main` / `8e6ff57` | 服务端行为、协议口径、S4 差异和联调依据 | 只读 |
 | 旧 Windows 客户端功能参考 | `origin/feat/windows-client` / `df22708` | `client-win` demo、既有音视频功能和联调逻辑参考 | 只读 |
 | 旧 Windows 生产实现参考 | `origin/codex/feat/windows-production-client` / `bbb3891` | P5 UI、生产模块、历史改造和验收记录参考 | 只读 |
@@ -71,7 +72,7 @@
 | S1 | muxPlayer、本地摄像头、C ABI、P5 UI | 已完成并推送 | `de3a7f1`、摄像头预览、muxPlayer 截图 | 长稳定性测试按用户要求另行安排 |
 | S2 | 信令、认证、房间生命周期、成员快照 | 已完成并推送 | `98f1ee8`、`rtcwin_signaling_tests`、双客户端联调 | 无 |
 | S3.1 | libwebrtc 音频设备枚举与预入会选择 | 已完成并推送 | `53a8fdd`、`rtcwin_audio_devices_probe` | 无 |
-| S3.2 | 音频 PeerConnection、P2P/SFU、静音、音量、收听 | 代码完成待验收、未提交 | `AudioMediaSession`、`rtcwin_audio_media_smoke` | 真实双端音频、P2P、第三人切 SFU、设备错误和离房释放 |
+| S3.2 | 音频 PeerConnection、P2P/SFU、静音、音量、收听 | 核心完成并推送，待完整人工验收 | `3b79703`、`AudioMediaSession`、`rtcwin_audio_media_smoke` | 收听/音量听音、设备异常、离房重进和恢复 |
 | S4 | 视频发布、远端视频、muxPlayer 渲染、屏幕共享 | 未开始 | 当前只有本地摄像头预览 | SFU video、P2P video、consume mid 映射、画面回收 |
 | S5 | 成员、发言权、主持人、PTT/审核模式 | 部分完成 | 房间成员/策略/floor 快照已有；floor 请求仍为 501 | floor.request/release、revoked、keepalive、主持人操作 |
 | S6 | 设备、统计、日志和诊断 | 部分完成 | 摄像头/音频设备枚举、`media.stats` 基础字段 | RTCStats、设备热插拔、设置弹窗、脱敏日志、诊断面板 |
@@ -88,9 +89,9 @@
 
 必须明确记录以下偏差：
 
-1. `plan/production-plan.md` 的顶部基线仍写着 `rtc-talk-win@98f1ee8 + S3.1`，没有覆盖当前 `53a8fdd + S3.2 未提交改动`。
+1. `plan/production-plan.md` 已同步到 `rtc-talk-win@3b79703`，后续提交仍需持续维护基线。
 2. `talk-protocol.md` 定义了 resume、ICE restart、P2P/SFU 先建后断、视频 m-line 等完整约束，当前 S3.2 只实现音频主链路。
-3. 旧计划中第三人加入要求“先建 SFU、确认可用、再关 P2P”；当前客户端实现是 P2P connected 后暂停 SFU、切回 SFU 时关闭 P2P，真实连续性尚未验收。
+3. 第三人加入“先建 SFU、确认可用、再关 P2P”已在短链路验证，后续仍需覆盖网络异常和重复切换。
 4. 服务端计划包含 `p2p.state`、P2P 失败回退、10 秒超时和 candidate 缓存等约束，当前客户端只完成基础转发，没有完整恢复策略。
 5. 计划中的 S5-S8、视频、设备热插拔、WSS、resume 和安装包均不能在交接中写成已完成。
 
@@ -143,10 +144,7 @@
 
 以下是“代码已写但还不能宣布完成”的部分：
 
-- 两个真实客户端之间的 P2P 双向音频。
-- 第三人加入后 P2P -> SFU 切换的真实音频连续性。
-- P2P candidate 在真实网络环境下的完整收发。
-- 真实静音、强制静音、收听静音和音量端到端效果。
+- 服务端强制静音、收听静音和音量的端到端人工听音。
 - 设备拔出、设备占用、默认设备切换。
 - 断线重连/resume。
 - 摄像头和屏幕共享接入 WebRTC 发布/订阅。
@@ -156,19 +154,13 @@
 
 ### 1.3 当前工作树状态
 
-S3.2 代码尚未提交。当前相对 `origin/rtc-talk-win` 的改动包括：
+S3.2 音频修复已经提交并推送为 `3b79703`。当前代码基线包含：
 
-- 新增 `libs/webrtc_media/include/rtcwin/webrtc_media/audio_media_session.h`
-- 新增 `libs/webrtc_media/src/audio_media_session.cpp`
-- 新增 `tests/audio_media_smoke.cpp`
-- 修改 `libs/engine/*`
-- 修改 `libs/client_gateway/*`
-- 修改 `libs/application/*`
-- 修改 `libs/webrtc_media/CMakeLists.txt`
-- 修改 `tests/CMakeLists.txt`
-- 新增本文件 `handover.md`
-
-当前 `git diff --check` 已通过。提交前仍应重新执行完整 Release/Debug 构建与测试。
+- 独立 `AudioMediaSession` 与真实 ADM 音频链路。
+- P2P/SFU 双向音频、静音门和 RTP 诊断。
+- P2P -> SFU 先建后断切换。
+- trace 脱敏、`none` 后端和远端音轨生命周期修复。
+- Release/Debug 构建与 CTest 3/3 通过。
 
 ---
 
@@ -1426,5 +1418,15 @@ $env:PATH = "C:\Qt\5.15.2\msvc2019_64\bin;" + $env:PATH
 1. 收听静音和音量端到端人工听音验收。
 2. 设备占用、设备拔出和默认设备变化。
 3. 离房/重进、断线重连和 P2P 失败回退的重复验证。
-4. Debug 全量构建与 CTest。
-5. 清理 diff、更新基线后提交并推送。
+4. 以上通过后关闭 S3.2 阶段 A。
+
+### 18.6 提交记录
+
+阶段 A 修复已提交并推送：
+
+```text
+3b79703 fix: 打通真实音频并完善P2P/SFU切换
+```
+
+验证提交包含 Release/Debug 全量构建、CTest 3/3、1v1 P2P、三人 SFU、
+静音停发和 trace 脱敏检查。

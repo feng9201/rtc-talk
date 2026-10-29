@@ -1,8 +1,8 @@
 # rtc-talk-win 详细开发计划（muxPlayer 优先）
 
-> 状态：S1、S2 已完成并推送；S3 libwebrtc/WASAPI 设备枚举已接入，PeerConnection 音频链路进行中。
+> 状态：S1、S2、S3.1 已完成；S3.2 音频 P2P/SFU 主链路已提交，待完整设备和恢复验收。
 > 日期：2026-10-29
-> 当前代码基线：`rtc-talk-win@98f1ee8` + S3.1 audio device discovery
+> 当前代码基线：`rtc-talk-win@3b79703`
 > 第一验收目标：完成 muxPlayer 接入，并用本机摄像头完成真实预览联调。
 > 约束：WebRTC 音频仍由 WebRTC AudioDeviceModule 处理；muxPlayer 只作为视频渲染基础设施。
 
@@ -25,9 +25,9 @@ S1 已完成：
 
 S3 当前进度：
 - libwebrtc M146 SDK 通过 WEBRTC_SDK_DIR 接入。
-- Windows Core Audio ADM 设备枚举探针通过。
-- audio.devices 已接入 Engine、Gateway 和 P5 预入会页。
-- 下一步实现 audio track、P2P/SFU PeerConnection、静音和音量。
+- Windows Core Audio ADM 设备枚举和真实采集通过。
+- 1v1 P2P 双向音频、第三人切 SFU、静音停发已通过短链路验证。
+- 下一步完成收听/音量听音、设备异常和离房重进验收。
 
 S1 后剩余工作：
 
