@@ -402,7 +402,8 @@ libs/webrtc_media/src/audio_device_service.cpp
 - 播放设备按 GUID/名称匹配；失败时回退默认通信设备。
 - 真实设备路径 `InitPlayout` + `StartPlayout`。
 - Debug 下 ADM 必须在 worker 线程释放，否则 `AudioDeviceBuffer` 会触发 thread checker fatal。
-- 当前 `audio_source` 只接受 `mic`。`system` 会明确报错，尚未接入 WASAPI loopback。
+- `audio_source` 支持 `mic` 和 `system`。系统音通过默认播放设备的 WASAPI
+  shared-loopback 采集，统一转换为 48 kHz 单声道 PCM 后进入 WebRTC。
 - `SetMuted` 同时控制 CaptureGate、AudioTrack enabled 和 RTP sender active。
 - 服务端拒绝开麦时会保持静音，避免误开麦。
 - `SetSfuPaused(true)` 只暂停 SFU 收发，不影响已连通的 P2P 音频。
@@ -791,7 +792,8 @@ stateDiagram-v2
 }
 ```
 
-当前 `audio_source=system` 会被 `AudioMediaSession` 拒绝，因为 loopback 尚未接入。
+当前 `audio_source=system` 使用 `SwitchableAudioDevice + LoopbackAudioCapture`。
+底层 Core Audio ADM 继续负责播放和对端声音，录音路径替换为默认播放设备 loopback。
 
 ### 8.3 媒体通知
 
@@ -911,7 +913,7 @@ session.Initialize(config, event_callback, &error);
 
 ### 9.4 当前限制
 
-- 仅支持麦克风，不支持系统音 loopback。
+- 系统音只采集 Windows 默认播放端点；当前不支持在预入会页选择任意播放端点。
 - 没有设备热插拔监听。
 - 没有 RTCStats RTT/码率/丢包采集；目前只有连接态、采集帧、远端轨数量和设备名。
 - 没有音频电平事件。
@@ -1079,7 +1081,7 @@ real audio device smoke ok sfu_sdp=1012 recording=麦克风 (5- Logitech Webcam 
 4. `media.toggleCamera`、`media.toggleScreenShare`、floor 请求仍返回 501。
 5. 设置弹窗目前只是占位。
 6. PTT/主持人审核模式下，本地采集门与服务端 floor 状态还需要完整联调。
-7. 系统音 loopback 未接入。
+7. 系统音 loopback 已接入；非默认播放端点和设备热切换仍需继续验收。
 8. 安装包、DLL 依赖清单、签名和升级策略未实现。
 
 ---
@@ -1430,3 +1432,33 @@ $env:PATH = "C:\Qt\5.15.2\msvc2019_64\bin;" + $env:PATH
 
 验证提交包含 Release/Debug 全量构建、CTest 3/3、1v1 P2P、三人 SFU、
 静音停发和 trace 脱敏检查。
+
+### 18.7 系统音采集验证（2026-10-29）
+
+已新增 WASAPI shared-loopback 音频源：
+
+- `LoopbackAudioCapture` 采集默认播放端点，支持 float32/PCM16/PCM32。
+- 自动转换为 48 kHz、单声道、16-bit，并按 10 ms 通过
+  `AudioTransport::RecordedDataIsAvailable` 送入 WebRTC。
+- `SwitchableAudioDevice` 使用 Core Audio ADM 负责播放、设备管理和麦克风路径；
+  系统音模式只替换录音源。
+- 系统音模式关闭 3A，避免对音乐/会议系统音做降噪、AGC 和回声消除。
+- SFU track source 上报为 `screen`，麦克风仍为 `mic`。
+- 默认播放设备变化时，loopback 在采集线程自动重开。
+
+短链路验证：
+
+| 项 | 结果 |
+|---|---|
+| A 端系统音会话 | `recording_device=system-default-render` |
+| A 端采集 | `capture_frames=491 -> 992` |
+| A 端 P2P 上行 | `p2p_audio_packets_sent=245 -> 499` |
+| B 端接收 | `audio_packets_received` 持续增长 |
+| B 端听音电平 | 测试音期间 `remote_audio_level=0.001 -> 0.5719` |
+| 退出 | 正常关闭，无重复 Terminate 崩溃 |
+
+当前限制：
+
+1. 只跟随 Windows 默认播放设备，尚未提供独立“系统音播放端点”选择。
+2. 运行时在麦克风/系统音之间切换尚未暴露 C ABI；当前在入房前选择。
+3. 非默认端点选择、设备热插拔和独占模式应用兼容性仍需继续测。

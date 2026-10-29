@@ -27,6 +27,7 @@ S3 当前进度：
 - libwebrtc M146 SDK 通过 WEBRTC_SDK_DIR 接入。
 - Windows Core Audio ADM 设备枚举和真实采集通过。
 - 1v1 P2P 双向音频、第三人切 SFU、静音停发已通过短链路验证。
+- 默认播放设备的 WASAPI shared-loopback 系统音采集已通过双端验证。
 - 下一步完成收听/音量听音、设备异常和离房重进验收。
 
 S1 后剩余工作：

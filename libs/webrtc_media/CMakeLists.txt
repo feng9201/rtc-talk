@@ -1,15 +1,19 @@
 add_library(rtcwin_webrtc_media STATIC
   include/rtcwin/webrtc_media/audio_device_service.h
   include/rtcwin/webrtc_media/audio_media_session.h
+  include/rtcwin/webrtc_media/loopback_audio_capture.h
+  include/rtcwin/webrtc_media/switchable_audio_device.h
   src/audio_device_service.cpp
   src/audio_media_session.cpp
+  src/loopback_audio_capture.cpp
+  src/switchable_audio_device.cpp
 )
 
 target_include_directories(rtcwin_webrtc_media
   PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include"
 )
 
-target_link_libraries(rtcwin_webrtc_media PRIVATE rtcwin_webrtc)
+target_link_libraries(rtcwin_webrtc_media PRIVATE rtcwin_webrtc ole32)
 
 target_compile_definitions(rtcwin_webrtc_media
   PUBLIC $<$<CONFIG:Debug>:_HAS_ITERATOR_DEBUGGING=0>

@@ -65,6 +65,10 @@ int main(int argc, char** argv) {
       QStringLiteral("联调媒体模式偏好：auto|sfu|p2p，默认 sfu"),
       QStringLiteral("mode")));
   parser.addOption(QCommandLineOption(
+      QStringLiteral("auto-join-audio-source"),
+      QStringLiteral("联调音频采集源：mic|system，默认 mic"),
+      QStringLiteral("source")));
+  parser.addOption(QCommandLineOption(
       QStringLiteral("auto-join-dev-token"),
       QStringLiteral("联调用 /dev/token 获取开发凭证")));
   parser.addOption(QCommandLineOption(
@@ -130,6 +134,11 @@ int main(int argc, char** argv) {
     } else {
       options.media_mode = rtcwin::domain::MediaModePreference::Sfu;
     }
+    options.audio_source =
+        parser.value(QStringLiteral("auto-join-audio-source")) ==
+                QStringLiteral("system")
+            ? rtcwin::domain::AudioSource::System
+            : rtcwin::domain::AudioSource::Microphone;
     window.BeginJoin(options);
     if (parser.isSet(QStringLiteral("auto-unmute-ms"))) {
       bool unmute_ok = false;

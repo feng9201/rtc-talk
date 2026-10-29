@@ -1,4 +1,5 @@
 #include "rtcwin/webrtc_media/audio_media_session.h"
+#include "rtcwin/webrtc_media/switchable_audio_device.h"
 
 #include "api/audio/audio_frame.h"
 #include "api/audio/audio_frame_processor.h"
@@ -719,8 +720,12 @@ struct AudioMediaSession::Impl {
       SetError(error, 1701, "不支持的音频后端");
       return false;
     }
-    if (next.audio_source != "mic") {
-      SetError(error, 1702, "当前版本仅支持麦克风采集");
+    if (next.audio_source != "mic" && next.audio_source != "system") {
+      SetError(error, 1702, "audio_source 必须是 mic/system");
+      return false;
+    }
+    if (next.audio_backend == "fake" && next.audio_source == "system") {
+      SetError(error, 1702, "fake 后端不支持系统音采集");
       return false;
     }
     config = next;
@@ -765,9 +770,11 @@ struct AudioMediaSession::Impl {
     const auto layer = next.audio_backend == "fake"
                            ? webrtc::AudioDeviceModule::kDummyAudio
                            : webrtc::AudioDeviceModule::kWindowsCoreAudio;
+    const bool system_audio = next.audio_source == "system";
     std::string device_error;
     const bool devices_ok =
-        worker->BlockingCall([this, &environment, layer, &device_error] {
+        worker->BlockingCall([this, &environment, layer, system_audio,
+                              &device_error] {
           if (layer == webrtc::AudioDeviceModule::kWindowsCoreAudio) {
             com = std::make_unique<webrtc::ScopedCOMInitializer>(
                 webrtc::ScopedCOMInitializer::kMTA);
@@ -776,8 +783,19 @@ struct AudioMediaSession::Impl {
               return false;
             }
           }
-          adm = webrtc::CreateAudioDeviceModule(environment, layer);
-          if (!adm || adm->Init() != 0) {
+          auto core_adm = webrtc::CreateAudioDeviceModule(environment, layer);
+          if (!core_adm) {
+            device_error = "音频设备模块初始化失败";
+            return false;
+          }
+          if (layer == webrtc::AudioDeviceModule::kWindowsCoreAudio) {
+            switchable = webrtc::make_ref_counted<SwitchableAudioDevice>(
+                core_adm, system_audio);
+            adm = switchable;
+          } else {
+            adm = core_adm;
+          }
+          if (adm->Init() != 0) {
             device_error = "音频设备模块初始化失败";
             return false;
           }
@@ -786,9 +804,13 @@ struct AudioMediaSession::Impl {
             playout_name = "fake-speaker";
             return true;
           }
-          if (!SelectDevice(adm.get(), true, config.recording_device,
-                            &recording_name, &device_error)) {
-            return false;
+          if (system_audio) {
+            recording_name = "system-default-render";
+          } else {
+            if (!SelectDevice(adm.get(), true, config.recording_device,
+                              &recording_name, &device_error)) {
+              return false;
+            }
           }
           if (!SelectDevice(adm.get(), false, config.playout_device,
                             &playout_name, &device_error)) {
@@ -815,11 +837,12 @@ struct AudioMediaSession::Impl {
     dependencies.adm = adm;
 
     webrtc::AudioProcessing::Config apm_config;
-    const bool real_device = next.audio_backend != "fake";
-    apm_config.echo_canceller.enabled = real_device;
-    apm_config.noise_suppression.enabled = real_device;
-    apm_config.gain_controller2.enabled = real_device;
-    apm_config.high_pass_filter.enabled = true;
+    const bool real_microphone =
+        next.audio_backend != "fake" && !system_audio;
+    apm_config.echo_canceller.enabled = real_microphone;
+    apm_config.noise_suppression.enabled = real_microphone;
+    apm_config.gain_controller2.enabled = real_microphone;
+    apm_config.high_pass_filter.enabled = real_microphone;
     dependencies.audio_processing_builder =
         std::make_unique<webrtc::BuiltinAudioProcessingBuilder>(apm_config);
     dependencies.audio_encoder_factory =
@@ -841,7 +864,9 @@ struct AudioMediaSession::Impl {
       if (!source) return false;
       capture_monitor = std::make_unique<CaptureMonitor>();
       source->AddSink(capture_monitor.get());
-      audio_track = factory->CreateAudioTrack("rtcwin-mic", source.get());
+      audio_track = factory->CreateAudioTrack(
+          config.audio_source == "system" ? "rtcwin-system" : "rtcwin-mic",
+          source.get());
       if (!audio_track) return false;
       audio_track->set_enabled(true);
       return true;
@@ -892,11 +917,13 @@ struct AudioMediaSession::Impl {
           // ADM and its AudioDeviceBuffer enforce thread affinity. Release the
           // last reference on the worker thread that created it.
           adm = nullptr;
+          switchable = nullptr;
         }
         com.reset();
       });
     } else {
       adm = nullptr;
+      switchable = nullptr;
       com.reset();
     }
     signaling.reset();
@@ -1094,7 +1121,7 @@ struct AudioMediaSession::Impl {
     }
     if (!sfu_send->GetLocalSdp(&out->sdp, error)) return false;
     if (!sfu_send->GetAudioMid(&out->audio_mid)) out->audio_mid = "0";
-    out->source = config.audio_source;
+    out->source = config.audio_source == "system" ? "screen" : "mic";
     return true;
   }
 
@@ -1283,6 +1310,7 @@ struct AudioMediaSession::Impl {
   std::unique_ptr<webrtc::Thread> signaling;
   std::unique_ptr<webrtc::ScopedCOMInitializer> com;
   webrtc::scoped_refptr<webrtc::AudioDeviceModule> adm;
+  webrtc::scoped_refptr<SwitchableAudioDevice> switchable;
   webrtc::scoped_refptr<webrtc::PeerConnectionFactoryInterface> factory;
   webrtc::scoped_refptr<webrtc::AudioTrackInterface> audio_track;
   std::unique_ptr<CaptureMonitor> capture_monitor;

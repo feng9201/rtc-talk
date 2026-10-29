@@ -19,8 +19,9 @@ int main() {
   rtcwin::webrtc_media::AudioMediaSession session;
   rtcwin::webrtc_media::AudioMediaConfig config;
   const std::string backend = EnvironmentValue("RTCWIN_AUDIO_BACKEND");
+  const std::string audio_source = EnvironmentValue("RTCWIN_AUDIO_SOURCE");
   config.audio_backend = backend.empty() ? "fake" : backend;
-  config.audio_source = "mic";
+  config.audio_source = audio_source.empty() ? "mic" : audio_source;
   config.volume = 55;
   config.muted = true;
 
@@ -41,6 +42,7 @@ int main() {
   rtcwin::webrtc_media::AudioMediaSession peer;
   rtcwin::webrtc_media::AudioMediaConfig peer_config = config;
   peer_config.audio_backend = "fake";
+  peer_config.audio_source = "mic";
   if (!peer.Initialize(peer_config, [](std::string, std::string) {}, &error)) {
     std::cerr << "peer initialize failed: " << error.code << " "
               << error.message << '\n';
