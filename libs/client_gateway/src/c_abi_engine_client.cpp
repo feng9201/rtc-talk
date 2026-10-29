@@ -183,7 +183,8 @@ void CAbiEngineClient::ConnectAndJoin(
 void CAbiEngineClient::ApplyJoinData(const QJsonObject& data) {
   snapshot_.connection = domain::ConnectionPhase::Ready;
   snapshot_.join = domain::JoinPhase::Joined;
-  snapshot_.media_enabled = false;
+  snapshot_.media_enabled =
+      data.value(QStringLiteral("media_enabled")).toBool(false);
   snapshot_.media_mode =
       data.value(QStringLiteral("media_mode")).toString().toStdString();
   const QJsonObject room = data.value(QStringLiteral("room")).toObject();
@@ -375,6 +376,29 @@ void CAbiEngineClient::SubmitConnectAndJoin(
   payload.insert(QStringLiteral("token"), token);
   payload.insert(QStringLiteral("fetch_dev_token"), options.fetch_dev_token);
   payload.insert(QStringLiteral("volume"), options.volume);
+  payload.insert(QStringLiteral("recording_device"),
+                 QString::fromStdString(options.recording_device));
+  payload.insert(QStringLiteral("playout_device"),
+                 QString::fromStdString(options.playout_device));
+  const QString audio_backend =
+      options.audio_backend == domain::AudioBackend::Fake
+          ? QStringLiteral("fake")
+          : QStringLiteral("wasapi");
+  payload.insert(QStringLiteral("audio_backend"), audio_backend);
+  payload.insert(
+      QStringLiteral("audio_source"),
+      options.audio_source == domain::AudioSource::System
+          ? QStringLiteral("system")
+          : QStringLiteral("mic"));
+  QString media_mode = QStringLiteral("auto");
+  if (options.media_mode == domain::MediaModePreference::Sfu) {
+    media_mode = QStringLiteral("sfu");
+  } else if (options.media_mode == domain::MediaModePreference::P2p) {
+    media_mode = QStringLiteral("p2p");
+  }
+  payload.insert(QStringLiteral("media_mode"), media_mode);
+  payload.insert(QStringLiteral("talk_mode"),
+                 QString::fromStdString(domain::TalkModeName(options.talk_mode)));
   Submit(QStringLiteral("session.connectAndJoin"), payload);
 }
 
@@ -392,8 +416,9 @@ void CAbiEngineClient::ToggleCamera() {
 void CAbiEngineClient::ToggleShare() {
   Submit(QStringLiteral("media.toggleScreenShare"));
 }
-void CAbiEngineClient::ToggleDeafened() {
-  Submit(QStringLiteral("media.toggleDeafened"));
+void CAbiEngineClient::SetDeafened(bool deafened) {
+  Submit(QStringLiteral("media.setDeafened"),
+         QJsonObject{{QStringLiteral("deafened"), deafened}});
 }
 void CAbiEngineClient::RequestFloor() {
   Submit(QStringLiteral("floor.request"));
@@ -532,6 +557,35 @@ void CAbiEngineClient::HandleEvent(const QString& method,
       emit ErrorOccurred(error);
     } else if (method == QStringLiteral("session.ready")) {
       emit Notice(QStringLiteral("信令连接已就绪"), QStringLiteral("ok"));
+    } else if (method == QStringLiteral("media.ready")) {
+      emit Notice(QStringLiteral("音频设备已就绪"), QStringLiteral("ok"));
+    } else if (method == QStringLiteral("media.published")) {
+      emit Notice(QStringLiteral("音频通道已发布"), QStringLiteral("ok"));
+    } else if (method == QStringLiteral("media.muted") ||
+               method == QStringLiteral("media.deafened")) {
+      const QJsonObject data =
+          event.value(QStringLiteral("data")).toObject();
+      if (method == QStringLiteral("media.muted")) {
+        snapshot_.mic_muted =
+            data.value(QStringLiteral("muted")).toBool(snapshot_.mic_muted);
+      } else {
+        snapshot_.deafened = data.value(QStringLiteral("deafened"))
+                                 .toBool(snapshot_.deafened);
+      }
+      emit SnapshotChanged(snapshot_);
+    } else if (method == QStringLiteral("media.error")) {
+      const QJsonObject data =
+          event.value(QStringLiteral("data")).toObject();
+      domain::AppError error;
+      error.domain = domain::ErrorDomain::Media;
+      error.code = data.value(QStringLiteral("code")).toInt(1700);
+      error.operation = "media";
+      error.message = data.value(QStringLiteral("message"))
+                          .toString(QStringLiteral("音频媒体错误"))
+                          .toStdString();
+      error.detail =
+          data.value(QStringLiteral("detail")).toString().toStdString();
+      emit ErrorOccurred(error);
     } else if (method.startsWith(QStringLiteral("room.")) ||
                method == QStringLiteral("floor.state") ||
                method == QStringLiteral("session.closed")) {

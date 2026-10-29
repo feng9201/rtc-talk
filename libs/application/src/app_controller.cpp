@@ -103,7 +103,7 @@ void AppController::ToggleDeafened() {
   if (!domain::CanUseRoomControls(snapshot_)) return;
   snapshot_.deafened = !snapshot_.deafened;
   emit SnapshotChanged(snapshot_);
-  engine_->ToggleDeafened();
+  engine_->SetDeafened(snapshot_.deafened);
 }
 
 void AppController::RequestFloor() {

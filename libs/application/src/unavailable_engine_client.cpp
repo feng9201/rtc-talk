@@ -27,7 +27,7 @@ void UnavailableEngineClient::Disconnect() { emit Left(); }
 void UnavailableEngineClient::SetMicEnabled(bool enabled) { Q_UNUSED(enabled); }
 void UnavailableEngineClient::ToggleCamera() {}
 void UnavailableEngineClient::ToggleShare() {}
-void UnavailableEngineClient::ToggleDeafened() {}
+void UnavailableEngineClient::SetDeafened(bool deafened) { Q_UNUSED(deafened); }
 void UnavailableEngineClient::RequestFloor() {}
 void UnavailableEngineClient::ReleaseFloor() {}
 void UnavailableEngineClient::RefreshCameras() {}

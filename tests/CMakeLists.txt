@@ -75,3 +75,16 @@ if(RTCWIN_BUILD_WEBRTC_MEDIA)
     MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
   )
 endif()
+if(RTCWIN_BUILD_WEBRTC_MEDIA)
+  add_executable(rtcwin_audio_media_smoke audio_media_smoke.cpp)
+  target_link_libraries(rtcwin_audio_media_smoke PRIVATE rtcwin_webrtc_media)
+  target_compile_options(rtcwin_audio_media_smoke PRIVATE
+    $<$<CXX_COMPILER_ID:MSVC>:/utf-8 /std:c++20 /EHsc /GR /W3>
+  )
+  set_target_properties(rtcwin_audio_media_smoke PROPERTIES
+    CXX_STANDARD 20
+    CXX_STANDARD_REQUIRED ON
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+  )
+  add_test(NAME rtcwin_audio_media_smoke COMMAND rtcwin_audio_media_smoke)
+endif()

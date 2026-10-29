@@ -29,7 +29,7 @@ class CAbiEngineClient final : public application::EngineClient {
   void SetMicEnabled(bool enabled) override;
   void ToggleCamera() override;
   void ToggleShare() override;
-  void ToggleDeafened() override;
+  void SetDeafened(bool deafened) override;
   void RequestFloor() override;
   void ReleaseFloor() override;
   void SelectPeer(const std::string& uid) override;

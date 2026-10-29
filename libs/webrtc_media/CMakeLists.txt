@@ -1,6 +1,8 @@
 add_library(rtcwin_webrtc_media STATIC
   include/rtcwin/webrtc_media/audio_device_service.h
+  include/rtcwin/webrtc_media/audio_media_session.h
   src/audio_device_service.cpp
+  src/audio_media_session.cpp
 )
 
 target_include_directories(rtcwin_webrtc_media

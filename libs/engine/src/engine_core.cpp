@@ -44,6 +44,34 @@ std::string ErrorJson(int code, const std::string& message) {
          ",\"msg\":\"" + EscapeJson(message) + "\"}";
 }
 
+std::vector<webrtc_media::AudioIceServer> ParseIceServers(const Json& value) {
+  std::vector<webrtc_media::AudioIceServer> result;
+  if (!value.is_array()) return result;
+  for (const auto& item : value) {
+    if (!item.is_object()) continue;
+    webrtc_media::AudioIceServer server;
+    if (item.contains("urls")) {
+      const Json& urls = item["urls"];
+      if (urls.is_string()) {
+        server.urls.push_back(urls.get<std::string>());
+      } else if (urls.is_array()) {
+        for (const auto& url : urls) {
+          if (url.is_string()) server.urls.push_back(url.get<std::string>());
+        }
+      }
+    }
+    if (server.urls.empty() && item.contains("url") &&
+        item["url"].is_string()) {
+      server.urls.push_back(item["url"].get<std::string>());
+    }
+    server.username = item.value("username", std::string());
+    server.password = item.value("credential",
+                                 item.value("password", std::string()));
+    if (!server.urls.empty()) result.push_back(std::move(server));
+  }
+  return result;
+}
+
 }  // namespace
 
 EngineCore::EngineCore(const rtcwin_options& options, std::string config_json)
@@ -61,11 +89,14 @@ EngineCore::EngineCore(const rtcwin_options& options, std::string config_json)
 EngineCore::~EngineCore() {
   {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (stopping_) return;
     stopping_ = true;
   }
+  // Stop signaling first so no callback can enqueue work while the worker and
+  // media session are being torn down.
+  StopSignaling();
   cv_.notify_all();
   if (worker_.joinable()) worker_.join();
-  StopSignaling();
   camera_.Stop();
 }
 
@@ -75,10 +106,25 @@ uint64_t EngineCore::Submit(std::string method, std::string json) {
   {
     std::lock_guard<std::mutex> lock(mutex_);
     if (stopping_ || commands_.size() >= kMaxPendingCommands) return 0;
-    commands_.push_back(Command{id, std::move(method), std::move(json)});
+    commands_.push_back(Command{id, std::move(method), std::move(json), {}});
   }
   cv_.notify_one();
   return id;
+}
+
+void EngineCore::PostToWorker(std::function<void()> task) {
+  if (!task) return;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (stopping_ || commands_.size() >= 256) return;
+    commands_.push_back(Command{0, {}, {}, std::move(task)});
+  }
+  cv_.notify_one();
+}
+
+void EngineCore::PostToSignaling(std::function<void()> task) {
+  if (!task) return;
+  asio::post(signaling_io_, std::move(task));
 }
 
 void EngineCore::WorkerLoop() {
@@ -91,9 +137,14 @@ void EngineCore::WorkerLoop() {
       command = std::move(commands_.front());
       commands_.pop_front();
     }
-    HandleCommand(command);
+    if (command.task) {
+      command.task();
+    } else {
+      HandleCommand(command);
+    }
   }
   camera_.Stop();
+  ResetAudioMedia();
 }
 
 void EngineCore::HandleCommand(const Command& command) {
@@ -107,6 +158,14 @@ void EngineCore::HandleCommand(const Command& command) {
     HandleCameraPreviewStop(command);
   } else if (command.method == "audio.devices") {
     HandleAudioDevices(command);
+  } else if (command.method == "media.setMute") {
+    HandleMediaSetMute(command);
+  } else if (command.method == "media.setVolume") {
+    HandleMediaSetVolume(command);
+  } else if (command.method == "media.setDeafened") {
+    HandleMediaSetDeafened(command);
+  } else if (command.method == "media.stats") {
+    HandleMediaStats(command);
   } else if (command.method == "session.connectAndJoin") {
     HandleSessionConnectAndJoin(command);
   } else if (command.method == "room.leave") {
@@ -192,7 +251,8 @@ void EngineCore::HandleSessionConnectAndJoin(const Command& command) {
   try {
     request = Json::parse(command.json);
   } catch (const std::exception&) {
-    EmitResponse(command.id, command.method, false, 400, "连接参数不是有效 JSON");
+    EmitResponse(command.id, command.method, false, 400,
+                 "连接参数不是有效 JSON");
     return;
   }
 
@@ -201,12 +261,35 @@ void EngineCore::HandleSessionConnectAndJoin(const Command& command) {
   const std::string uid = request.value("user_id", std::string());
   const std::string room_id = request.value("room_id", std::string());
   const std::string display = request.value("display", uid);
+  const std::string media_mode = request.value("media_mode", std::string("auto"));
+  const std::string talk_mode = request.value("talk_mode", std::string("free"));
   if (url.rfind("ws://", 0) != 0 || token.empty() || uid.empty() ||
       room_id.empty()) {
     EmitResponse(command.id, command.method, false, 400,
                  "信令地址、Token、用户标识和房间 ID 不能为空");
     return;
   }
+  if (media_mode != "auto" && media_mode != "sfu" && media_mode != "p2p") {
+    EmitResponse(command.id, command.method, false, 400, "媒体模式无效");
+    return;
+  }
+  if (talk_mode != "free" && talk_mode != "ptt" &&
+      talk_mode != "moderated") {
+    EmitResponse(command.id, command.method, false, 400, "发言模式无效");
+    return;
+  }
+
+  webrtc_media::AudioMediaConfig media_config;
+  media_config.audio_backend =
+      request.value("audio_backend", std::string("wasapi"));
+  media_config.audio_source =
+      request.value("audio_source", std::string("mic"));
+  media_config.recording_device =
+      request.value("recording_device", std::string());
+  media_config.playout_device =
+      request.value("playout_device", std::string());
+  media_config.volume = std::clamp(request.value("volume", 60), 0, 100);
+  media_config.muted = true;
 
   {
     std::lock_guard<std::mutex> lock(session_mutex_);
@@ -215,13 +298,23 @@ void EngineCore::HandleSessionConnectAndJoin(const Command& command) {
     session_uid_ = uid;
     session_room_id_ = room_id;
     session_display_ = display;
+    media_config_ = std::move(media_config);
+    media_mode_ = media_mode == "auto" ? "auto" : media_mode;
+    talk_mode_ = talk_mode;
     session_ready_ = false;
     room_joined_ = false;
+    media_enabled_ = false;
+    deafened_ = false;
   }
+  p2p_session_.clear();
+  p2p_peer_.clear();
+  p2p_offerer_ = false;
+  sfu_paused_ = false;
   session_command_id_.store(command.id);
   EmitNotification("session.state", "{\"state\":\"connecting\"}");
 
-  asio::post(signaling_io_, [this, url, token, uid, room_id, display] {
+  asio::post(signaling_io_, [this, url, token, uid, room_id, display,
+                             media_mode, talk_mode] {
     if (!signaling_) {
       const uint64_t id = session_command_id_.exchange(0);
       if (id != 0) {
@@ -242,18 +335,20 @@ void EngineCore::HandleSessionConnectAndJoin(const Command& command) {
     };
 
     signaling::SignalingClient::Handlers handlers;
-    handlers.on_open = [this] {
+    handlers.on_open = [this, uid, room_id, display, media_mode, talk_mode] {
       Json hello = {
           {"client",
            {{"platform", "windows-x64"},
             {"version", "0.1.0"},
-            {"sdk", "rtcwin-s2"}}},
+            {"sdk", "rtcwin-s3"}}},
           {"caps",
            {{"audio", {{"codecs", Json::array({"opus"})}, {"aec", "webrtc"}}},
-            {"p2p", false},
+            {"p2p", true},
             {"p2p_video", false},
             {"sfu_sdp", "unified-plan"}}}};
-      signaling_->Request("session.hello", hello, [this](Json result) {
+      signaling_->Request("session.hello", hello, [this, uid, room_id, display,
+                                                   media_mode, talk_mode](
+                                                      Json result) {
         if (!result.value("ok", false)) {
           const uint64_t id = session_command_id_.exchange(0);
           if (id != 0) {
@@ -262,28 +357,22 @@ void EngineCore::HandleSessionConnectAndJoin(const Command& command) {
           }
           return;
         }
+        const Json hello_data = result.value("data", Json::object());
+        const auto ice_servers =
+            ParseIceServers(hello_data.value("ice_servers", Json::array()));
         {
           std::lock_guard<std::mutex> lock(session_mutex_);
           session_ready_ = true;
+          media_config_.ice_servers = ice_servers;
         }
-        ScheduleHeartbeat(result.value("data", Json::object())
-                              .value("heartbeat_interval", 15));
-        std::string room_id;
-        std::string uid;
-        std::string display;
-        {
-          std::lock_guard<std::mutex> lock(session_mutex_);
-          room_id = session_room_id_;
-          uid = session_uid_;
-          display = session_display_;
-        }
+        ScheduleHeartbeat(hello_data.value("heartbeat_interval", 15));
         Json join = {
             {"room_id", room_id},
             {"display", display.empty() ? uid : display},
             {"media",
              {{"audio", {{"send", true}, {"muted", true}}},
               {"video", {{"send", false}}}}},
-            {"policy", {{"talk_mode", "free"}, {"media_mode", "sfu"}}}};
+            {"policy", {{"talk_mode", talk_mode}, {"media_mode", media_mode}}}};
         signaling_->Request("room.join", join, [this](Json joined) {
           if (!joined.value("ok", false)) {
             const uint64_t id = session_command_id_.exchange(0);
@@ -301,28 +390,84 @@ void EngineCore::HandleSessionConnectAndJoin(const Command& command) {
           }
           const Json data = joined.value("data", Json::object());
           const uint64_t id = session_command_id_.exchange(0);
-          if (id != 0) {
-            EmitResponse(id, "session.connectAndJoin", true, 0, {},
-                         data.dump());
-          }
-          EmitNotification("session.ready", data.dump());
+          PostToWorker([this, id, data] { FinalizeJoin(id, data); });
         });
       });
     };
+
     handlers.on_message = [this](Json message) {
       const std::string type = message.value("type", std::string());
+      const std::string method = message.value("method", std::string());
+      const Json data = message.value("data", Json::object());
       if (type == "req") {
         const std::string request_id = message.value("id", std::string());
-        signaling_->Send(signaling::Failure(
-            request_id, 501, "媒体切换尚未实现"));
+        if (method == "room.mediaMode") {
+          HandleMediaModeRequest(request_id, data);
+        } else if (method == "sfu.offer") {
+          HandleSfuOfferRequest(request_id, data);
+        } else {
+          signaling_->Send(signaling::Failure(
+              request_id, 501, "该客户端尚不支持此请求"));
+        }
         return;
       }
-      const std::string method = message.value("method", std::string());
+      if (method == "p2p.offer") {
+        PostToWorker([this, data] {
+          ApplyP2pOffer(data.value("session", std::string()),
+                        data.value("from", std::string()),
+                        data.value("sdp", std::string()));
+        });
+        return;
+      }
+      if (method == "p2p.answer") {
+        PostToWorker([this, data] {
+          ApplyP2pAnswer(data.value("session", std::string()),
+                         data.value("sdp", std::string()));
+        });
+        return;
+      }
+      if (method == "p2p.candidate") {
+        PostToWorker([this, data] {
+          ApplyP2pCandidate(data.value("session", std::string()),
+                            data.value("candidate", std::string()),
+                            data.value("sdp_mid", std::string("0")),
+                            data.value("sdp_mline_index", 0));
+        });
+        return;
+      }
+      if (method == "p2p.close") {
+        PostToWorker([this] {
+          if (audio_media_) audio_media_->CloseP2p();
+          p2p_session_.clear();
+          p2p_peer_.clear();
+          p2p_offerer_ = false;
+          if (sfu_paused_) {
+            sfu_paused_ = false;
+            if (audio_media_) {
+              webrtc_media::AudioMediaError error;
+              audio_media_->SetSfuPaused(false, &error);
+            }
+          }
+        });
+        return;
+      }
+      if (method == "media.forceMute") {
+        PostToWorker([this] {
+          if (audio_media_) {
+            webrtc_media::AudioMediaError error;
+            audio_media_->SetMuted(true, &error);
+          }
+          EmitNotification("media.muted", "{\"muted\":true,\"forced\":true}");
+        });
+        return;
+      }
       if (!method.empty() && message.contains("data")) {
-        EmitNotification(method, message["data"].dump());
+        EmitNotification(method, data.dump());
       }
     };
-    handlers.on_closed = [this](const signaling::SignalingClient::CloseInfo& info) {
+
+    handlers.on_closed = [this](
+                             const signaling::SignalingClient::CloseInfo& info) {
       const uint64_t id = session_command_id_.exchange(0);
       if (id != 0) {
         EmitResponse(id, "session.connectAndJoin", false,
@@ -332,14 +477,19 @@ void EngineCore::HandleSessionConnectAndJoin(const Command& command) {
         std::lock_guard<std::mutex> lock(session_mutex_);
         session_ready_ = false;
         room_joined_ = false;
+        media_enabled_ = false;
       }
       heartbeat_timer_.cancel();
+      PostToWorker([this] { ResetAudioMedia(); });
       std::ostringstream data;
-      data << "{\"handshake_failed\":" << (info.handshake_failed ? "true" : "false")
+      data << "{\"handshake_failed\":"
+           << (info.handshake_failed ? "true" : "false")
            << ",\"fatal\":" << (info.fatal ? "true" : "false")
-           << ",\"status\":" << info.status << ",\"code\":" << info.code << "}";
+           << ",\"status\":" << info.status << ",\"code\":" << info.code
+           << "}";
       EmitNotification("session.closed", data.str());
     };
+
     handlers.on_error = [this](int code, std::string message) {
       std::ostringstream data;
       data << "{\"code\":" << code << ",\"message\":\""
@@ -353,6 +503,555 @@ void EngineCore::HandleSessionConnectAndJoin(const Command& command) {
   });
 }
 
+void EngineCore::FinalizeJoin(uint64_t command_id, const Json& data) {
+  std::string error;
+  const bool initialized = InitializeAudioMedia(data, &error);
+  {
+    std::lock_guard<std::mutex> lock(session_mutex_);
+    media_enabled_ = initialized;
+  }
+  Json response = data;
+  response["media_enabled"] = initialized;
+  if (command_id != 0) {
+    EmitResponse(command_id, "session.connectAndJoin", true, 0, {},
+                 response.dump());
+  }
+  EmitNotification("session.ready", response.dump());
+  if (!initialized) {
+    EmitMediaError(1710, "音频媒体初始化失败", error);
+    return;
+  }
+  StartMediaForCurrentMode();
+}
+
+bool EngineCore::InitializeAudioMedia(const Json& join_data,
+                                      std::string* error) {
+  ResetAudioMedia();
+  webrtc_media::AudioMediaConfig config;
+  webrtc_media::AudioMediaStatus status;
+  {
+    std::lock_guard<std::mutex> lock(session_mutex_);
+    config = media_config_;
+    if (join_data.contains("media_mode") &&
+        join_data["media_mode"].is_string()) {
+      media_mode_ = join_data["media_mode"].get<std::string>();
+    }
+  }
+  if (media_mode_ == "p2p" && join_data.contains("p2p") &&
+      join_data["p2p"].is_object()) {
+    const Json& p2p = join_data["p2p"];
+    p2p_session_ = p2p.value("session", std::string());
+    p2p_peer_ = p2p.value("peer", std::string());
+    p2p_offerer_ = p2p.value("role", std::string()) == "offerer";
+  }
+  audio_media_ = std::make_unique<webrtc_media::AudioMediaSession>();
+  webrtc_media::AudioMediaError media_error;
+  const bool ok = audio_media_->Initialize(
+      config,
+      [this](std::string method, std::string data) {
+        PostToWorker([this, method = std::move(method),
+                      data = std::move(data)] {
+          HandleAudioMediaEvent(method, data);
+        });
+      },
+      &media_error);
+  if (!ok) {
+    if (error) *error = media_error.message;
+    audio_media_.reset();
+    return false;
+  }
+  status = audio_media_->status();
+  {
+    std::lock_guard<std::mutex> lock(session_mutex_);
+    media_enabled_ = true;
+  }
+  EmitNotification("media.ready",
+                   std::string("{\"recording_device\":\"") +
+                       EscapeJson(status.recording_device) +
+                       "\",\"playout_device\":\"" +
+                       EscapeJson(status.playout_device) + "\"}");
+  return true;
+}
+
+void EngineCore::StartMediaForCurrentMode() {
+  std::string mode;
+  {
+    std::lock_guard<std::mutex> lock(session_mutex_);
+    mode = media_mode_;
+  }
+  if (mode == "p2p") {
+    StartP2p();
+  } else {
+    PublishSfu();
+  }
+}
+void EngineCore::PublishSfu() {
+  if (!audio_media_) {
+    EmitMediaError(1730, "音频媒体未就绪", "SFU 发布被跳过");
+    return;
+  }
+  webrtc_media::AudioSfuOffer offer;
+  webrtc_media::AudioMediaError error;
+  if (!audio_media_->CreateSfuPublishOffer(&offer, &error)) {
+    EmitMediaError(error.code, "生成 SFU 音频 offer 失败", error.message);
+    return;
+  }
+  Json tracks = Json::array();
+  tracks.push_back({{"mid", offer.audio_mid},
+                    {"kind", "audio"},
+                    {"source", offer.source}});
+  Json request = {{"sdp", offer.sdp}, {"tracks", tracks}};
+  PostToSignaling([this, request = std::move(request)] {
+    if (!signaling_) return;
+    signaling_->Request(
+        "sfu.publish", request, [this](Json result) {
+          if (!result.value("ok", false)) {
+            const int code = ResponseCode(result);
+            const std::string message = ResponseMessage(result);
+            PostToWorker([this, code, message] {
+              EmitMediaError(code, "SFU 音频发布失败", message);
+            });
+            return;
+          }
+          const std::string answer = result.value("data", Json::object())
+                                         .value("sdp", std::string());
+          PostToWorker([this, answer] { ApplySfuAnswer(answer); });
+        });
+  });
+  EmitNotification("media.publishing",
+                   std::string("{\"mode\":\"sfu\",\"sdp_bytes\":") +
+                       std::to_string(offer.sdp.size()) + "}");
+}
+
+void EngineCore::ApplySfuAnswer(const std::string& sdp) {
+  if (!audio_media_) return;
+  webrtc_media::AudioMediaError error;
+  if (!audio_media_->ApplySfuPublishAnswer(sdp, &error)) {
+    EmitMediaError(error.code, "应用 SFU answer 失败", error.message);
+    return;
+  }
+  sfu_paused_ = false;
+  EmitNotification("media.published", "{\"ok\":true,\"mode\":\"sfu\"}");
+}
+
+void EngineCore::StartP2p() {
+  if (!audio_media_) {
+    EmitMediaError(1731, "音频媒体未就绪", "P2P 初始化被跳过");
+    return;
+  }
+  if (p2p_session_.empty() || p2p_peer_.empty()) {
+    EmitNotification("p2p.state",
+                     "{\"state\":\"failed\",\"reason\":\"missing_allocation\"}");
+    EmitMediaError(1732, "P2P 分配参数缺失", "回退到 SFU 音频");
+    {
+      std::lock_guard<std::mutex> lock(session_mutex_);
+      media_mode_ = "sfu";
+    }
+    PublishSfu();
+    return;
+  }
+  if (!p2p_offerer_) {
+    EmitNotification("p2p.state",
+                     "{\"session\":\"" + EscapeJson(p2p_session_) +
+                         "\",\"state\":\"awaiting_offer\"}");
+    return;
+  }
+  std::string offer;
+  webrtc_media::AudioMediaError error;
+  if (!audio_media_->CreateP2pOffer(&offer, &error)) {
+    EmitMediaError(error.code, "创建 P2P 音频 offer 失败", error.message);
+    EmitNotification("p2p.state",
+                     "{\"session\":\"" + EscapeJson(p2p_session_) +
+                         "\",\"state\":\"failed\"}");
+    return;
+  }
+  Json event = {{"session", p2p_session_}, {"to", p2p_peer_}, {"sdp", offer}};
+  PostToSignaling([this, event = std::move(event)] {
+    if (signaling_) signaling_->Notify("p2p.offer", event);
+  });
+  EmitNotification("p2p.started",
+                   std::string("{\"session\":\"") +
+                       EscapeJson(p2p_session_) + "\",\"peer\":\"" +
+                       EscapeJson(p2p_peer_) + "\",\"role\":\"offerer\"}");
+}
+
+void EngineCore::ApplyP2pOffer(const std::string& session,
+                               const std::string& from,
+                               const std::string& sdp) {
+  if (session.empty() || from.empty() || sdp.empty()) return;
+  if (p2p_session_.empty()) {
+    p2p_session_ = session;
+    p2p_peer_ = from;
+    p2p_offerer_ = false;
+    std::lock_guard<std::mutex> lock(session_mutex_);
+    media_mode_ = "p2p";
+  }
+  if (session != p2p_session_ || !audio_media_) return;
+  p2p_peer_ = from;
+  p2p_offerer_ = false;
+  std::string answer;
+  webrtc_media::AudioMediaError error;
+  if (!audio_media_->CreateP2pAnswer(sdp, &answer, &error)) {
+    EmitMediaError(error.code, "创建 P2P 音频 answer 失败", error.message);
+    EmitNotification("p2p.state",
+                     "{\"session\":\"" + EscapeJson(session) +
+                         "\",\"state\":\"failed\"}");
+    return;
+  }
+  Json event = {{"session", session}, {"to", from}, {"sdp", answer}};
+  PostToSignaling([this, event = std::move(event)] {
+    if (signaling_) signaling_->Notify("p2p.answer", event);
+  });
+  EmitNotification("p2p.started",
+                   std::string("{\"session\":\"") + EscapeJson(session) +
+                       "\",\"peer\":\"" + EscapeJson(from) +
+                       "\",\"role\":\"answerer\"}");
+}
+
+void EngineCore::ApplyP2pAnswer(const std::string& session,
+                                const std::string& sdp) {
+  if (session != p2p_session_ || !p2p_offerer_ || sdp.empty() ||
+      !audio_media_) {
+    return;
+  }
+  webrtc_media::AudioMediaError error;
+  if (!audio_media_->ApplyP2pAnswer(sdp, &error)) {
+    EmitMediaError(error.code, "应用 P2P 音频 answer 失败", error.message);
+    EmitNotification("p2p.state",
+                     "{\"session\":\"" + EscapeJson(session) +
+                         "\",\"state\":\"failed\"}");
+  }
+}
+
+void EngineCore::ApplyP2pCandidate(const std::string& session,
+                                   const std::string& candidate,
+                                   const std::string& mid, int index) {
+  if (session != p2p_session_ || !audio_media_ || candidate.empty()) return;
+  webrtc_media::AudioMediaError error;
+  if (!audio_media_->AddP2pCandidate(candidate, mid, index, &error)) {
+    EmitMediaError(error.code, "添加 P2P ICE 候选失败", error.message);
+  }
+}
+
+void EngineCore::HandleMediaModeRequest(const std::string& request_id,
+                                        const Json& data) {
+  PostToWorker([this, request_id, data] {
+    const std::string mode =
+        data.value("mode", data.value("media_mode", std::string()));
+    if (!audio_media_) {
+      PostToSignaling([this, request_id] {
+        if (signaling_) {
+          signaling_->Send(signaling::Failure(request_id, 409,
+                                              "音频媒体未就绪"));
+        }
+      });
+      return;
+    }
+    if (mode == "p2p") {
+      const Json allocation = data.value("p2p", Json::object());
+      if (!allocation.is_object() || allocation.empty()) {
+        PostToSignaling([this, request_id] {
+          if (signaling_) {
+            signaling_->Send(signaling::Failure(request_id, 400,
+                                                "缺少 P2P 分配"));
+          }
+        });
+        return;
+      }
+      p2p_session_ = allocation.value("session", std::string());
+      p2p_peer_ = allocation.value("peer", std::string());
+      p2p_offerer_ = allocation.value("role", std::string()) == "offerer";
+      {
+        std::lock_guard<std::mutex> lock(session_mutex_);
+        media_mode_ = "p2p";
+      }
+      StartP2p();
+      EmitNotification("room.mediaMode", data.dump());
+      PostToSignaling([this, request_id] {
+        if (signaling_) {
+          signaling_->Send(signaling::Response(request_id, Json::object()));
+        }
+      });
+      return;
+    }
+    if (mode == "sfu") {
+      if (audio_media_) audio_media_->CloseP2p();
+      p2p_session_.clear();
+      p2p_peer_.clear();
+      p2p_offerer_ = false;
+      sfu_paused_ = false;
+      webrtc_media::AudioMediaError error;
+      audio_media_->SetSfuPaused(false, &error);
+      {
+        std::lock_guard<std::mutex> lock(session_mutex_);
+        media_mode_ = "sfu";
+      }
+      PublishSfu();
+      EmitNotification("room.mediaMode", data.dump());
+      PostToSignaling([this, request_id] {
+        if (signaling_) {
+          signaling_->Send(signaling::Response(request_id, Json::object()));
+        }
+      });
+      return;
+    }
+    PostToSignaling([this, request_id] {
+      if (signaling_) {
+        signaling_->Send(signaling::Failure(request_id, 400, "媒体模式无效"));
+      }
+    });
+  });
+}
+
+void EngineCore::HandleSfuOfferRequest(const std::string& request_id,
+                                       const Json& data) {
+  const std::string sdp = data.value("sdp", std::string());
+  if (sdp.empty()) {
+    PostToSignaling([this, request_id] {
+      if (signaling_) {
+        signaling_->Send(signaling::Failure(request_id, 400, "缺少 SDP"));
+      }
+    });
+    return;
+  }
+  PostToWorker([this, request_id, sdp] {
+    if (!audio_media_) {
+      PostToSignaling([this, request_id] {
+        if (signaling_) {
+          signaling_->Send(signaling::Failure(request_id, 409,
+                                              "音频媒体未就绪"));
+        }
+      });
+      return;
+    }
+    std::string answer;
+    webrtc_media::AudioMediaError error;
+    const bool ok = audio_media_->CreateSfuSubscribeAnswer(sdp, &answer, &error);
+    PostToSignaling([this, request_id, ok, answer, error] {
+      if (!signaling_) return;
+      if (ok) {
+        signaling_->Send(
+            signaling::Response(request_id, Json{{"sdp", answer}}));
+      } else {
+        signaling_->Send(signaling::Failure(
+            request_id, error.code == 0 ? 500 : error.code, error.message));
+      }
+    });
+  });
+}
+
+void EngineCore::HandleAudioMediaEvent(const std::string& method,
+                                       const std::string& data_json) {
+  Json data;
+  try {
+    data = Json::parse(data_json);
+  } catch (const std::exception&) {
+    return;
+  }
+  if (method == "p2p.candidate") {
+    if (p2p_session_.empty()) return;
+    Json candidate = data;
+    candidate["session"] = p2p_session_;
+    candidate["to"] = p2p_peer_;
+    PostToSignaling([this, candidate = std::move(candidate)] {
+      if (signaling_) signaling_->Notify("p2p.candidate", candidate);
+    });
+    return;
+  }
+  if (method == "audio.connection") {
+    const std::string pc = data.value("pc", std::string());
+    const std::string state = data.value("state", std::string());
+    if (pc == "p2p") {
+      if (state == "connected") {
+        sfu_paused_ = true;
+        if (audio_media_) {
+          webrtc_media::AudioMediaError error;
+          audio_media_->SetSfuPaused(true, &error);
+        }
+      } else if (state == "failed" || state == "closed") {
+        if (sfu_paused_) {
+          sfu_paused_ = false;
+          if (audio_media_) {
+            webrtc_media::AudioMediaError error;
+            audio_media_->SetSfuPaused(false, &error);
+          }
+        }
+      }
+      Json out = {{"session", p2p_session_}, {"state", state}};
+      PostToSignaling([this, out = std::move(out)] {
+        if (signaling_) signaling_->Notify("p2p.state", out);
+      });
+    }
+    EmitNotification("media.state", data.dump());
+    return;
+  }
+  if (method == "audio.track") {
+    EmitNotification("media.track", data.dump());
+  }
+}
+
+void EngineCore::ResetAudioMedia() {
+  if (audio_media_) {
+    audio_media_->Shutdown();
+    audio_media_.reset();
+  }
+  p2p_session_.clear();
+  p2p_peer_.clear();
+  p2p_offerer_ = false;
+  sfu_paused_ = false;
+  std::lock_guard<std::mutex> lock(session_mutex_);
+  media_enabled_ = false;
+}
+
+void EngineCore::EmitMediaError(int code, const std::string& message,
+                                const std::string& detail) {
+  EmitNotification(
+      "media.error",
+      std::string("{\"code\":") + std::to_string(code) + ",\"message\":\"" +
+          EscapeJson(message) + "\",\"detail\":\"" + EscapeJson(detail) +
+          "\"}");
+}
+
+void EngineCore::HandleMediaSetMute(const Command& command) {
+  Json request;
+  try {
+    request = Json::parse(command.json);
+  } catch (const std::exception&) {
+    EmitResponse(command.id, command.method, false, 400, "静音参数无效");
+    return;
+  }
+  if (!request.contains("muted") || !request["muted"].is_boolean()) {
+    EmitResponse(command.id, command.method, false, 400, "缺少 muted 参数");
+    return;
+  }
+  bool joined = false;
+  {
+    std::lock_guard<std::mutex> lock(session_mutex_);
+    joined = room_joined_ && media_enabled_;
+  }
+  if (!joined || !audio_media_) {
+    EmitResponse(command.id, command.method, false, 409, "音频媒体未就绪");
+    return;
+  }
+  const bool muted = request["muted"].get<bool>();
+  const uint64_t generation = mute_generation_.fetch_add(1) + 1;
+  webrtc_media::AudioMediaError media_error;
+  if (muted && !audio_media_->SetMuted(true, &media_error)) {
+    EmitResponse(command.id, command.method, false, media_error.code,
+                 media_error.message);
+    return;
+  }
+  const uint64_t command_id = command.id;
+  PostToSignaling([this, command_id, generation, muted] {
+    if (!signaling_) {
+      PostToWorker([this, command_id, generation, muted] {
+        if (generation == mute_generation_.load()) {
+          EmitResponse(command_id, "media.setMute", false, 480,
+                       "信令连接不可用");
+        }
+      });
+      return;
+    }
+    signaling_->Request(
+        "media.setMute", {{"source", "mic"}, {"muted", muted}},
+        [this, command_id, generation, muted](Json result) {
+          PostToWorker([this, command_id, generation, muted, result] {
+            if (generation != mute_generation_.load()) {
+              EmitResponse(command_id, "media.setMute", false, 487,
+                           "静音命令已被更新");
+              return;
+            }
+            const bool server_ok = result.value("ok", false);
+            const bool effective = muted || !server_ok;
+            webrtc_media::AudioMediaError media_error;
+            const bool applied =
+                audio_media_ &&
+                audio_media_->SetMuted(effective, &media_error);
+            Json state = {{"muted", applied ? effective : true}};
+            EmitNotification("media.muted", state.dump());
+            if (!server_ok) {
+              EmitResponse(command_id, "media.setMute", false,
+                           ResponseCode(result), ResponseMessage(result));
+            } else if (!applied) {
+              EmitResponse(command_id, "media.setMute", false,
+                           media_error.code, media_error.message);
+            } else {
+              EmitResponse(command_id, "media.setMute", true, 0, {},
+                           state.dump());
+            }
+          });
+        });
+  });
+}
+
+void EngineCore::HandleMediaSetVolume(const Command& command) {
+  Json request;
+  try {
+    request = Json::parse(command.json);
+  } catch (const std::exception&) {
+    EmitResponse(command.id, command.method, false, 400, "音量参数无效");
+    return;
+  }
+  double gain = request.value("gain", -1.0);
+  if (gain < 0.0 && request.contains("volume")) {
+    gain = request.value("volume", 60) / 100.0;
+  }
+  if (!audio_media_ ||
+      !audio_media_->SetVolume(gain, nullptr)) {
+    EmitResponse(command.id, command.method, false, 400, "音量必须在 0 到 100 之间");
+    return;
+  }
+  Json data = {{"volume", static_cast<int>(gain * 100.0 + 0.5)}};
+  EmitResponse(command.id, command.method, true, 0, {}, data.dump());
+}
+
+void EngineCore::HandleMediaSetDeafened(const Command& command) {
+  Json request;
+  try {
+    request = Json::parse(command.json);
+  } catch (const std::exception&) {
+    EmitResponse(command.id, command.method, false, 400, "收听参数无效");
+    return;
+  }
+  const bool deafened = request.value("deafened", false);
+  webrtc_media::AudioMediaError error;
+  if (!audio_media_ || !audio_media_->SetDeafened(deafened, &error)) {
+    EmitResponse(command.id, command.method, false,
+                 error.code == 0 ? 409 : error.code,
+                 error.message.empty() ? "音频媒体未就绪" : error.message);
+    return;
+  }
+  deafened_ = deafened;
+  Json data = {{"deafened", deafened}};
+  EmitNotification("media.deafened", data.dump());
+  EmitResponse(command.id, command.method, true, 0, {}, data.dump());
+}
+
+void EngineCore::HandleMediaStats(const Command& command) {
+  if (!audio_media_) {
+    EmitResponse(command.id, command.method, false, 409, "音频媒体未就绪");
+    return;
+  }
+  const auto status = audio_media_->status();
+  Json data = {
+      {"initialized", status.initialized},
+      {"sfu_send_ready", status.sfu_send_ready},
+      {"sfu_recv_ready", status.sfu_recv_ready},
+      {"p2p_ready", status.p2p_ready},
+      {"p2p_connected", status.p2p_connected},
+      {"muted", status.muted},
+      {"deafened", status.deafened},
+      {"sfu_paused", status.sfu_paused},
+      {"volume", status.volume},
+      {"capture_frames", status.capture_frames},
+      {"remote_tracks", status.remote_tracks},
+      {"recording_device", status.recording_device},
+      {"playout_device", status.playout_device},
+      {"sfu_send_state", status.sfu_send_state},
+      {"sfu_recv_state", status.sfu_recv_state},
+      {"p2p_state", status.p2p_state}};
+  EmitResponse(command.id, command.method, true, 0, {}, data.dump());
+}
 void EngineCore::HandleRoomLeave(const Command& command) {
   std::string room_id;
   bool joined = false;
@@ -422,12 +1121,12 @@ void EngineCore::ScheduleHeartbeat(int seconds) {
 }
 void EngineCore::StopSignaling() {
   if (!signaling_thread_.joinable()) return;
-  std::promise<void> completed;
-  auto future = completed.get_future();
-  asio::post(signaling_io_, [this, &completed] {
+  auto completed = std::make_shared<std::promise<void>>();
+  auto future = completed->get_future();
+  asio::post(signaling_io_, [this, completed] {
     heartbeat_timer_.cancel();
     if (signaling_) signaling_->Dispose();
-    completed.set_value();
+    completed->set_value();
   });
   future.wait_for(std::chrono::seconds(2));
   signaling_work_.reset();

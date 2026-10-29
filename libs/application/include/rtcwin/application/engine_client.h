@@ -23,7 +23,7 @@ class EngineClient : public QObject {
   virtual void SetMicEnabled(bool enabled) = 0;
   virtual void ToggleCamera() = 0;
   virtual void ToggleShare() = 0;
-  virtual void ToggleDeafened() = 0;
+  virtual void SetDeafened(bool deafened) = 0;
   virtual void RequestFloor() = 0;
   virtual void ReleaseFloor() = 0;
   virtual void SelectPeer(const std::string& uid) = 0;
