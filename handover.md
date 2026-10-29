@@ -1650,9 +1650,12 @@ build/windows-x64/s4-smoke2/b-engine.log
 便携包（包含 B3）：
 
 ```text
-D:\google\webrtc-win-client\rtc-talk-win\dist\rtc-talk-win-20261029-221101.zip
-SHA256: C2B0E13718706E17FCF3228EBC1170008AF223E3DACCB266C2D2BE795AD9966A
+D:\google\webrtc-win-client\rtc-talk-win\dist\rtc-talk-win-20261029-221208.zip
+SHA256: EB79239A383EA2A2969BF59F76B8F54AB0C42B14C799FB652F7338384BC92DD7
 ```
+
+包内 `VERSION.txt` 的提交号为 `fb854bc`。旧的
+`rtc-talk-win-20261029-221101.zip` 仅用于打包流程验证，不作为当前交付包。
 
 打包后的 `rtc-talk.exe` 已通过 1440x900 启动截图冒烟，截图位于
 `build/windows-x64/package/package-smoke-b3.png`。
