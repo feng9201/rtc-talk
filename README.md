@@ -8,7 +8,7 @@ The complete user-wrapped muxPlayer source tree is stored in
 `third_party/muxplayer`. Its user libraries `mtAudio`, `mtAudioPlayer`, `tmcore`,
 and `flvparser` are also bundled under `third_party`.
 
-Qt and Visual Studio are development environments. FFmpeg and other package
+libwebrtc is integrated as an external development SDK through `WEBRTC_SDK_DIR`. Qt and Visual Studio are development environments. FFmpeg and other package
 dependencies are resolved from the private vcpkg registry configured by
 `vcpkg.json` and `vcpkg-configuration.json`.
 
@@ -17,6 +17,7 @@ dependencies are resolved from the private vcpkg registry configured by
 ```powershell
 $env:VCPKG_ROOT = 'D:\vcpkg'
 $env:QTDIR = 'C:\Qt\5.15.2\msvc2019_64'
+$env:WEBRTC_SDK_DIR = 'D:\google\webrtc_sdk_hevc'
 cmake --preset windows-x64
 cmake --build --preset windows-x64-release --parallel
 ctest --test-dir build/windows-x64 -C Release --output-on-failure

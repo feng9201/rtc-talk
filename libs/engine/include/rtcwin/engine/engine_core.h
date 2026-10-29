@@ -39,6 +39,7 @@ class EngineCore final {
   void HandleCameraDevices(const Command& command);
   void HandleCameraPreviewStart(const Command& command);
   void HandleCameraPreviewStop(const Command& command);
+  void HandleAudioDevices(const Command& command);
   void HandleSessionConnectAndJoin(const Command& command);
   void HandleRoomLeave(const Command& command);
   void HandleSessionDisconnect(const Command& command);

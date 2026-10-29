@@ -178,9 +178,9 @@ QWidget* PrejoinPage::BuildFormCard() {
   camera_device_->setEnabled(false);
   layout->addWidget(MakePair(
       MakeField(QStringLiteral("麦克风设备"), recording_device_,
-                QStringLiteral("音频设备完整枚举在 P6 接入")),
+                QStringLiteral("WASAPI 设备由媒体引擎枚举")),
       MakeField(QStringLiteral("播放设备"), playout_device_,
-                QStringLiteral("音频设备完整枚举在 P6 接入"))));
+                QStringLiteral("WASAPI 设备由媒体引擎枚举"))));
   auto* camera_row = new QWidget(card);
   auto* camera_row_layout = new QHBoxLayout(camera_row);
   camera_row_layout->setContentsMargins(0, 0, 0, 0);
@@ -410,6 +410,12 @@ void PrejoinPage::SetOptions(const domain::PrejoinOptions& options) {
           : QStringLiteral("mic"));
   volume_->setValue(options.volume);
   preferred_camera_id_ = Text(options.camera_device);
+  preferred_recording_id_ = Text(options.recording_device);
+  preferred_playout_id_ = Text(options.playout_device);
+  const int recording_index = recording_device_->findData(preferred_recording_id_);
+  if (recording_index >= 0) recording_device_->setCurrentIndex(recording_index);
+  const int playout_index = playout_device_->findData(preferred_playout_id_);
+  if (playout_index >= 0) playout_device_->setCurrentIndex(playout_index);
   bool has_index = false;
   const int preferred_index = preferred_camera_id_.toInt(&has_index);
   if (has_index) {
@@ -434,6 +440,36 @@ void PrejoinPage::SetStatus(const QString& text, const QString& tone) {
   status_->style()->polish(status_);
 }
 
+void PrejoinPage::SetAudioDevices(
+    const QVector<rtcwin::domain::AudioDevice>& recording,
+    const QVector<rtcwin::domain::AudioDevice>& playout) {
+  const auto fill = [this](QComboBox* combo,
+                           const QVector<rtcwin::domain::AudioDevice>& devices,
+                           const QString& preferred,
+                           const QString& empty_text) {
+    const QSignalBlocker blocker(combo);
+    combo->clear();
+    for (const rtcwin::domain::AudioDevice& device : devices) {
+      const QString id = Text(device.id);
+      combo->addItem(Text(device.name), id);
+    }
+    if (combo->count() == 0) {
+      combo->addItem(empty_text, QString());
+      combo->setEnabled(false);
+      return;
+    }
+    int index = combo->findData(preferred);
+    if (index < 0) index = 0;
+    combo->setCurrentIndex(index);
+    combo->setEnabled(true);
+  };
+  fill(recording_device_, recording, preferred_recording_id_,
+       QStringLiteral("未检测到麦克风"));
+  fill(playout_device_, playout, preferred_playout_id_,
+       QStringLiteral("未检测到播放设备"));
+  preferred_recording_id_ = recording_device_->currentData().toString();
+  preferred_playout_id_ = playout_device_->currentData().toString();
+}
 void PrejoinPage::SetCameraDevices(
     const QVector<rtcwin::domain::CameraDevice>& devices) {
   if (camera_device_ == nullptr) return;

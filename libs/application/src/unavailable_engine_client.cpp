@@ -31,6 +31,7 @@ void UnavailableEngineClient::ToggleDeafened() {}
 void UnavailableEngineClient::RequestFloor() {}
 void UnavailableEngineClient::ReleaseFloor() {}
 void UnavailableEngineClient::RefreshCameras() {}
+void UnavailableEngineClient::RefreshAudioDevices() {}
 void UnavailableEngineClient::StartCameraPreview(int device_index) { Q_UNUSED(device_index); }
 void UnavailableEngineClient::StopCameraPreview() {}
 

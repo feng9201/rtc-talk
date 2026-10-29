@@ -24,6 +24,7 @@ class UnavailableEngineClient final : public EngineClient {
   void ReleaseFloor() override;
   void SelectPeer(const std::string& uid) override;
   void RefreshCameras() override;
+  void RefreshAudioDevices() override;
   void StartCameraPreview(int device_index) override;
   void StopCameraPreview() override;
 };

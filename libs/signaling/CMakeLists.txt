@@ -21,6 +21,7 @@ target_compile_definitions(rtcwin_signaling PUBLIC
   WIN32_LEAN_AND_MEAN
   NOMINMAX
   _WINSOCK_DEPRECATED_NO_WARNINGS
+  $<$<CONFIG:Debug>:_HAS_ITERATOR_DEBUGGING=0>
 )
 
 target_compile_options(rtcwin_signaling

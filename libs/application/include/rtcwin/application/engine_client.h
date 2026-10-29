@@ -28,6 +28,7 @@ class EngineClient : public QObject {
   virtual void ReleaseFloor() = 0;
   virtual void SelectPeer(const std::string& uid) = 0;
   virtual void RefreshCameras() = 0;
+  virtual void RefreshAudioDevices() = 0;
   virtual void StartCameraPreview(int device_index) = 0;
   virtual void StopCameraPreview() = 0;
 
@@ -39,6 +40,9 @@ class EngineClient : public QObject {
   void ErrorOccurred(const rtcwin::domain::AppError& error);
   void CameraDevicesChanged(
       const QVector<rtcwin::domain::CameraDevice>& devices);
+  void AudioDevicesChanged(
+      const QVector<rtcwin::domain::AudioDevice>& recording,
+      const QVector<rtcwin::domain::AudioDevice>& playout);
   void CameraPreviewChanged(bool active, const QString& device, int width,
                             int height, int fps);
   void LocalFrameReceived(const rtcwin::domain::VideoFrame& frame);

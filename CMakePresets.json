@@ -9,6 +9,7 @@
       "binaryDir": "${sourceDir}/build/windows-x64",
       "cacheVariables": {
         "CMAKE_PREFIX_PATH": "$env{QTDIR}",
+        "WEBRTC_SDK_DIR": "$env{WEBRTC_SDK_DIR}",
         "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
         "VCPKG_TARGET_TRIPLET": "x64-windows",
         "VCPKG_INSTALLED_DIR": "${sourceDir}/build/vcpkg_installed",

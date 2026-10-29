@@ -11,6 +11,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(RTCWIN_BUILD_TESTS "Build unit tests" ON)
 option(RTCWIN_BUILD_MUXPLAYER "Build muxPlayer integration target" ON)
+option(RTCWIN_BUILD_WEBRTC_MEDIA "Build libwebrtc media module" ON)
 
 if(NOT WIN32)
   message(FATAL_ERROR "rtc-talk-win currently supports Windows only")
@@ -34,6 +35,11 @@ find_package(OpenGL REQUIRED)
 find_package(asio CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(Threads REQUIRED)
+
+if(RTCWIN_BUILD_WEBRTC_MEDIA)
+  include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/webrtc.cmake")
+  add_subdirectory(libs/webrtc_media)
+endif()
 
 add_subdirectory(libs/domain)
 add_subdirectory(libs/application)

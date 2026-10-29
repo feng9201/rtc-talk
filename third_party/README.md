@@ -20,7 +20,7 @@ from `device_tool` commit `4c3da7bf8ec92c0826e143918403cba5d61ab1db`:
 
 ## External tools and package sources
 
-Qt and Visual Studio are development environments and are intentionally not
+libwebrtc is an external SDK resolved through `WEBRTC_SDK_DIR`. Qt and Visual Studio are development environments and are intentionally not
 vendored. FFmpeg and other muxPlayer package dependencies are obtained from the
 private vcpkg registry configured in `vcpkg.json` and
 `vcpkg-configuration.json`.

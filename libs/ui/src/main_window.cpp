@@ -65,6 +65,7 @@ MainWindow::MainWindow(QWidget* parent) : FramelessWindow(parent) {
   ConnectSignals();
   prejoin_page_->SetOptions(controller_->settings().Load());
   controller_->RefreshCameras();
+  controller_->RefreshAudioDevices();
   ShowPrejoinPage();
 }
 
@@ -155,6 +156,8 @@ void MainWindow::ConnectSignals() {
           &application::AppController::CameraDevicesChanged, prejoin_page_,
           &PrejoinPage::SetCameraDevices);
   connect(controller_.get(),
+          &application::AppController::AudioDevicesChanged, prejoin_page_,
+          &PrejoinPage::SetAudioDevices);  connect(controller_.get(),
           &application::AppController::CameraPreviewChanged, prejoin_page_,
           &PrejoinPage::SetPreviewActive);
   connect(controller_.get(),

@@ -1,6 +1,7 @@
 #include "rtcwin/engine/engine_core.h"
 
 #include "rtcwin/signaling/protocol.h"
+#include "rtcwin/webrtc_media/audio_device_service.h"
 
 #include <algorithm>
 #include <chrono>
@@ -104,6 +105,8 @@ void EngineCore::HandleCommand(const Command& command) {
     HandleCameraPreviewStart(command);
   } else if (command.method == "camera.preview.stop") {
     HandleCameraPreviewStop(command);
+  } else if (command.method == "audio.devices") {
+    HandleAudioDevices(command);
   } else if (command.method == "session.connectAndJoin") {
     HandleSessionConnectAndJoin(command);
   } else if (command.method == "room.leave") {
@@ -164,6 +167,26 @@ void EngineCore::HandleCameraPreviewStop(const Command& command) {
   EmitResponse(command.id, command.method, true, 0, {}, "{}");
 }
 
+void EngineCore::HandleAudioDevices(const Command& command) {
+  webrtc_media::AudioDeviceList devices;
+  std::string error;
+  if (!webrtc_media::EnumerateAudioDevices(&devices, &error)) {
+    EmitResponse(command.id, command.method, false, 1601,
+                 error.empty() ? "音频设备枚举失败" : error);
+    return;
+  }
+  Json data = {{"recording", Json::array()}, {"playout", Json::array()}};
+  const auto append = [&data](const char* key,
+                              const std::vector<webrtc_media::AudioDeviceInfo>& items) {
+    for (const auto& device : items) {
+      data[key].push_back(
+          {{"index", device.index}, {"id", device.id}, {"name", device.name}});
+    }
+  };
+  append("recording", devices.recording);
+  append("playout", devices.playout);
+  EmitResponse(command.id, command.method, true, 0, {}, data.dump());
+}
 void EngineCore::HandleSessionConnectAndJoin(const Command& command) {
   Json request;
   try {

@@ -28,6 +28,7 @@ later stage with their package dependencies.
 ```powershell
 $env:VCPKG_ROOT = 'D:\vcpkg'
 $env:QTDIR = 'C:\Qt\5.15.2\msvc2019_64'
+$env:WEBRTC_SDK_DIR = 'D:\google\webrtc_sdk_hevc'
 ```
 
 `CMakePresets.json` resolves Qt and vcpkg through these environment variables.
@@ -84,3 +85,18 @@ Full Qt UI auto-join diagnostics:
 The UI path fetches `/dev/token`, executes `session.hello`, `room.join`, and
 updates the room snapshot and member list. `room.leave` returns to the prejoin
 page.
+## S3 libwebrtc/WASAPI baseline
+
+libwebrtc is an external SDK resolved through `WEBRTC_SDK_DIR`; its source and
+2+ GiB binary tree are not copied into Git. The project owns the media adapter
+module under `libs/webrtc_media`.
+
+Audio device probe:
+
+```powershell
+.\build\windows-x64\bin\Release\rtcwin_audio_devices_probe.exe
+```
+
+The probe initializes libwebrtc's Windows Core Audio ADM and prints recording and
+playout devices. The same devices are exposed through the Engine `audio.devices`
+command and P5 prejoin page selectors.

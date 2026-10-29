@@ -33,6 +33,9 @@ class PrejoinPage final : public QWidget {
 
   void SetCameraDevices(
       const QVector<rtcwin::domain::CameraDevice>& devices);
+  void SetAudioDevices(
+      const QVector<rtcwin::domain::AudioDevice>& recording,
+      const QVector<rtcwin::domain::AudioDevice>& playout);
   void SetPreviewActive(bool active, const QString& device, int width,
                         int height, int fps);
   void SetPreviewFrame(const rtcwin::domain::VideoFrame& frame);
@@ -85,6 +88,8 @@ class PrejoinPage final : public QWidget {
   QPushButton* save_button_ = nullptr;
   rtcwin::muxplayer_adapter::MuxVideoSurface* preview_surface_ = nullptr;
   QString preferred_camera_id_;
+  QString preferred_recording_id_;
+  QString preferred_playout_id_;
   bool preview_active_ = false;
   bool preview_pending_ = false;
   bool busy_ = false;

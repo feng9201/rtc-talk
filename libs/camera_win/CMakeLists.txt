@@ -15,6 +15,7 @@ target_compile_definitions(rtcwin_camera_win PRIVATE
   WIN32_LEAN_AND_MEAN
   NOMINMAX
   _WIN32_WINNT=0x0A00
+  $<$<CONFIG:Debug>:_HAS_ITERATOR_DEBUGGING=0>
 )
 
 target_compile_options(rtcwin_camera_win PRIVATE

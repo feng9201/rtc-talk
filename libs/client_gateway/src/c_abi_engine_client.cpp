@@ -405,6 +405,9 @@ void CAbiEngineClient::SelectPeer(const std::string& uid) { Q_UNUSED(uid); }
 void CAbiEngineClient::RefreshCameras() {
   Submit(QStringLiteral("camera.devices"));
 }
+void CAbiEngineClient::RefreshAudioDevices() {
+  Submit(QStringLiteral("audio.devices"));
+}
 void CAbiEngineClient::StartCameraPreview(int device_index) {
   Submit(QStringLiteral("camera.preview.start"),
          QJsonObject{{QStringLiteral("device_index"), device_index}});
@@ -553,6 +556,25 @@ void CAbiEngineClient::HandleEvent(const QString& method,
         if (!device.name.empty()) devices.push_back(device);
       }
       emit CameraDevicesChanged(devices);
+    } else if (method == QStringLiteral("audio.devices")) {
+      const auto parse_devices = [](const QJsonArray& array) {
+        QVector<domain::AudioDevice> devices;
+        for (const QJsonValue& value : array) {
+          const QJsonObject object = value.toObject();
+          domain::AudioDevice device;
+          device.id =
+              object.value(QStringLiteral("id")).toString().toStdString();
+          device.name =
+              object.value(QStringLiteral("name")).toString().toStdString();
+          device.is_default = devices.isEmpty();
+          device.available = !device.name.empty();
+          if (device.available) devices.push_back(device);
+        }
+        return devices;
+      };
+      emit AudioDevicesChanged(
+          parse_devices(data.value(QStringLiteral("recording")).toArray()),
+          parse_devices(data.value(QStringLiteral("playout")).toArray()));
     } else if (method == QStringLiteral("camera.preview.start")) {
       emit CameraPreviewChanged(
           true, data.value(QStringLiteral("device")).toString(),

@@ -63,3 +63,15 @@ set_target_properties(rtcwin_signaling_smoke PROPERTIES
   CXX_STANDARD_REQUIRED ON
   MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
 )
+if(RTCWIN_BUILD_WEBRTC_MEDIA)
+  add_executable(rtcwin_audio_devices_probe audio_devices_probe.cpp)
+  target_link_libraries(rtcwin_audio_devices_probe PRIVATE rtcwin_webrtc_media)
+  target_compile_options(rtcwin_audio_devices_probe PRIVATE
+    $<$<CXX_COMPILER_ID:MSVC>:/utf-8 /std:c++20 /EHsc /GR /W3>
+  )
+  set_target_properties(rtcwin_audio_devices_probe PROPERTIES
+    CXX_STANDARD 20
+    CXX_STANDARD_REQUIRED ON
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+  )
+endif()

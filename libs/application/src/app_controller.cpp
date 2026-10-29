@@ -30,6 +30,8 @@ AppController::AppController(std::unique_ptr<EngineClient> engine,
           &AppController::Notice);
   connect(engine_.get(), &EngineClient::CameraDevicesChanged, this,
           &AppController::CameraDevicesChanged);
+  connect(engine_.get(), &EngineClient::AudioDevicesChanged, this,
+          &AppController::AudioDevicesChanged);
   connect(engine_.get(), &EngineClient::CameraPreviewChanged, this,
           &AppController::CameraPreviewChanged);
   connect(engine_.get(), &EngineClient::LocalFrameReceived, this,
@@ -152,6 +154,7 @@ void AppController::ApplySnapshot(const domain::SessionSnapshot& snapshot) {
 }
 
 void AppController::RefreshCameras() { engine_->RefreshCameras(); }
+void AppController::RefreshAudioDevices() { engine_->RefreshAudioDevices(); }
 void AppController::StartCameraPreview(int device_index) {
   engine_->StartCameraPreview(device_index);
 }

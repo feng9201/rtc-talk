@@ -32,6 +32,7 @@ class AppController final : public QObject {
   void ReleaseFloor();
   void SelectPeer(const std::string& uid);
   void RefreshCameras();
+  void RefreshAudioDevices();
   void StartCameraPreview(int device_index);
   void StopCameraPreview();
 
@@ -44,6 +45,9 @@ class AppController final : public QObject {
   void Notice(const QString& message, const QString& tone);
   void CameraDevicesChanged(
       const QVector<rtcwin::domain::CameraDevice>& devices);
+  void AudioDevicesChanged(
+      const QVector<rtcwin::domain::AudioDevice>& recording,
+      const QVector<rtcwin::domain::AudioDevice>& playout);
   void CameraPreviewChanged(bool active, const QString& device, int width,
                             int height, int fps);
   void LocalFrameReceived(const rtcwin::domain::VideoFrame& frame);
