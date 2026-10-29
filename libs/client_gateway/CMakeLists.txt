@@ -12,6 +12,7 @@ target_link_libraries(rtcwin_client_gateway
     rtcwin_application
     rtcwin_client_api
     Qt5::Core
+    Qt5::Network
   PRIVATE
     rtcwin_engine
 )

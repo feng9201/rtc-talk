@@ -126,6 +126,10 @@ void MainWindow::ConnectSignals() {
             controller_->StartCameraPreview(device_index);
           });
 
+  connect(room_page_, &RoomPage::SettingsRequested, this, [this] {
+    room_page_->SetControlHint(
+        QStringLiteral("房间设置将在主持人策略模块接入"));
+  });
   connect(room_page_, &RoomPage::LeaveRequested, controller_.get(),
           &application::AppController::LeaveRoom);
   connect(room_page_, &RoomPage::MicToggleRequested, controller_.get(),
@@ -217,6 +221,8 @@ void MainWindow::BeginJoin(const domain::PrejoinOptions& options) {
   UpdateStatus(QStringLiteral("正在建立会话…"), QStringLiteral("info"));
   controller_->BeginJoin(options);
 }
+
+void MainWindow::LeaveRoom() { controller_->LeaveRoom(); }
 
 void MainWindow::EnableCameraPreview() {
   auto_preview_ = true;

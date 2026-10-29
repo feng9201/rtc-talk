@@ -26,6 +26,7 @@ class MainWindow final : public FramelessWindow {
   ~MainWindow() override;
 
   void BeginJoin(const domain::PrejoinOptions& options);
+  void LeaveRoom();
   void ShowRoomPreview();
   void EnableCameraPreview();
 

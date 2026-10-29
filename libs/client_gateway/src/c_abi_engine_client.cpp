@@ -7,6 +7,11 @@
 #include <QJsonDocument>
 #include <QJsonValue>
 #include <QMetaObject>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
+#include <QUrl>
+#include <QUrlQuery>
 
 #include <cstring>
 #include <utility>
@@ -41,6 +46,47 @@ domain::VideoFrame CopyFrame(const rtcwin_frame_view& view) {
   return frame;
 }
 
+domain::RoomRole ParseRole(const QString& role) {
+  return role == QStringLiteral("host") ? domain::RoomRole::Host
+                                        : domain::RoomRole::Member;
+}
+
+domain::TalkMode ParseTalkMode(const QString& mode) {
+  if (mode == QStringLiteral("ptt")) return domain::TalkMode::Ptt;
+  if (mode == QStringLiteral("moderated")) return domain::TalkMode::Moderated;
+  return domain::TalkMode::Free;
+}
+
+domain::PeerState ParsePeer(const QJsonObject& object) {
+  domain::PeerState peer;
+  peer.uid = object.value(QStringLiteral("uid")).toString().toStdString();
+  peer.display_name = object.value(QStringLiteral("display"))
+                          .toString(QString::fromStdString(peer.uid))
+                          .toStdString();
+  peer.role = ParseRole(object.value(QStringLiteral("role")).toString());
+  const QJsonObject audio = object.value(QStringLiteral("audio")).toObject();
+  peer.audio_muted = audio.value(QStringLiteral("muted")).toBool(true);
+  peer.speaking = audio.value(QStringLiteral("speaking")).toBool(false);
+  peer.audio_level = audio.value(QStringLiteral("level")).toDouble(0.0);
+  const QJsonObject video = object.value(QStringLiteral("video")).toObject();
+  peer.camera_on = video.value(QStringLiteral("camera")).toBool(
+      video.value(QStringLiteral("on")).toBool(false));
+  peer.screen_on = video.value(QStringLiteral("screen")).toBool(false);
+  return peer;
+}
+
+void UpsertPeer(std::vector<domain::PeerState>* peers,
+                const domain::PeerState& peer) {
+  if (peer.uid.empty()) return;
+  for (domain::PeerState& current : *peers) {
+    if (current.uid == peer.uid) {
+      current = peer;
+      return;
+    }
+  }
+  peers->push_back(peer);
+}
+
 }  // namespace
 
 struct CAbiEngineClient::CallbackContext {
@@ -57,6 +103,7 @@ CAbiEngineClient::CAbiEngineClient(QObject* parent) : EngineClient(parent) {
   options.on_event = &CAbiEngineClient::OnEvent;
   options.on_remote_frame = &CAbiEngineClient::OnRemoteFrame;
   options.on_local_frame = &CAbiEngineClient::OnLocalFrame;
+  network_ = new QNetworkAccessManager(this);
   handle_ = rtcwin_create(&options);
 }
 
@@ -70,6 +117,254 @@ CAbiEngineClient::~CAbiEngineClient() {
 
 void CAbiEngineClient::ConnectAndJoin(
     const domain::PrejoinOptions& options) {
+  snapshot_ = {};
+  snapshot_.room_id = options.room_id;
+  snapshot_.self_uid = options.user_id;
+  snapshot_.self_display_name = options.user_id;
+  snapshot_.talk_mode = options.talk_mode;
+  snapshot_.policy.talk_mode = options.talk_mode;
+  snapshot_.connection = domain::ConnectionPhase::Connecting;
+  snapshot_.join = domain::JoinPhase::Joining;
+  if (!options.fetch_dev_token || !options.token.empty()) {
+    SubmitConnectAndJoin(options, QString::fromStdString(options.token));
+    return;
+  }
+
+  const QUrl signaling(QString::fromStdString(options.signaling_url));
+  QUrl endpoint;
+  endpoint.setScheme(signaling.scheme() == QStringLiteral("wss")
+                         ? QStringLiteral("https")
+                         : QStringLiteral("http"));
+  endpoint.setHost(signaling.host());
+  endpoint.setPort(signaling.port());
+  endpoint.setPath(QStringLiteral("/dev/token"));
+  QUrlQuery query;
+  query.addQueryItem(QStringLiteral("uid"),
+                     QString::fromStdString(options.user_id));
+  query.addQueryItem(QStringLiteral("rooms"),
+                     QString::fromStdString(options.room_id));
+  endpoint.setQuery(query);
+
+  QNetworkReply* reply = network_->get(QNetworkRequest(endpoint));
+  connect(reply, &QNetworkReply::finished, this,
+          [this, reply, options] {
+            const QByteArray body = reply->readAll();
+            const QNetworkReply::NetworkError reply_error = reply->error();
+            const QString reply_text = reply->errorString();
+            reply->deleteLater();
+            if (reply_error != QNetworkReply::NoError) {
+              domain::AppError error;
+              error.domain = domain::ErrorDomain::Network;
+              error.code = 1102;
+              error.operation = "dev_token";
+              error.message = "获取开发 Token 失败";
+              error.detail = reply_text.toStdString();
+              emit ErrorOccurred(error);
+              return;
+            }
+            const QJsonObject object =
+                QJsonDocument::fromJson(body).object();
+            const QString token =
+                object.value(QStringLiteral("token")).toString();
+            if (token.isEmpty()) {
+              domain::AppError error;
+              error.domain = domain::ErrorDomain::Authentication;
+              error.code = 1103;
+              error.operation = "dev_token";
+              error.message = "开发 Token 响应无效";
+              error.detail = "missing token";
+              emit ErrorOccurred(error);
+              return;
+            }
+            SubmitConnectAndJoin(options, token);
+          });
+}
+
+void CAbiEngineClient::ApplyJoinData(const QJsonObject& data) {
+  snapshot_.connection = domain::ConnectionPhase::Ready;
+  snapshot_.join = domain::JoinPhase::Joined;
+  snapshot_.media_enabled = false;
+  snapshot_.media_mode =
+      data.value(QStringLiteral("media_mode")).toString().toStdString();
+  const QJsonObject room = data.value(QStringLiteral("room")).toObject();
+  if (!room.value(QStringLiteral("room_id")).toString().isEmpty()) {
+    snapshot_.room_id =
+        room.value(QStringLiteral("room_id")).toString().toStdString();
+  }
+  snapshot_.self_role =
+      ParseRole(room.value(QStringLiteral("role")).toString());
+  const QJsonObject policy = room.value(QStringLiteral("policy")).toObject();
+  if (!policy.isEmpty()) {
+    snapshot_.policy.talk_mode = ParseTalkMode(
+        policy.value(QStringLiteral("talk_mode")).toString());
+    snapshot_.policy.max_speakers =
+        policy.value(QStringLiteral("max_speakers")).toInt();
+    snapshot_.policy.ptt_max_hold_seconds =
+        policy.value(QStringLiteral("ptt_max_hold_sec"))
+            .toInt(snapshot_.policy.ptt_max_hold_seconds);
+    snapshot_.policy.ptt_queue =
+        policy.value(QStringLiteral("ptt_queue"))
+            .toBool(snapshot_.policy.ptt_queue);
+    snapshot_.policy.max_peers =
+        policy.value(QStringLiteral("max_peers"))
+            .toInt(snapshot_.policy.max_peers);
+    snapshot_.policy.video_enabled =
+        policy.value(QStringLiteral("video_enabled"))
+            .toBool(snapshot_.policy.video_enabled);
+    snapshot_.policy.video_max_publishers =
+        policy.value(QStringLiteral("video_max_publishers"))
+            .toInt(snapshot_.policy.video_max_publishers);
+  }
+  snapshot_.talk_mode = snapshot_.policy.talk_mode;
+  const QJsonObject floor = data.value(QStringLiteral("floor")).toObject();
+  snapshot_.floor.holder_uid =
+      floor.value(QStringLiteral("holder")).toString().toStdString();
+  snapshot_.floor.queue.clear();
+  for (const QJsonValue& value :
+       floor.value(QStringLiteral("queue")).toArray()) {
+    snapshot_.floor.queue.push_back(value.toString().toStdString());
+  }
+  snapshot_.floor.self_has_floor =
+      snapshot_.floor.holder_uid == snapshot_.self_uid;
+  snapshot_.peers.clear();
+  for (const QJsonValue& value :
+       data.value(QStringLiteral("peers")).toArray()) {
+    const domain::PeerState peer = ParsePeer(value.toObject());
+    if (!peer.uid.empty() && peer.uid != snapshot_.self_uid) {
+      UpsertPeer(&snapshot_.peers, peer);
+    }
+  }
+  emit SnapshotChanged(snapshot_);
+}
+
+void CAbiEngineClient::ApplyRoomNotification(const QString& method,
+                                             const QJsonObject& data) {
+  if (method == QStringLiteral("room.peerJoined")) {
+    const domain::PeerState peer = ParsePeer(data);
+    if (!peer.uid.empty() && peer.uid != snapshot_.self_uid) {
+      UpsertPeer(&snapshot_.peers, peer);
+    }
+  } else if (method == QStringLiteral("room.peerLeft")) {
+    const std::string uid =
+        data.value(QStringLiteral("uid")).toString().toStdString();
+    for (auto it = snapshot_.peers.begin(); it != snapshot_.peers.end(); ++it) {
+      if (it->uid == uid) {
+        snapshot_.peers.erase(it);
+        break;
+      }
+    }
+  } else if (method == QStringLiteral("room.peerUpdated")) {
+    const std::string uid =
+        data.value(QStringLiteral("uid")).toString().toStdString();
+    const bool is_self = uid == snapshot_.self_uid;
+    domain::PeerState* peer = nullptr;
+    if (is_self) {
+      if (data.contains(QStringLiteral("role"))) {
+        snapshot_.self_role =
+            ParseRole(data.value(QStringLiteral("role")).toString());
+      }
+    } else {
+      for (domain::PeerState& current : snapshot_.peers) {
+        if (current.uid == uid) {
+          peer = &current;
+          break;
+        }
+      }
+      if (peer == nullptr && !uid.empty()) {
+        domain::PeerState created;
+        created.uid = uid;
+        created.display_name = data.value(QStringLiteral("display"))
+                                   .toString(QString::fromStdString(uid))
+                                   .toStdString();
+        snapshot_.peers.push_back(created);
+        peer = &snapshot_.peers.back();
+        if (data.contains(QStringLiteral("role"))) {
+          peer->role = ParseRole(data.value(QStringLiteral("role")).toString());
+        }
+      }
+    }
+    if (peer != nullptr && data.contains(QStringLiteral("audio"))) {
+      const QJsonObject audio = data.value(QStringLiteral("audio")).toObject();
+      if (audio.contains(QStringLiteral("muted"))) {
+        peer->audio_muted =
+            audio.value(QStringLiteral("muted")).toBool(peer->audio_muted);
+      }
+      if (audio.contains(QStringLiteral("speaking"))) {
+        peer->speaking =
+            audio.value(QStringLiteral("speaking")).toBool(peer->speaking);
+      }
+      if (audio.contains(QStringLiteral("level"))) {
+        peer->audio_level =
+            audio.value(QStringLiteral("level")).toDouble(peer->audio_level);
+      }
+    }
+    if (peer != nullptr && data.contains(QStringLiteral("video"))) {
+      const QJsonObject video = data.value(QStringLiteral("video")).toObject();
+      if (video.contains(QStringLiteral("camera"))) {
+        peer->camera_on =
+            video.value(QStringLiteral("camera")).toBool(peer->camera_on);
+      }
+      if (video.contains(QStringLiteral("screen"))) {
+        peer->screen_on =
+            video.value(QStringLiteral("screen")).toBool(peer->screen_on);
+      }
+    }
+  } else if (method == QStringLiteral("room.policyChanged")) {
+    snapshot_.policy.talk_mode = ParseTalkMode(
+        data.value(QStringLiteral("talk_mode")).toString());
+    snapshot_.talk_mode = snapshot_.policy.talk_mode;
+  } else if (method == QStringLiteral("room.mediaMode")) {
+    snapshot_.media_mode =
+        data.value(QStringLiteral("mode")).toString().toStdString();
+  } else if (method == QStringLiteral("floor.state")) {
+    snapshot_.floor.holder_uid =
+        data.value(QStringLiteral("holder")).toString().toStdString();
+    snapshot_.floor.queue.clear();
+    for (const QJsonValue& value :
+         data.value(QStringLiteral("queue")).toArray()) {
+      snapshot_.floor.queue.push_back(value.toString().toStdString());
+    }
+    snapshot_.floor.self_has_floor =
+        snapshot_.floor.holder_uid == snapshot_.self_uid;
+  } else if (method == QStringLiteral("room.activeSpeaker")) {
+    const std::string uid =
+        data.value(QStringLiteral("uid")).toString().toStdString();
+    for (domain::PeerState& peer : snapshot_.peers) {
+      peer.speaking = peer.uid == uid;
+    }
+  } else if (method == QStringLiteral("room.audioLevels")) {
+    for (const QJsonValue& value :
+         data.value(QStringLiteral("levels")).toArray()) {
+      const QJsonObject level = value.toObject();
+      const std::string uid =
+          level.value(QStringLiteral("uid")).toString().toStdString();
+      for (domain::PeerState& peer : snapshot_.peers) {
+        if (peer.uid == uid) {
+          peer.audio_level =
+              level.value(QStringLiteral("level")).toDouble();
+          break;
+        }
+      }
+    }
+  } else if (method == QStringLiteral("room.closed")) {
+    snapshot_ = {};
+    emit SnapshotChanged(snapshot_);
+    emit Left();
+    return;
+  } else if (method == QStringLiteral("session.closed")) {
+    if (snapshot_.join == domain::JoinPhase::Joined) {
+      snapshot_ = {};
+      emit SnapshotChanged(snapshot_);
+      emit Left();
+    }
+    return;
+  } else {
+    return;
+  }
+  emit SnapshotChanged(snapshot_);
+}
+void CAbiEngineClient::SubmitConnectAndJoin(
+    const domain::PrejoinOptions& options, const QString& token) {
   QJsonObject payload;
   payload.insert(QStringLiteral("url"),
                  QString::fromStdString(options.signaling_url));
@@ -77,8 +372,7 @@ void CAbiEngineClient::ConnectAndJoin(
                  QString::fromStdString(options.user_id));
   payload.insert(QStringLiteral("room_id"),
                  QString::fromStdString(options.room_id));
-  payload.insert(QStringLiteral("token"),
-                 QString::fromStdString(options.token));
+  payload.insert(QStringLiteral("token"), token);
   payload.insert(QStringLiteral("fetch_dev_token"), options.fetch_dev_token);
   payload.insert(QStringLiteral("volume"), options.volume);
   Submit(QStringLiteral("session.connectAndJoin"), payload);
@@ -223,6 +517,23 @@ void CAbiEngineClient::HandleEvent(const QString& method,
                           .toString()
                           .toStdString();
       emit ErrorOccurred(error);
+    } else if (method == QStringLiteral("session.error")) {
+      const QJsonObject data =
+          event.value(QStringLiteral("data")).toObject();
+      domain::AppError error;
+      error.domain = domain::ErrorDomain::Network;
+      error.code = data.value(QStringLiteral("code")).toInt(480);
+      error.operation = "signaling";
+      error.message =
+          data.value(QStringLiteral("message")).toString().toStdString();
+      emit ErrorOccurred(error);
+    } else if (method == QStringLiteral("session.ready")) {
+      emit Notice(QStringLiteral("信令连接已就绪"), QStringLiteral("ok"));
+    } else if (method.startsWith(QStringLiteral("room.")) ||
+               method == QStringLiteral("floor.state") ||
+               method == QStringLiteral("session.closed")) {
+      ApplyRoomNotification(
+          method, event.value(QStringLiteral("data")).toObject());
     }
     return;
   }
@@ -250,7 +561,16 @@ void CAbiEngineClient::HandleEvent(const QString& method,
           data.value(QStringLiteral("fps")).toInt());
     } else if (method == QStringLiteral("camera.preview.stop")) {
       emit CameraPreviewChanged(false, {}, 0, 0, 0);
+    } else if (method == QStringLiteral("session.connectAndJoin")) {
+      ApplyJoinData(data);
+      emit Joined();
     } else if (method == QStringLiteral("room.leave")) {
+      snapshot_ = {};
+      emit SnapshotChanged(snapshot_);
+      emit Left();
+    } else if (method == QStringLiteral("session.disconnect")) {
+      snapshot_ = {};
+      emit SnapshotChanged(snapshot_);
       emit Left();
     }
     return;

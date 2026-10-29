@@ -27,6 +27,7 @@ class RoomPage final : public QWidget {
   void SetState(const domain::SessionSnapshot& state);
   void SetPreviewMode(bool preview);
   void SetBusy(bool busy);
+  void SetControlHint(const QString& text);
   const domain::SessionSnapshot& state() const { return state_; }
 
  signals:
@@ -36,6 +37,7 @@ class RoomPage final : public QWidget {
   void CameraToggleRequested();
   void ShareToggleRequested();
   void DeafenToggleRequested();
+  void SettingsRequested();
   void LeaveRequested();
   void MemberSelected(const QString& uid);
   void GrantFloorRequested(const QString& uid, bool allow);
@@ -76,6 +78,7 @@ class RoomPage final : public QWidget {
   ControlButton* camera_ = nullptr;
   ControlButton* share_ = nullptr;
   ControlButton* listen_ = nullptr;
+  ControlButton* settings_ = nullptr;
   ControlButton* leave_ = nullptr;
   QLabel* control_hint_ = nullptr;
   QScrollArea* side_scroll_ = nullptr;

@@ -13,6 +13,9 @@ AppController::AppController(std::unique_ptr<EngineClient> engine,
           &AppController::ApplySnapshot);
   connect(engine_.get(), &EngineClient::Joined, this, [this] {
     busy_ = false;
+    snapshot_.connection = domain::ConnectionPhase::Ready;
+    snapshot_.join = domain::JoinPhase::Joined;
+    emit SnapshotChanged(snapshot_);
     emit BusyChanged(false, QStringLiteral("已进入房间"));
     emit Joined();
   });

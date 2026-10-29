@@ -31,10 +31,14 @@ endforeach()
 
 find_package(Qt5 5.15 REQUIRED COMPONENTS Core Gui Widgets Network OpenGL)
 find_package(OpenGL REQUIRED)
+find_package(asio CONFIG REQUIRED)
+find_package(nlohmann_json CONFIG REQUIRED)
+find_package(Threads REQUIRED)
 
 add_subdirectory(libs/domain)
 add_subdirectory(libs/application)
 add_subdirectory(libs/client_api)
+add_subdirectory(libs/signaling)
 add_subdirectory(libs/camera_win)
 
 if(RTCWIN_BUILD_MUXPLAYER)

@@ -2,11 +2,15 @@
 
 #include "rtcwin/ui/theme/theme.h"
 
-#include <QToolButton>
+#include <QWidget>
+
+class QLabel;
 
 namespace rtcwin::ui {
 
-class ControlButton final : public QToolButton {
+class IconButton;
+
+class ControlButton final : public QWidget {
   Q_OBJECT
 
  public:
@@ -16,9 +20,17 @@ class ControlButton final : public QToolButton {
   void SetIcon(theme::Icon icon);
   void SetText(const QString& text);
   void SetTone(const QString& tone);
+  void setEnabledState(bool enabled);
+  IconButton* button() const { return button_; }
+
+ signals:
+  void clicked();
+  void pressed();
+  void released();
 
  private:
-  theme::Icon icon_;
+  IconButton* button_ = nullptr;
+  QLabel* label_ = nullptr;
 };
 
 }  // namespace rtcwin::ui

@@ -54,3 +54,33 @@ $env:PATH = "$env:QTDIR\bin;" + $env:PATH
 - WebRTC signaling and encoding are not part of S1
 - Local preview does not decode a loopback H.264 stream
 - WGL/D3D11 zero-copy remains the required follow-up rendering backend
+## S2 signaling validation
+
+The current development environment uses:
+
+- Signaling: `ws://47.117.159.193:8080/talk/v1/ws`
+- Dev token: `GET /dev/token?uid=<uid>&rooms=<room>`
+
+Direct signaling smoke:
+
+```powershell
+$env:RTCWIN_SIGNALING_TOKEN = "<dev-token>"
+.\build\windows-x64\bin\Release\rtcwin_signaling_smoke.exe `
+  --url ws://47.117.159.193:8080/talk/v1/ws `
+  --uid rtcwin-smoke `
+  --room rtcwin-smoke
+```
+
+Full Qt UI auto-join diagnostics:
+
+```powershell
+.\build\windows-x64\bin\Release\rtc-talk.exe `
+  --auto-join-url ws://47.117.159.193:8080/talk/v1/ws `
+  --auto-join-room rtcwin-ui-smoke `
+  --auto-join-uid rtcwin-ui-smoke `
+  --auto-join-dev-token
+```
+
+The UI path fetches `/dev/token`, executes `session.hello`, `room.join`, and
+updates the room snapshot and member list. `room.leave` returns to the prejoin
+page.

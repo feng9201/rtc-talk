@@ -15,7 +15,7 @@ target_compile_definitions(rtcwin_engine PRIVATE RTCWIN_ENGINE_EXPORTS)
 target_compile_options(rtcwin_engine PRIVATE
   $<$<CXX_COMPILER_ID:MSVC>:/utf-8 /EHsc /GR /W3>
 )
-target_link_libraries(rtcwin_engine PRIVATE rtcwin_camera_win)
+target_link_libraries(rtcwin_engine PRIVATE rtcwin_camera_win rtcwin_signaling)
 set_target_properties(rtcwin_engine PROPERTIES
   CXX_STANDARD 17
   CXX_STANDARD_REQUIRED ON

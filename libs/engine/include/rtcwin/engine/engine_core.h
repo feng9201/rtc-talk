@@ -2,11 +2,15 @@
 
 #include "rtcwin/camera_win/camera_capture.h"
 #include "rtcwin/client_api.h"
+#include "rtcwin/signaling/signaling_client.h"
+
+#include <asio.hpp>
 
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -35,6 +39,11 @@ class EngineCore final {
   void HandleCameraDevices(const Command& command);
   void HandleCameraPreviewStart(const Command& command);
   void HandleCameraPreviewStop(const Command& command);
+  void HandleSessionConnectAndJoin(const Command& command);
+  void HandleRoomLeave(const Command& command);
+  void HandleSessionDisconnect(const Command& command);
+  void ScheduleHeartbeat(int seconds);
+  void StopSignaling();
   void OnCameraFrame(const camera_win::I420Frame& frame);
   void EmitResponse(uint64_t id, const std::string& method, bool ok,
                     int error_code, const std::string& message,
@@ -52,6 +61,22 @@ class EngineCore final {
   std::condition_variable cv_;
   std::deque<Command> commands_;
   bool stopping_ = false;
+  asio::io_context signaling_io_;
+  std::unique_ptr<asio::executor_work_guard<asio::io_context::executor_type>>
+      signaling_work_;
+  std::thread signaling_thread_;
+  std::unique_ptr<signaling::SignalingClient> signaling_;
+  std::atomic<uint64_t> session_command_id_{0};
+  std::mutex session_mutex_;
+  std::string session_url_;
+  std::string session_token_;
+  std::string session_uid_;
+  std::string session_room_id_;
+  std::string session_display_;
+  bool session_ready_ = false;
+  bool room_joined_ = false;
+  int heartbeat_seconds_ = 15;
+  asio::steady_timer heartbeat_timer_{signaling_io_};
   camera_win::CameraCaptureSession camera_;
 };
 

@@ -47,6 +47,21 @@ int main(int argc, char** argv) {
   parser.addOption(QCommandLineOption(
       QStringLiteral("auto-preview"),
       QStringLiteral("设备枚举完成后自动启动 muxPlayer 本地预览")));
+  parser.addOption(QCommandLineOption(
+      QStringLiteral("auto-join-url"), QStringLiteral("联调信令地址"),
+      QStringLiteral("url")));
+  parser.addOption(QCommandLineOption(
+      QStringLiteral("auto-join-room"), QStringLiteral("联调房间 ID"),
+      QStringLiteral("room")));
+  parser.addOption(QCommandLineOption(
+      QStringLiteral("auto-join-uid"), QStringLiteral("联调用户 ID"),
+      QStringLiteral("uid")));
+  parser.addOption(QCommandLineOption(
+      QStringLiteral("auto-join-dev-token"),
+      QStringLiteral("联调用 /dev/token 获取开发凭证")));
+  parser.addOption(QCommandLineOption(
+      QStringLiteral("auto-leave-ms"), QStringLiteral("入房后自动离房间隔"),
+      QStringLiteral("ms")));
   parser.process(app);
 
   rtcwin::ui::theme::Apply(app);
@@ -69,6 +84,32 @@ int main(int argc, char** argv) {
                        &rtcwin::ui::MainWindow::ShowRoomPreview);
   } else if (parser.isSet(QStringLiteral("auto-preview"))) {
     window.EnableCameraPreview();
+  }
+
+  if (parser.isSet(QStringLiteral("auto-join-url")) &&
+      parser.isSet(QStringLiteral("auto-join-room")) &&
+      parser.isSet(QStringLiteral("auto-join-uid"))) {
+    rtcwin::domain::PrejoinOptions options;
+    options.signaling_url =
+        parser.value(QStringLiteral("auto-join-url")).toStdString();
+    options.room_id =
+        parser.value(QStringLiteral("auto-join-room")).toStdString();
+    options.user_id =
+        parser.value(QStringLiteral("auto-join-uid")).toStdString();
+    options.fetch_dev_token =
+        parser.isSet(QStringLiteral("auto-join-dev-token"));
+    options.audio_backend = rtcwin::domain::AudioBackend::None;
+    options.media_mode = rtcwin::domain::MediaModePreference::Sfu;
+    window.BeginJoin(options);
+    if (parser.isSet(QStringLiteral("auto-leave-ms"))) {
+      bool leave_ok = false;
+      const int leave_ms =
+          parser.value(QStringLiteral("auto-leave-ms")).toInt(&leave_ok);
+      if (leave_ok && leave_ms >= 0) {
+        QTimer::singleShot(leave_ms, &window,
+                           &rtcwin::ui::MainWindow::LeaveRoom);
+      }
+    }
   }
 
   const QString screenshot = parser.value(QStringLiteral("screenshot"));

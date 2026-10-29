@@ -8,6 +8,7 @@ set(RTCWIN_UI_SOURCES
   include/rtcwin/ui/video/video_surface.h
   include/rtcwin/ui/video/video_tile.h
   include/rtcwin/ui/widgets/control_button.h
+  include/rtcwin/ui/widgets/icon_button.h
   include/rtcwin/ui/widgets/member_row.h
   include/rtcwin/ui/widgets/pill.h
   include/rtcwin/ui/widgets/segmented_control.h
@@ -20,6 +21,7 @@ set(RTCWIN_UI_SOURCES
   src/video/video_surface.cpp
   src/video/video_tile.cpp
   src/widgets/control_button.cpp
+  src/widgets/icon_button.cpp
   src/widgets/member_row.cpp
   src/widgets/pill.cpp
   src/widgets/segmented_control.cpp

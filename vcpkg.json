@@ -5,7 +5,9 @@
     {
       "name": "ffmpeg",
       "default-features": false
-    }
+    },
+    "asio",
+    "nlohmann-json"
   ],
   "overrides": [
     {

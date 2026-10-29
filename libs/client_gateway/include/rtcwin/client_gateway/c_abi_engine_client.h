@@ -9,6 +9,8 @@
 #include <memory>
 #include <mutex>
 
+class QNetworkAccessManager;
+
 struct rtcwin_handle;
 struct rtcwin_frame_view;
 
@@ -43,10 +45,16 @@ class CAbiEngineClient final : public application::EngineClient {
   uint64_t Submit(const QString& method,
                   const QJsonObject& payload = QJsonObject());
   void HandleEvent(const QString& method, const QJsonObject& event);
+  void SubmitConnectAndJoin(const domain::PrejoinOptions& options,
+                            const QString& token);
+  void ApplyJoinData(const QJsonObject& data);
+  void ApplyRoomNotification(const QString& method, const QJsonObject& data);
   void DrainLatestLocalFrame();
 
   std::unique_ptr<CallbackContext> context_;
   rtcwin_handle* handle_ = nullptr;
+  QNetworkAccessManager* network_ = nullptr;
+  domain::SessionSnapshot snapshot_;
   std::mutex local_frame_mutex_;
   std::shared_ptr<domain::VideoFrame> latest_local_frame_;
   std::atomic<bool> local_frame_post_pending_{false};

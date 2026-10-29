@@ -1,8 +1,8 @@
 # rtc-talk-win 详细开发计划（muxPlayer 优先）
 
-> 状态：S1 已完成，P5 UI 已与 `talk-desktop.exe` 对齐，待用户验收；S2 未开始。
-> 日期：2026-10-28
-> 当前代码基线：`rtc-talk-win@d49836f` + S1 implementation commit
+> 状态：S1 已完成并推送；S2 信令、真实房间生命周期和成员快照已完成，待用户验收；S3 未开始。
+> 日期：2026-10-29
+> 当前代码基线：`rtc-talk-win@de3a7f1` + S2 implementation
 > 第一验收目标：完成 muxPlayer 接入，并用本机摄像头完成真实预览联调。
 > 约束：WebRTC 音频仍由 WebRTC AudioDeviceModule 处理；muxPlayer 只作为视频渲染基础设施。
 
@@ -19,7 +19,9 @@ S1 已完成：
 - FFmpeg 依赖由私有 vcpkg registry 固定版本获取；Qt/VS 仅作为开发环境。
 - P5 MEDIA 预入会 UI、主题资源、胶囊控件、窗口控件和摄像头重新扫描已移植。
 - 已修复静态 UI 库 QRC 资源未初始化导致 `theme.qss` 不生效的问题。
-- Release、Debug 构建通过，CTest 1/1 通过，真实摄像头出画已验证。
+- S2 已完成 WebSocket、开发 token、session.hello、room.join/leave、心跳和成员快照。
+- P5 房间页圆形控制栏及设置按钮已对齐。
+- Release、Debug 构建通过，CTest 2/2 通过，真实摄像头和服务端联调已验证。
 
 S1 后剩余工作：
 

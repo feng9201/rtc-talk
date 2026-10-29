@@ -1,40 +1,32 @@
 #include "rtcwin/ui/widgets/control_button.h"
 
-#include <QStyle>
-#include <QVariant>
+#include "rtcwin/ui/widgets/icon_button.h"
+
+#include <QLabel>
+#include <QVBoxLayout>
 
 namespace rtcwin::ui {
 
 ControlButton::ControlButton(theme::Icon icon, const QString& text,
                              QWidget* parent)
-    : QToolButton(parent), icon_(icon) {
-  setObjectName(QStringLiteral("ControlButton"));
-  setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
-  setIconSize(QSize(22, 22));
-  setMinimumSize(66, 62);
-  setCursor(Qt::PointingHandCursor);
-  SetText(text);
-  SetTone(QStringLiteral("default"));
+    : QWidget(parent), button_(new IconButton(icon, this)),
+      label_(new QLabel(text, this)) {
+  auto* layout = new QVBoxLayout(this);
+  layout->setContentsMargins(0, 0, 0, 0);
+  layout->setSpacing(5);
+  layout->setAlignment(Qt::AlignHCenter);
+  layout->addWidget(button_, 0, Qt::AlignHCenter);
+  label_->setAlignment(Qt::AlignCenter);
+  label_->setObjectName(QStringLiteral("ControlLabel"));
+  layout->addWidget(label_);
+  connect(button_, &IconButton::clicked, this, &ControlButton::clicked);
+  connect(button_, &IconButton::pressed, this, &ControlButton::pressed);
+  connect(button_, &IconButton::released, this, &ControlButton::released);
 }
 
-void ControlButton::SetIcon(theme::Icon icon) {
-  icon_ = icon;
-  const QColor color =
-      property("tone").toString() == QStringLiteral("active")
-          ? QColor(QStringLiteral("#55c2ff"))
-          : QColor(QStringLiteral("#d6e2ea"));
-  setIcon(QIcon(theme::Pixmap(icon_, 22, color)));
-}
-
-void ControlButton::SetText(const QString& text) {
-  setText(text);
-}
-
-void ControlButton::SetTone(const QString& tone) {
-  setProperty("tone", tone);
-  style()->unpolish(this);
-  style()->polish(this);
-  SetIcon(icon_);
-}
+void ControlButton::SetIcon(theme::Icon icon) { button_->SetIcon(icon); }
+void ControlButton::SetText(const QString& text) { label_->setText(text); }
+void ControlButton::SetTone(const QString& tone) { button_->SetTone(tone); }
+void ControlButton::setEnabledState(bool enabled) { setEnabled(enabled); }
 
 }  // namespace rtcwin::ui

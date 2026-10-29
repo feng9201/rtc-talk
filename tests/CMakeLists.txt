@@ -41,3 +41,25 @@ add_custom_command(TARGET rtcwin_camera_preview_smoke POST_BUILD
           $<TARGET_FILE:rtcwin_engine>
           $<TARGET_FILE_DIR:rtcwin_camera_preview_smoke>
 )
+add_executable(rtcwin_signaling_tests signaling_protocol_test.cpp)
+target_link_libraries(rtcwin_signaling_tests PRIVATE rtcwin_signaling)
+target_compile_options(rtcwin_signaling_tests PRIVATE
+  $<$<CXX_COMPILER_ID:MSVC>:/utf-8 /EHsc /GR /W3>
+)
+set_target_properties(rtcwin_signaling_tests PROPERTIES
+  CXX_STANDARD 17
+  CXX_STANDARD_REQUIRED ON
+  MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+)
+add_test(NAME rtcwin_signaling_tests COMMAND rtcwin_signaling_tests)
+
+add_executable(rtcwin_signaling_smoke signaling_smoke.cpp)
+target_link_libraries(rtcwin_signaling_smoke PRIVATE rtcwin_signaling)
+target_compile_options(rtcwin_signaling_smoke PRIVATE
+  $<$<CXX_COMPILER_ID:MSVC>:/utf-8 /EHsc /GR /W3>
+)
+set_target_properties(rtcwin_signaling_smoke PROPERTIES
+  CXX_STANDARD 17
+  CXX_STANDARD_REQUIRED ON
+  MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+)

@@ -193,30 +193,35 @@ QWidget* RoomPage::BuildControlBar() {
   layout->addStretch(1);
   listen_ = new ControlButton(theme::Icon::Headphones,
                               QStringLiteral("收听"), bar);
+  settings_ = new ControlButton(theme::Icon::Settings,
+                                QStringLiteral("设置"), bar);
   leave_ = new ControlButton(theme::Icon::Leave,
                              QStringLiteral("离开"), bar);
   leave_->SetTone(QStringLiteral("danger"));
   layout->addWidget(listen_);
+  layout->addWidget(settings_);
   layout->addWidget(leave_);
 
-  connect(mic_, &QToolButton::clicked, this, [this] {
+  connect(mic_, &ControlButton::clicked, this, [this] {
     if (state_.talk_mode == domain::TalkMode::Free) {
       emit MicToggleRequested();
     }
   });
-  connect(mic_, &QToolButton::pressed, this, [this] {
+  connect(mic_, &ControlButton::pressed, this, [this] {
     if (state_.talk_mode != domain::TalkMode::Free) emit MicFloorPressed();
   });
-  connect(mic_, &QToolButton::released, this, [this] {
+  connect(mic_, &ControlButton::released, this, [this] {
     if (state_.talk_mode != domain::TalkMode::Free) emit MicFloorReleased();
   });
-  connect(camera_, &QToolButton::clicked, this,
+  connect(camera_, &ControlButton::clicked, this,
           &RoomPage::CameraToggleRequested);
-  connect(share_, &QToolButton::clicked, this,
+  connect(share_, &ControlButton::clicked, this,
           &RoomPage::ShareToggleRequested);
-  connect(listen_, &QToolButton::clicked, this,
+  connect(listen_, &ControlButton::clicked, this,
           &RoomPage::DeafenToggleRequested);
-  connect(leave_, &QToolButton::clicked, this, &RoomPage::LeaveRequested);
+  connect(settings_, &ControlButton::clicked, this,
+          &RoomPage::SettingsRequested);
+  connect(leave_, &ControlButton::clicked, this, &RoomPage::LeaveRequested);
   return bar;
 }
 
@@ -276,6 +281,10 @@ void RoomPage::SetPreviewMode(bool preview) {
   preview_mode_ = preview;
   UpdateHeader();
   UpdateControls();
+}
+
+void RoomPage::SetControlHint(const QString& text) {
+  if (control_hint_ != nullptr) control_hint_->setText(text);
 }
 
 void RoomPage::SetBusy(bool busy) {
@@ -338,6 +347,11 @@ void RoomPage::UpdateControls() {
   if (camera_ != nullptr) camera_->setEnabled(media && !busy_);
   if (share_ != nullptr) share_->setEnabled(media && !busy_);
   if (listen_ != nullptr) listen_->setEnabled(media && !busy_);
+  if (settings_ != nullptr) {
+    settings_->setEnabled(joined &&
+                          state_.self_role == domain::RoomRole::Host &&
+                          !busy_);
+  }
   if (leave_ != nullptr) leave_->setEnabled(joined && !busy_);
   if (filter_ != nullptr) filter_->SetEnabled(joined || preview_mode_);
   if (layout_ != nullptr) layout_->SetEnabled(joined || preview_mode_);
