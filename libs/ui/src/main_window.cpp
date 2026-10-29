@@ -227,6 +227,8 @@ void MainWindow::BeginJoin(const domain::PrejoinOptions& options) {
 
 void MainWindow::LeaveRoom() { controller_->LeaveRoom(); }
 
+void MainWindow::ToggleMicrophone() { controller_->ToggleMic(); }
+
 void MainWindow::EnableCameraPreview() {
   auto_preview_ = true;
   if (prejoin_page_->SelectedCameraIndex() >= 0) {

@@ -3,10 +3,12 @@
 #include "rtcwin/client_api.h"
 
 #include <QByteArray>
+#include <QDebug>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonValue>
 #include <QMetaObject>
+#include <QTimer>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
@@ -18,6 +20,53 @@
 
 namespace rtcwin::client_gateway {
 namespace {
+
+// 联调诊断：RTCWIN_TRACE_EVENTS=1 时在 stderr 打印引擎事件。
+// 事件信封不含 token、SDP、ICE 凭证，符合 handover §13.2 的日志红线。
+bool EventTraceEnabled() {
+  static const bool enabled = [] {
+    const QByteArray value =
+        qgetenv("RTCWIN_TRACE_EVENTS").trimmed().toLower();
+    return value == "1" || value == "true" || value == "yes" ||
+           value == "on";
+  }();
+  return enabled;
+}
+
+bool SensitiveTraceKey(const QString& key) {
+  const QString lower = key.toLower();
+  return lower == QStringLiteral("token") ||
+         lower == QStringLiteral("authorization") ||
+         lower == QStringLiteral("credential") ||
+         lower == QStringLiteral("password") ||
+         lower == QStringLiteral("sdp") ||
+         lower == QStringLiteral("candidate");
+}
+
+QJsonValue RedactTraceValue(const QJsonValue& value) {
+  if (value.isObject()) {
+    const QJsonObject source = value.toObject();
+    QJsonObject result;
+    for (auto it = source.begin(); it != source.end(); ++it) {
+      result.insert(it.key(), SensitiveTraceKey(it.key())
+                                  ? QJsonValue(QStringLiteral("<redacted>"))
+                                  : RedactTraceValue(it.value()));
+    }
+    return result;
+  }
+  if (value.isArray()) {
+    QJsonArray result;
+    for (const QJsonValue& item : value.toArray()) {
+      result.push_back(RedactTraceValue(item));
+    }
+    return result;
+  }
+  return value;
+}
+
+QJsonObject TraceObject(const QJsonObject& object) {
+  return RedactTraceValue(object).toObject();
+}
 
 domain::VideoFrame CopyFrame(const rtcwin_frame_view& view) {
   domain::VideoFrame frame;
@@ -105,6 +154,20 @@ CAbiEngineClient::CAbiEngineClient(QObject* parent) : EngineClient(parent) {
   options.on_local_frame = &CAbiEngineClient::OnLocalFrame;
   network_ = new QNetworkAccessManager(this);
   handle_ = rtcwin_create(&options);
+  // 联调诊断：RTCWIN_TRACE_EVENTS=1 时每 5s 拉一次 media.stats，
+  // 让 capture_frames / remote_tracks / p2p_state 周期性出现在跟踪日志里。
+  if (EventTraceEnabled()) {
+    trace_stats_timer_ = new QTimer(this);
+    trace_stats_timer_->setInterval(5000);
+    connect(trace_stats_timer_, &QTimer::timeout, this, [this] {
+      if (handle_ != nullptr &&
+          snapshot_.join == domain::JoinPhase::Joined) {
+        Submit(QStringLiteral("media.stats"));
+      }
+    });
+    trace_stats_timer_->start();
+  }
+
 }
 
 CAbiEngineClient::~CAbiEngineClient() {
@@ -380,10 +443,12 @@ void CAbiEngineClient::SubmitConnectAndJoin(
                  QString::fromStdString(options.recording_device));
   payload.insert(QStringLiteral("playout_device"),
                  QString::fromStdString(options.playout_device));
-  const QString audio_backend =
-      options.audio_backend == domain::AudioBackend::Fake
-          ? QStringLiteral("fake")
-          : QStringLiteral("wasapi");
+  QString audio_backend = QStringLiteral("wasapi");
+  if (options.audio_backend == domain::AudioBackend::Fake) {
+    audio_backend = QStringLiteral("fake");
+  } else if (options.audio_backend == domain::AudioBackend::None) {
+    audio_backend = QStringLiteral("none");
+  }
   payload.insert(QStringLiteral("audio_backend"), audio_backend);
   payload.insert(
       QStringLiteral("audio_source"),
@@ -517,6 +582,11 @@ uint64_t CAbiEngineClient::Submit(const QString& method,
   const QByteArray json =
       QJsonDocument(payload).toJson(QJsonDocument::Compact);
   const QByteArray method_text = method.toUtf8();
+  if (EventTraceEnabled()) {
+    qInfo().noquote() << "[rtcwin:submit]" << method
+                      << QJsonDocument(TraceObject(payload)).toJson(
+                             QJsonDocument::Compact);
+  }
   const uint64_t id = rtcwin_submit(handle_, method_text.constData(),
                                     json.constData(), 15000);
   if (id == 0) {
@@ -531,6 +601,11 @@ uint64_t CAbiEngineClient::Submit(const QString& method,
 
 void CAbiEngineClient::HandleEvent(const QString& method,
                                    const QJsonObject& event) {
+  if (EventTraceEnabled()) {
+    qInfo().noquote() << "[rtcwin:event]"
+                      << QJsonDocument(TraceObject(event)).toJson(
+                             QJsonDocument::Compact);
+  }
   const QString type = event.value(QStringLiteral("type")).toString();
   if (type == QStringLiteral("ntf")) {
     if (method == QStringLiteral("camera.preview.error")) {

@@ -290,6 +290,7 @@ void EngineCore::HandleSessionConnectAndJoin(const Command& command) {
       request.value("playout_device", std::string());
   media_config.volume = std::clamp(request.value("volume", 60), 0, 100);
   media_config.muted = true;
+  const bool audio_requested = media_config.audio_backend != "none";
 
   {
     std::lock_guard<std::mutex> lock(session_mutex_);
@@ -314,7 +315,7 @@ void EngineCore::HandleSessionConnectAndJoin(const Command& command) {
   EmitNotification("session.state", "{\"state\":\"connecting\"}");
 
   asio::post(signaling_io_, [this, url, token, uid, room_id, display,
-                             media_mode, talk_mode] {
+                             media_mode, talk_mode, audio_requested] {
     if (!signaling_) {
       const uint64_t id = session_command_id_.exchange(0);
       if (id != 0) {
@@ -335,7 +336,8 @@ void EngineCore::HandleSessionConnectAndJoin(const Command& command) {
     };
 
     signaling::SignalingClient::Handlers handlers;
-    handlers.on_open = [this, uid, room_id, display, media_mode, talk_mode] {
+    handlers.on_open = [this, uid, room_id, display, media_mode, talk_mode,
+                        audio_requested] {
       Json hello = {
           {"client",
            {{"platform", "windows-x64"},
@@ -347,7 +349,7 @@ void EngineCore::HandleSessionConnectAndJoin(const Command& command) {
             {"p2p_video", false},
             {"sfu_sdp", "unified-plan"}}}};
       signaling_->Request("session.hello", hello, [this, uid, room_id, display,
-                                                   media_mode, talk_mode](
+                                                   media_mode, talk_mode, audio_requested](
                                                       Json result) {
         if (!result.value("ok", false)) {
           const uint64_t id = session_command_id_.exchange(0);
@@ -370,7 +372,7 @@ void EngineCore::HandleSessionConnectAndJoin(const Command& command) {
             {"room_id", room_id},
             {"display", display.empty() ? uid : display},
             {"media",
-             {{"audio", {{"send", true}, {"muted", true}}},
+             {{"audio", {{"send", audio_requested}, {"muted", true}}},
               {"video", {{"send", false}}}}},
             {"policy", {{"talk_mode", talk_mode}, {"media_mode", media_mode}}}};
         signaling_->Request("room.join", join, [this](Json joined) {
@@ -504,8 +506,16 @@ void EngineCore::HandleSessionConnectAndJoin(const Command& command) {
 }
 
 void EngineCore::FinalizeJoin(uint64_t command_id, const Json& data) {
+  bool audio_requested = true;
+  {
+    std::lock_guard<std::mutex> lock(session_mutex_);
+    audio_requested = media_config_.audio_backend != "none";
+  }
   std::string error;
-  const bool initialized = InitializeAudioMedia(data, &error);
+  bool initialized = false;
+  if (audio_requested) {
+    initialized = InitializeAudioMedia(data, &error);
+  }
   {
     std::lock_guard<std::mutex> lock(session_mutex_);
     media_enabled_ = initialized;
@@ -517,6 +527,10 @@ void EngineCore::FinalizeJoin(uint64_t command_id, const Json& data) {
                  response.dump());
   }
   EmitNotification("session.ready", response.dump());
+  if (!audio_requested) {
+    EmitNotification("media.disabled", "{\"reason\":\"backend_none\"}");
+    return;
+  }
   if (!initialized) {
     EmitMediaError(1710, "音频媒体初始化失败", error);
     return;
@@ -593,7 +607,14 @@ void EngineCore::PublishSfu() {
   webrtc_media::AudioSfuOffer offer;
   webrtc_media::AudioMediaError error;
   if (!audio_media_->CreateSfuPublishOffer(&offer, &error)) {
-    EmitMediaError(error.code, "生成 SFU 音频 offer 失败", error.message);
+    if (!pending_sfu_request_id_.empty()) {
+      FailPendingSfuSwitch(error.code == 0 ? 1730 : error.code,
+                           error.message.empty()
+                               ? "生成 SFU 音频 offer 失败"
+                               : error.message);
+    } else {
+      EmitMediaError(error.code, "生成 SFU 音频 offer 失败", error.message);
+    }
     return;
   }
   Json tracks = Json::array();
@@ -609,7 +630,11 @@ void EngineCore::PublishSfu() {
             const int code = ResponseCode(result);
             const std::string message = ResponseMessage(result);
             PostToWorker([this, code, message] {
-              EmitMediaError(code, "SFU 音频发布失败", message);
+              if (!pending_sfu_request_id_.empty()) {
+                FailPendingSfuSwitch(code, message);
+              } else {
+                EmitMediaError(code, "SFU 音频发布失败", message);
+              }
             });
             return;
           }
@@ -625,13 +650,30 @@ void EngineCore::PublishSfu() {
 
 void EngineCore::ApplySfuAnswer(const std::string& sdp) {
   if (!audio_media_) return;
-  webrtc_media::AudioMediaError error;
-  if (!audio_media_->ApplySfuPublishAnswer(sdp, &error)) {
-    EmitMediaError(error.code, "应用 SFU answer 失败", error.message);
+  if (sdp.empty()) {
+    if (!pending_sfu_request_id_.empty()) {
+      FailPendingSfuSwitch(1731, "SFU publish answer 为空");
+    } else {
+      EmitMediaError(1731, "应用 SFU answer 失败", "SDP 为空");
+    }
     return;
   }
-  sfu_paused_ = false;
+  webrtc_media::AudioMediaError error;
+  if (!audio_media_->ApplySfuPublishAnswer(sdp, &error)) {
+    if (!pending_sfu_request_id_.empty()) {
+      FailPendingSfuSwitch(error.code, error.message);
+    } else {
+      EmitMediaError(error.code, "应用 SFU answer 失败", error.message);
+    }
+    return;
+  }
+  sfu_publish_ready_ = true;
+  sfu_paused_ = !p2p_session_.empty();
+  if (!audio_media_->SetSfuPaused(sfu_paused_, &error)) {
+    EmitMediaError(error.code, "更新 SFU 暂停状态失败", error.message);
+  }
   EmitNotification("media.published", "{\"ok\":true,\"mode\":\"sfu\"}");
+  if (!pending_sfu_request_id_.empty()) TryCompleteSfuSwitch(false);
 }
 
 void EngineCore::StartP2p() {
@@ -758,6 +800,11 @@ void EngineCore::HandleMediaModeRequest(const std::string& request_id,
         });
         return;
       }
+      pending_sfu_request_id_.clear();
+      pending_sfu_room_mode_json_.clear();
+      sfu_publish_ready_ = false;
+      sfu_subscribe_ready_ = false;
+      PostToSignaling([this] { media_mode_timer_.cancel(); });
       p2p_session_ = allocation.value("session", std::string());
       p2p_peer_ = allocation.value("peer", std::string());
       p2p_offerer_ = allocation.value("role", std::string()) == "offerer";
@@ -775,24 +822,16 @@ void EngineCore::HandleMediaModeRequest(const std::string& request_id,
       return;
     }
     if (mode == "sfu") {
-      if (audio_media_) audio_media_->CloseP2p();
-      p2p_session_.clear();
-      p2p_peer_.clear();
-      p2p_offerer_ = false;
-      sfu_paused_ = false;
-      webrtc_media::AudioMediaError error;
-      audio_media_->SetSfuPaused(false, &error);
-      {
-        std::lock_guard<std::mutex> lock(session_mutex_);
-        media_mode_ = "sfu";
-      }
+      pending_sfu_request_id_ = request_id;
+      pending_sfu_room_mode_json_ = data.dump();
+      sfu_publish_ready_ = false;
+      sfu_subscribe_ready_ = false;
+      // Keep P2P live until publish and subscribe are both ready. The SFU
+      // sender remains paused while the existing P2P link is active.
       PublishSfu();
-      EmitNotification("room.mediaMode", data.dump());
-      PostToSignaling([this, request_id] {
-        if (signaling_) {
-          signaling_->Send(signaling::Response(request_id, Json::object()));
-        }
-      });
+      if (pending_sfu_request_id_ == request_id) {
+        ScheduleSfuSwitchTimeout(request_id);
+      }
       return;
     }
     PostToSignaling([this, request_id] {
@@ -832,14 +871,106 @@ void EngineCore::HandleSfuOfferRequest(const std::string& request_id,
       if (ok) {
         signaling_->Send(
             signaling::Response(request_id, Json{{"sdp", answer}}));
+        PostToWorker([this] {
+          sfu_subscribe_ready_ = true;
+          if (!pending_sfu_request_id_.empty()) TryCompleteSfuSwitch(false);
+        });
       } else {
         signaling_->Send(signaling::Failure(
             request_id, error.code == 0 ? 500 : error.code, error.message));
+        PostToWorker([this, error] {
+          if (!pending_sfu_request_id_.empty()) {
+            FailPendingSfuSwitch(error.code == 0 ? 500 : error.code,
+                                 error.message.empty()
+                                     ? "SFU subscribe 失败"
+                                     : error.message);
+          }
+        });
       }
     });
   });
 }
 
+void EngineCore::TryCompleteSfuSwitch(bool timed_out) {
+  if (pending_sfu_request_id_.empty()) return;
+  if (timed_out) {
+    FailPendingSfuSwitch(504, "SFU 切换超时，保留当前 P2P 音频");
+    return;
+  }
+  if (!sfu_publish_ready_ || !sfu_subscribe_ready_) return;
+
+  const std::string request_id = pending_sfu_request_id_;
+  const std::string room_mode_json = pending_sfu_room_mode_json_;
+  pending_sfu_request_id_.clear();
+  pending_sfu_room_mode_json_.clear();
+  sfu_publish_ready_ = false;
+  sfu_subscribe_ready_ = false;
+  PostToSignaling([this] { media_mode_timer_.cancel(); });
+
+  if (audio_media_) audio_media_->CloseP2p();
+  p2p_session_.clear();
+  p2p_peer_.clear();
+  p2p_offerer_ = false;
+  sfu_paused_ = false;
+  webrtc_media::AudioMediaError error;
+  if (audio_media_ && !audio_media_->SetSfuPaused(false, &error)) {
+    EmitMediaError(error.code, "恢复 SFU 音频失败", error.message);
+  }
+  {
+    std::lock_guard<std::mutex> lock(session_mutex_);
+    media_mode_ = "sfu";
+  }
+  EmitNotification("room.mediaMode",
+                   room_mode_json.empty() ? "{\"mode\":\"sfu\"}"
+                                          : room_mode_json);
+  PostToSignaling([this, request_id] {
+    if (signaling_) {
+      signaling_->Send(signaling::Response(request_id, Json::object()));
+    }
+  });
+}
+
+void EngineCore::FailPendingSfuSwitch(int code, const std::string& message) {
+  if (pending_sfu_request_id_.empty()) return;
+  const std::string request_id = pending_sfu_request_id_;
+  pending_sfu_request_id_.clear();
+  pending_sfu_room_mode_json_.clear();
+  sfu_publish_ready_ = false;
+  sfu_subscribe_ready_ = false;
+  PostToSignaling([this] { media_mode_timer_.cancel(); });
+
+  if (!p2p_session_.empty()) {
+    sfu_paused_ = true;
+    if (audio_media_) {
+      webrtc_media::AudioMediaError ignored;
+      audio_media_->SetSfuPaused(true, &ignored);
+    }
+  }
+  EmitMediaError(code == 0 ? 1732 : code, "SFU 媒体切换失败", message);
+  PostToSignaling([this, request_id, code, message] {
+    if (signaling_) {
+      signaling_->Send(signaling::Failure(
+          request_id, code == 0 ? 500 : code,
+          message.empty() ? "SFU 媒体切换失败" : message));
+    }
+  });
+}
+
+void EngineCore::ScheduleSfuSwitchTimeout(const std::string& request_id) {
+  PostToSignaling([this, request_id] {
+    if (!signaling_) return;
+    media_mode_timer_.expires_after(std::chrono::seconds(5));
+    media_mode_timer_.async_wait([this, request_id](
+                                     const asio::error_code& error) {
+      if (error) return;
+      PostToWorker([this, request_id] {
+        if (pending_sfu_request_id_ == request_id) {
+          TryCompleteSfuSwitch(true);
+        }
+      });
+    });
+  });
+}
 void EngineCore::HandleAudioMediaEvent(const std::string& method,
                                        const std::string& data_json) {
   Json data;
@@ -851,6 +982,7 @@ void EngineCore::HandleAudioMediaEvent(const std::string& method,
   if (method == "p2p.candidate") {
     if (p2p_session_.empty()) return;
     Json candidate = data;
+    candidate.erase("pc");
     candidate["session"] = p2p_session_;
     candidate["to"] = p2p_peer_;
     PostToSignaling([this, candidate = std::move(candidate)] {
@@ -1042,14 +1174,28 @@ void EngineCore::HandleMediaStats(const Command& command) {
       {"muted", status.muted},
       {"deafened", status.deafened},
       {"sfu_paused", status.sfu_paused},
+      {"recording_initialized", status.recording_initialized},
+      {"recording", status.recording},
+      {"playout_initialized", status.playout_initialized},
+      {"playing", status.playing},
+      {"sfu_send_active", status.sfu_send_active},
+      {"p2p_send_active", status.p2p_send_active},
       {"volume", status.volume},
       {"capture_frames", status.capture_frames},
       {"remote_tracks", status.remote_tracks},
+      {"active_remote_tracks", status.active_remote_tracks},
+      {"sfu_audio_packets_sent", status.sfu_audio_packets_sent},
+      {"p2p_audio_packets_sent", status.p2p_audio_packets_sent},
+      {"audio_packets_received", status.audio_packets_received},
+      {"audio_bytes_sent", status.audio_bytes_sent},
+      {"audio_bytes_received", status.audio_bytes_received},
+      {"remote_audio_level", status.remote_audio_level},
       {"recording_device", status.recording_device},
       {"playout_device", status.playout_device},
       {"sfu_send_state", status.sfu_send_state},
       {"sfu_recv_state", status.sfu_recv_state},
-      {"p2p_state", status.p2p_state}};
+      {"p2p_state", status.p2p_state},
+      {"last_error", status.last_error}};
   EmitResponse(command.id, command.method, true, 0, {}, data.dump());
 }
 void EngineCore::HandleRoomLeave(const Command& command) {
@@ -1092,6 +1238,7 @@ void EngineCore::HandleSessionDisconnect(const Command& command) {
   const uint64_t id = command.id;
   asio::post(signaling_io_, [this, id] {
     heartbeat_timer_.cancel();
+    media_mode_timer_.cancel();
     if (signaling_) signaling_->Dispose();
     EmitResponse(id, "session.disconnect", true, 0, {}, "{}");
     EmitNotification("session.closed", "{\"reason\":\"local_disconnect\"}");
@@ -1125,6 +1272,7 @@ void EngineCore::StopSignaling() {
   auto future = completed->get_future();
   asio::post(signaling_io_, [this, completed] {
     heartbeat_timer_.cancel();
+    media_mode_timer_.cancel();
     if (signaling_) signaling_->Dispose();
     completed->set_value();
   });

@@ -1305,3 +1305,126 @@ tests/signaling_smoke.cpp
 本次交接结论：
 
 > 当前代码已经从“仅有音频设备枚举”推进到“具备完整音频 PeerConnection 运行时和协议编排”，但仍必须完成真实双客户端音频联调，才能把 S3.2 标记为完成。后续最优先工作不是继续加视频，而是先把真实 P2P/SFU 音频闭环验收通过。
+
+---
+
+## 17. 接手架构 Review 与开发决策（2026-10-29）
+
+接手人于 2026-10-29（`6ed604e` 提交后）完成一次独立架构 review，结论与裁决记录如下。
+
+### 17.1 Review 结论
+
+总体评价：**架构方向正确、边界纪律执行到位，可给“合理，带已知债务”的评价**。债务集中在 `EngineCore` 聚合与信令层健壮性，属可渐进偿还的实现债，不是结构性错误。
+
+合理并应保持的部分：
+
+1. C ABI DLL 边界解决真问题：libwebrtc ABI 要求（`/EHs-c-`、`/MT`、RTTI）与 Qt/MSVC 默认（`/EHsc`、`/MD`）在同一二进制内不可调和，DLL + C ABI 隔离是唯一正解；`audio_media_session.h` PImpl 做到公共头零 libwebrtc 类型泄漏。
+2. 线程模型：GUI / engine worker / signaling io / libwebrtc 三线程 + 所有回调 `PostToWorker` + 析构顺序 + ADM 线程亲和，事故高发区已全覆盖。
+3. 三 PC 角色分离（`sfu-send` / `sfu-recv` / `p2p`）与 mediasoup send/recv 分离语义精确对齐；`Submit()` 命令队列把媒体操作串行化到 worker。
+4. 探针式测试（`rtcwin_audio_media_smoke` 等）可不碰 UI 验证媒体链路。
+
+债务清单（按严重度）：
+
+1. **`EngineCore` 上帝类**：`engine_core.cpp` 已 1208 行，命令分发、信令编排、房间状态、媒体协调、心跳在一个类；会话/房间状态用散的 `bool`/`string` 成员表达，非法状态组合没有类型层防线。必须在阶段 C（视频）之前拆分，否则视频接入会再翻一倍。`heartbeat_timer_{signaling_io_}` 等 asio 对象直接挂在 EngineCore 成员上，与 signaling 线程生命周期强耦合，是拆分的第一刀。
+2. **信令层未执行依赖隔离纪律**：`signaling_client.h` 公共头直接 `#include <asio.hpp>` 与 `<websocketpp/...>`，`webrtc_media` 做到了零泄漏而 signaling 没有，需 PImpl 化。
+3. **协议健壮性缺口**（见 17.2 第 3 条裁决）：无 resume/generation guard，断线即整场重置；`mute_generation_` 只是局部补丁；静音 UI 乐观更新未区分请求态/确认态（老工程 PTT 踩过同款坑）。
+4. 视频路径仅完成本地预览（MF 采集 → C ABI → muxPlayer），远端视频未接入；结构上预留的“I420 直注入 muxPlayer raw render、不重编码”方向正确。
+
+### 17.2 裁决与开发决策
+
+1. **联调环境**：测试服可用，支持本机双开两个客户端实例（不同 UID 同房间）进行阶段 A 验收。
+2. **拆分时机**：先完成阶段 A（真实双端音频验收），再拆 `EngineCore`（阶段 B）。拆分完成后必须重跑全部探针再继续。
+3. **`ws://` 范围裁决**：仅使用 `ws://` 是因为当前为测试服务器，暂不建设 TLS；resume、generation guard、correlation、静音请求态/确认态分离等其他健壮性项照常列入优化计划。
+4. **提交规范**：commit message 使用 `feat:` / `fix:` 等前缀，说明文字用中文。
+5. **开发顺序**：维持 §12 的阶段 A → B → C → D，从阶段 A 开始。
+
+---
+
+## 18. 阶段 A 联调进度（2026-10-29 进行中）
+
+本节记录接手后按 §17.2 决策启动的阶段 A（真实双端音频验收）进展，供中断后恢复。
+
+### 18.1 已完成
+
+| 项 | 结果 |
+|---|---|
+| 构建校验 | `6ed604e` 后源码与产物一致，增量重建通过 |
+| 探针基线 | Release ctest 3/3 通过（`rtcwin_tests` / `rtcwin_signaling_tests` / `rtcwin_audio_media_smoke`，fake ADM） |
+| 真实信令冒烟 | `rtcwin_signaling_smoke` 对 `ws://47.117.159.193:8080/talk/v1/ws`：`hello ok → room.join ok mode=sfu → room.leave ok`；服务端 `healthz` 为 `4a24f30` / mediasoup 3.30.1 |
+| 双开入房 | 本机双开 `rtc-talk.exe`（`rtcwin-stagea` / `rtcwin-stageb`，同房 `stagea-room`，auto 模式，WASAPI 后端） |
+| P2P 切换 | 干净房间 2 人 auto：服务端正确切 P2P（B 的 join 应答携带 `media_mode:"p2p"`、`p2p.started`）；双方 `pc:p2p` 均 `connected` |
+| SFU 暂停语义 | P2P connected 后 `sfu_paused:true` 且 sfu-send PC 保持 `connected`（暂停发送但保留 PC，符合 §12 阶段 A 检查项） |
+| 远端轨 | A `remote_tracks:1`、B `remote_tracks:2`（B 多一条 sfu-recv 轨，来源待查，见 18.3） |
+| UI 静音切换 | 通过 UI 麦克风按钮开麦成功：双方收到 `media.muted muted:false`，日志确认 UI 命令链路（按钮 → AppController → `media.setMute`）工作正常 |
+| UI 状态 | 房间页显示 `P2P` 芯片、`2 人`、计时正常；截图 `build/screenshots/dual-1.png` / `dual-2.png` |
+
+### 18.2 联调工具与新增改动（未提交）
+
+1. `apps/rtc-talk/main.cpp`：auto-join 新增 `--auto-join-backend`（wasapi|fake|none）与 `--auto-join-media-mode`（auto|sfu|p2p）。此前 auto-join 硬编码 `AudioBackend::None`，无法做真实音频联调。默认值保持原行为。
+2. `libs/client_gateway/src/c_abi_engine_client.cpp`：新增 `RTCWIN_TRACE_EVENTS` 环境变量开关——开启后在 stderr 打印全部引擎事件与 Submit 命令，并每 5 秒自动提交一次 `media.stats`（联调观察 `capture_frames` / `remote_tracks` / `p2p_state`）。事件信封不含 token/SDP/ICE 凭证，符合 §13.2 红线。
+3. 启动方式（PowerShell，GUI 子系统需强制 stderr）：
+
+```powershell
+$env:RTCWIN_TRACE_EVENTS = '1'
+$env:QT_FORCE_STDERR_LOGGING = '1'
+$env:PATH = "C:\Qt\5.15.2\msvc2019_64\bin;" + $env:PATH
+.\build\vcpkg-windows-x64\bin\Release\rtc-talk.exe `
+  --auto-join-url ws://47.117.159.193:8080/talk/v1/ws `
+  --auto-join-room stagea-room --auto-join-uid rtcwin-stagea `
+  --auto-join-dev-token --auto-join-backend wasapi `
+  --auto-join-media-mode auto *> build\logs\stagea-a.log
+```
+
+### 18.3 发现的问题
+
+1. **`/dev/token` 返回 JSON 包装**：接口返回 `{"token":"...","uid":...,"exp":...}`，直接整串当 token 用会被 401 拒绝；必须提取 `token` 字段。UI 的 `fetch_dev_token` 路径不受影响（Gateway 自己解析）。
+2. **服务端会话残留约 40 秒**：客户端被杀后 `healthz` 的 `sessions`/`rooms` 并不立即清零（约 40s 超时）。快速重启客户端会用旧会话污染房间模式判定——首次双开实验因此没有切 P2P（观察到 `room.peerLeft reason:"replaced"`，媒体停在 SFU）。**联调规程：杀掉客户端后必须轮询 `healthz` 直到 `sessions:0, rooms:0` 再重开**。
+3. **B 端 `remote_tracks:2`**：P2P 模式下 B 同时持有 p2p 轨与 sfu-recv 轨（sfu-recv 也显示 connected）。A 的 SFU producer 已暂停所以理论上无声，但"入房即 P2P 的成员为何建立 sfu-recv"需要查 `FinalizeJoin` / `StartMediaForCurrentMode` 的分支；这也是双声风险的候选来源。
+4. **当前卡点：开麦后 `capture_frames` 仍为 0**。双方 `muted:false`、`p2p_state:connected`、`remote_tracks>0`，但 `media.stats.capture_frames` 停在 0——采集侧（ADM 起录 / CaptureGate 计数）疑似未真正跑起来，正待排查。对照 §13.3："自己能听但对方听不到 → 优先查 capture_frames"。
+
+### 18.4 下一步
+
+1. 排查 `capture_frames=0`：先跑 `rtcwin_audio_devices_probe` 确认设备，再对照 `AudioMediaSession::Initialize` 的 `InitRecording/StartRecording` 路径与 CaptureGate 计数位置（含 WASAPI 后端下 `SetMuted(false)` 是否真正走到 ADM 起录）。
+2. 查 B 端 sfu-recv 轨来源（18.3.3）。
+3. capture_frames>0 后：真人听音确认双向有声，再做第三人加入切 SFU 的场景。
+4. 全部通过后按 §17.2 提交规范提交阶段 A 改动（含 18.2 的两个联调工具改动）。
+
+### 18.5 阶段 A 修复与验证结果（2026-10-29）
+
+18.3 的阻塞项已经定位并修复。根因不是麦克风硬件或系统权限：
+
+- FFmpeg DirectShow 对同一麦克风连续采集 2 秒成功。
+- WebRTC 内部日志显示 ADM 在 `AudioTransport` 注册前就启动 playout，持续输出 `Invalid audio transport`。
+- 该错误导致 ADM 虽然 `Recording()==true`，但 PCM 从未进入 VoiceEngine，表现为 `capture_frames=0`、RTP 包数为 0。
+
+修复内容：
+
+1. ADM playout 不再在 `AudioMediaSession::Initialize` 中提前启动。现在在 SFU/P2P PeerConnection 创建后、添加音轨前启动，与已验证的旧实现顺序一致。
+2. fake ADM 不要求启动物理 playout。
+3. 恢复 `CaptureGate`，在编码前执行静音门并统计真实 10ms 采集帧。
+4. 增加 `RTCWIN_WEBRTC_LOG=1` 联调开关，默认关闭。
+5. 补充标准 ICE 状态回调。M146 下 `OnConnectionChange` 未及时从 `new` 变为 `connected`，改为同时消费 `OnStandardizedIceConnectionChange` 并去重上报。
+6. 恢复远端音轨按 `pc + mid` 去重，P2P 关闭时释放对应远端轨引用。
+7. trace 日志对 `token`、`authorization`、`credential`、`password`、`sdp`、`candidate` 做递归脱敏；`RTCWIN_TRACE_EVENTS` 严格只接受 `1/true/yes/on`。
+8. `none` 音频后端贯通到 `room.join.media.send=false`，不再被静默映射为 WASAPI。
+9. `room.mediaMode=sfu` 改为等待 SFU publish 和 subscribe 都就绪后再关闭 P2P；5 秒未就绪则拒绝切换并保留 P2P。
+
+短链路验证结果：
+
+| 场景 | 结果 |
+|---|---|
+| fake 探针 | CTest 3/3 通过 |
+| 真实 WASAPI | ADM 初始化成功，录音/播放设备正确 |
+| 1v1 P2P | 双方 P2P connected；A `p2p_audio_packets_sent=245`、`audio_packets_received=44`；B 双向 RTP 同步增长 |
+| 采集帧 | 取消静音后 A `capture_frames=490 -> 990`，B `capture_frames=292`，确认真实麦克风进入 WebRTC |
+| 静音 | A 上行包 `246 -> 253` 后停止增长；对端收到的 A 包数停在 253；`capture_frames` 同步停止 |
+| 第三人加入 | P2P 关闭后三方均进入 SFU；`sfu-send/sfu-recv connected`；远端音轨 2 路；发送与接收 RTP 持续增长 |
+| trace 安全 | 日志中 `token` 显示为 `<redacted>`，未发现 JWT、完整 SDP 或 ICE candidate |
+
+当前仍需完成：
+
+1. 收听静音和音量端到端人工听音验收。
+2. 设备占用、设备拔出和默认设备变化。
+3. 离房/重进、断线重连和 P2P 失败回退的重复验证。
+4. Debug 全量构建与 CTest。
+5. 清理 diff、更新基线后提交并推送。

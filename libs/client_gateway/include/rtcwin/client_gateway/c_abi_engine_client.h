@@ -10,6 +10,7 @@
 #include <mutex>
 
 class QNetworkAccessManager;
+class QTimer;
 
 struct rtcwin_handle;
 struct rtcwin_frame_view;
@@ -55,6 +56,7 @@ class CAbiEngineClient final : public application::EngineClient {
   std::unique_ptr<CallbackContext> context_;
   rtcwin_handle* handle_ = nullptr;
   QNetworkAccessManager* network_ = nullptr;
+  QTimer* trace_stats_timer_ = nullptr;
   domain::SessionSnapshot snapshot_;
   std::mutex local_frame_mutex_;
   std::shared_ptr<domain::VideoFrame> latest_local_frame_;

@@ -18,6 +18,10 @@
 #include "api/media_stream_interface.h"
 #include "api/peer_connection_interface.h"
 #include "api/rtp_transceiver_interface.h"
+#include "api/stats/rtc_stats_collector_callback.h"
+#include "api/stats/rtc_stats_report.h"
+#include "api/stats/rtcstats_objects.h"
+#include "rtc_base/logging.h"
 #include "rtc_base/thread.h"
 #include "rtc_base/win/scoped_com_initializer.h"
 
@@ -27,6 +31,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstdint>
+#include <cstdlib>
 #include <memory>
 #include <mutex>
 #include <sstream>
@@ -61,6 +66,23 @@ std::string EscapeJson(const std::string& value) {
   }
   return result;
 }
+
+class CaptureMonitor final : public webrtc::AudioTrackSinkInterface {
+ public:
+  void OnData(const void*, int, int sample_rate, size_t channels,
+              size_t frames) override {
+    (void)sample_rate;
+    (void)channels;
+    frames_.fetch_add(frames, std::memory_order_relaxed);
+  }
+
+  std::uint64_t frames() const {
+    return frames_.load(std::memory_order_relaxed);
+  }
+
+ private:
+  std::atomic<std::uint64_t> frames_{0};
+};
 
 class CaptureGate final : public webrtc::AudioFrameProcessor {
  public:
@@ -194,11 +216,44 @@ int ConnectionStateCode(
   return static_cast<int>(state);
 }
 
+struct PeerAudioStats {
+  std::uint64_t packets_sent = 0;
+  std::uint64_t bytes_sent = 0;
+  std::uint64_t packets_received = 0;
+  std::uint64_t bytes_received = 0;
+  double audio_level = -1.0;
+};
+
+struct StatsState {
+  std::mutex mutex;
+  std::condition_variable cv;
+  bool done = false;
+  webrtc::scoped_refptr<const webrtc::RTCStatsReport> report;
+};
+
+class StatsObserver : public webrtc::RTCStatsCollectorCallback {
+ public:
+  explicit StatsObserver(std::shared_ptr<StatsState> state)
+      : state_(std::move(state)) {}
+
+  void OnStatsDelivered(
+      const webrtc::scoped_refptr<const webrtc::RTCStatsReport>& report)
+      override {
+    std::lock_guard<std::mutex> lock(state_->mutex);
+    state_->report = report;
+    state_->done = true;
+    state_->cv.notify_all();
+  }
+
+ private:
+  std::shared_ptr<StatsState> state_;
+};
 class AudioPeer final : public webrtc::PeerConnectionObserver {
  public:
   using Event = std::function<void(std::string, std::string)>;
   using RemoteTrack = std::function<void(
-      const std::string&, webrtc::scoped_refptr<webrtc::AudioTrackInterface>)>;
+      const std::string&, const std::string&,
+      webrtc::scoped_refptr<webrtc::AudioTrackInterface>)>;
 
   AudioPeer(std::string name, webrtc::Thread* signaling, Event event,
             RemoteTrack remote_track)
@@ -252,6 +307,7 @@ class AudioPeer final : public webrtc::PeerConnectionObserver {
     const bool ok = RunOnSignaling([this, track = std::move(track), direction,
                                     stream_id]() mutable {
       if (!pc_) return false;
+      if (senders_.find(track->id()) != senders_.end()) return true;
       if (pc_->remote_description() != nullptr) {
         auto added = pc_->AddTrack(track, {stream_id});
         if (!added.ok()) return false;
@@ -392,6 +448,37 @@ class AudioPeer final : public webrtc::PeerConnectionObserver {
     });
   }
 
+  bool HasAudioSender() const {
+    return RunOnSignaling([this] {
+      if (!pc_) return false;
+      for (const auto& transceiver : pc_->GetTransceivers()) {
+        if (transceiver && transceiver->media_type() ==
+                               webrtc::MediaType::AUDIO &&
+            transceiver->sender()) {
+          return true;
+        }
+      }
+      return false;
+    });
+  }
+
+  bool AudioSenderActive() const {
+    return RunOnSignaling([this] {
+      if (!pc_) return false;
+      for (const auto& transceiver : pc_->GetTransceivers()) {
+        if (!transceiver || transceiver->media_type() !=
+                                webrtc::MediaType::AUDIO ||
+            !transceiver->sender()) {
+          continue;
+        }
+        const auto parameters = transceiver->sender()->GetParameters();
+        return !parameters.encodings.empty() &&
+               parameters.encodings.front().active;
+      }
+      return false;
+    });
+  }
+
   bool SetAudioSenderActive(bool active) {
     return RunOnSignaling([this, active] {
       if (!pc_) return false;
@@ -413,6 +500,40 @@ class AudioPeer final : public webrtc::PeerConnectionObserver {
     });
   }
 
+  bool CollectAudioStats(PeerAudioStats* out) const {
+    if (out == nullptr) return false;
+    *out = {};
+    auto state = std::make_shared<StatsState>();
+    auto observer = webrtc::make_ref_counted<StatsObserver>(state);
+    const bool requested = RunOnSignaling([this, &observer] {
+      if (!pc_) return false;
+      pc_->GetStats(observer.get());
+      return true;
+    });
+    if (!requested) return false;
+    std::unique_lock<std::mutex> lock(state->mutex);
+    if (!state->cv.wait_for(lock, std::chrono::seconds(1),
+                            [&] { return state->done; }) ||
+        !state->report) {
+      return false;
+    }
+    for (const auto* stats :
+         state->report->GetStatsOfType<webrtc::RTCOutboundRtpStreamStats>()) {
+      if (stats->kind.value_or("") != "audio") continue;
+      out->packets_sent += stats->packets_sent.value_or(0);
+      out->bytes_sent += stats->bytes_sent.value_or(0);
+    }
+    for (const auto* stats :
+         state->report->GetStatsOfType<webrtc::RTCInboundRtpStreamStats>()) {
+      if (stats->kind.value_or("") != "audio") continue;
+      out->packets_received += stats->packets_received.value_or(0);
+      out->bytes_received += stats->bytes_received.value_or(0);
+      if (stats->audio_level.has_value()) {
+        out->audio_level = std::max(out->audio_level, *stats->audio_level);
+      }
+    }
+    return true;
+  }
   int state() const { return state_.load(std::memory_order_relaxed); }
   std::string state_name() const {
     return ConnectionStateName(
@@ -435,7 +556,7 @@ class AudioPeer final : public webrtc::PeerConnectionObserver {
   void OnIceCandidate(const webrtc::IceCandidate* candidate) override {
     if (!event_) return;
     std::ostringstream data;
-    data << "{\"candidate\":\""
+    data << "{\"pc\":\"" << EscapeJson(name_) << "\",\"candidate\":\""
          << EscapeJson(candidate != nullptr ? candidate->ToString() : "")
          << "\"";
     if (candidate != nullptr) {
@@ -443,7 +564,7 @@ class AudioPeer final : public webrtc::PeerConnectionObserver {
            << "\",\"sdp_mline_index\":" << candidate->sdp_mline_index();
     }
     data << "}";
-    event_("p2p.candidate", data.str());
+    event_("ice.candidate", data.str());
   }
 
   void OnIceGatheringChange(
@@ -454,12 +575,37 @@ class AudioPeer final : public webrtc::PeerConnectionObserver {
 
   void OnConnectionChange(
       webrtc::PeerConnectionInterface::PeerConnectionState state) override {
-    state_.store(ConnectionStateCode(state), std::memory_order_relaxed);
-    if (!event_) return;
-    std::ostringstream data;
-    data << "{\"pc\":\"" << EscapeJson(name_) << "\",\"state\":\""
-         << ConnectionStateName(state) << "\"}";
-    event_("audio.connection", data.str());
+    ReportConnectionState(state);
+  }
+
+  void OnStandardizedIceConnectionChange(
+      webrtc::PeerConnectionInterface::IceConnectionState state) override {
+    using PcState = webrtc::PeerConnectionInterface::PeerConnectionState;
+    PcState mapped = PcState::kConnecting;
+    switch (state) {
+      case webrtc::PeerConnectionInterface::kIceConnectionNew:
+        mapped = PcState::kNew;
+        break;
+      case webrtc::PeerConnectionInterface::kIceConnectionChecking:
+        mapped = PcState::kConnecting;
+        break;
+      case webrtc::PeerConnectionInterface::kIceConnectionConnected:
+      case webrtc::PeerConnectionInterface::kIceConnectionCompleted:
+        mapped = PcState::kConnected;
+        break;
+      case webrtc::PeerConnectionInterface::kIceConnectionDisconnected:
+        mapped = PcState::kDisconnected;
+        break;
+      case webrtc::PeerConnectionInterface::kIceConnectionFailed:
+        mapped = PcState::kFailed;
+        break;
+      case webrtc::PeerConnectionInterface::kIceConnectionClosed:
+        mapped = PcState::kClosed;
+        break;
+      case webrtc::PeerConnectionInterface::kIceConnectionMax:
+        break;
+    }
+    ReportConnectionState(mapped);
   }
 
   void OnTrack(webrtc::scoped_refptr<webrtc::RtpTransceiverInterface>
@@ -469,11 +615,12 @@ class AudioPeer final : public webrtc::PeerConnectionObserver {
     if (!track || track->kind() != "audio") return;
     auto audio = webrtc::scoped_refptr<webrtc::AudioTrackInterface>(
         static_cast<webrtc::AudioTrackInterface*>(track.get()));
-    if (remote_track_) remote_track_(name_, audio);
+    const std::string mid = transceiver->mid().value_or("");
+    if (remote_track_) remote_track_(name_, mid, audio);
     if (event_) {
       event_("audio.track",
              "{\"pc\":\"" + EscapeJson(name_) + "\",\"mid\":\"" +
-                 EscapeJson(transceiver->mid().value_or("")) + "\"}");
+                 EscapeJson(mid) + "\"}");
     }
   }
 
@@ -485,6 +632,21 @@ class AudioPeer final : public webrtc::PeerConnectionObserver {
   std::map<std::string, webrtc::scoped_refptr<webrtc::RtpSenderInterface>>
       senders_;
   std::atomic<int> state_{0};
+  std::atomic<int> reported_state_{0};
+
+  void ReportConnectionState(
+      webrtc::PeerConnectionInterface::PeerConnectionState state) {
+    const int code = ConnectionStateCode(state);
+    state_.store(code, std::memory_order_relaxed);
+    if (reported_state_.exchange(code, std::memory_order_relaxed) == code ||
+        !event_) {
+      return;
+    }
+    std::ostringstream data;
+    data << "{\"pc\":\"" << EscapeJson(name_) << "\",\"state\":\""
+         << ConnectionStateName(state) << "\"}";
+    event_("audio.connection", data.str());
+  }
 };
 
 bool SelectDevice(webrtc::AudioDeviceModule* adm, bool recording,
@@ -563,6 +725,21 @@ struct AudioMediaSession::Impl {
     }
     config = next;
     event = std::move(cb);
+    fake_device = next.audio_backend == "fake";
+    char* webrtc_log = nullptr;
+    size_t webrtc_log_length = 0;
+    if (_dupenv_s(&webrtc_log, &webrtc_log_length,
+                  "RTCWIN_WEBRTC_LOG") == 0 &&
+        webrtc_log != nullptr) {
+      const std::string enabled(webrtc_log);
+      free(webrtc_log);
+      if (enabled == "1" || enabled == "true" || enabled == "yes" ||
+          enabled == "on") {
+        webrtc::LogMessage::LogToDebug(webrtc::LS_INFO);
+        webrtc::LogMessage::LogTimestamps();
+        webrtc::LogMessage::LogThreads();
+      }
+    }
     volume.store(std::clamp(next.volume, 0, 100) / 100.0,
                  std::memory_order_relaxed);
     muted.store(next.muted, std::memory_order_relaxed);
@@ -617,10 +794,6 @@ struct AudioMediaSession::Impl {
                             &playout_name, &device_error)) {
             return false;
           }
-          if (adm->InitPlayout() != 0 || adm->StartPlayout() != 0) {
-            device_error = "启动音频播放失败";
-            return false;
-          }
           return true;
         });
     if (!devices_ok) {
@@ -666,9 +839,11 @@ struct AudioMediaSession::Impl {
     const bool track_ok = signaling->BlockingCall([this] {
       auto source = factory->CreateAudioSource(webrtc::AudioOptions());
       if (!source) return false;
+      capture_monitor = std::make_unique<CaptureMonitor>();
+      source->AddSink(capture_monitor.get());
       audio_track = factory->CreateAudioTrack("rtcwin-mic", source.get());
       if (!audio_track) return false;
-      audio_track->set_enabled(!muted.load(std::memory_order_relaxed));
+      audio_track->set_enabled(true);
       return true;
     });
     if (!track_ok) {
@@ -695,9 +870,17 @@ struct AudioMediaSession::Impl {
     shutdown = true;
     ClosePcs();
     if (audio_track && signaling) {
-      signaling->BlockingCall([this] { audio_track->set_enabled(false); });
+      signaling->BlockingCall([this] {
+        if (capture_monitor) {
+          if (auto* source = audio_track->GetSource()) {
+            source->RemoveSink(capture_monitor.get());
+          }
+        }
+        audio_track->set_enabled(false);
+      });
     }
     audio_track = nullptr;
+    capture_monitor.reset();
     capture_gate = nullptr;
     factory = nullptr;
     if (worker) {
@@ -748,6 +931,11 @@ struct AudioMediaSession::Impl {
       sfu_send = std::make_unique<AudioPeer>("sfu-send", signaling.get(), event,
                                              RemoteCallback());
       if (!sfu_send->Create(factory.get(), rtc_config, error)) return false;
+      std::string playout_error;
+      if (!EnsurePlayout(&playout_error)) {
+        SetError(error, 1708, playout_error);
+        return false;
+      }
     }
     return true;
   }
@@ -761,19 +949,28 @@ struct AudioMediaSession::Impl {
       sfu_recv = std::make_unique<AudioPeer>("sfu-recv", signaling.get(), event,
                                              RemoteCallback());
       if (!sfu_recv->Create(factory.get(), rtc_config, error)) return false;
+      std::string playout_error;
+      if (!EnsurePlayout(&playout_error)) {
+        SetError(error, 1708, playout_error);
+        return false;
+      }
     }
     return true;
   }
 
   AudioPeer::RemoteTrack RemoteCallback() {
-    return [this](const std::string& pc,
+    return [this](const std::string& pc, const std::string& mid,
                   webrtc::scoped_refptr<webrtc::AudioTrackInterface> track) {
       if (!track) return;
       ApplyRemoteTrackState(track, pc);
-      {
-        std::lock_guard<std::mutex> lock(remote_mutex);
-        remote_tracks.push_back(RemoteTrackEntry{pc, track});
+      std::lock_guard<std::mutex> lock(remote_mutex);
+      for (auto& entry : remote_tracks) {
+        if (entry.pc == pc && entry.mid == mid) {
+          entry.track = track;
+          return;
+        }
       }
+      remote_tracks.push_back(RemoteTrackEntry{pc, mid, track});
     };
   }
 
@@ -790,6 +987,41 @@ struct AudioMediaSession::Impl {
     track->set_enabled(!paused);
   }
 
+  bool EnsurePlayout(std::string* detail) {
+    if (!adm || !worker) {
+      if (detail) *detail = "ADM 未初始化";
+      return false;
+    }
+    if (fake_device) {
+      // Dummy ADM does not provide a real playout device. Its recording
+      // source is enough for negotiation and control-path tests.
+      return true;
+    }
+    const bool ok = worker->BlockingCall([this] {
+      if (!adm->PlayoutIsInitialized() && adm->InitPlayout() != 0) {
+        return false;
+      }
+      return adm->Playing() || adm->StartPlayout() == 0;
+    });
+    if (!ok && detail) *detail = "启动音频播放失败";
+    return ok;
+  }
+
+  bool EnsureRecordingStarted(std::string* detail) {
+    if (!adm || !worker) {
+      if (detail) *detail = "ADM 未初始化";
+      return false;
+    }
+    const bool ok = worker->BlockingCall([this] {
+      if (!adm->RecordingIsInitialized() && adm->InitRecording() != 0) {
+        return false;
+      }
+      return adm->Recording() || adm->StartRecording() == 0;
+    });
+    if (!ok && detail) *detail = "启动麦克风采集失败";
+    return ok;
+  }
+
   bool SetMuted(bool next, AudioMediaError* error) {
     if (!initialized) {
       SetError(error, 1720, "音频媒体会话未初始化");
@@ -801,17 +1033,29 @@ struct AudioMediaSession::Impl {
       signaling->BlockingCall(
           [this, next] { audio_track->set_enabled(!next); });
     }
-    ApplySendState();
+    if (!ApplySendState()) {
+      muted.store(true, std::memory_order_relaxed);
+      if (capture_gate) capture_gate->SetMuted(true);
+      if (audio_track) {
+        signaling->BlockingCall([this] { audio_track->set_enabled(false); });
+      }
+      ApplySendState();
+      SetError(error, 1723, "更新音频发送状态失败");
+      return false;
+    }
     return true;
   }
 
-  void ApplySendState() {
+  bool ApplySendState() {
     const bool send = !muted.load(std::memory_order_relaxed);
+    bool ok = true;
     if (sfu_send) {
-      sfu_send->SetAudioSenderActive(
-          send && !sfu_paused.load(std::memory_order_relaxed));
+      ok = sfu_send->SetAudioSenderActive(
+               send && !sfu_paused.load(std::memory_order_relaxed)) &&
+           ok;
     }
-    if (p2p) p2p->SetAudioSenderActive(send);
+    if (p2p) ok = p2p->SetAudioSenderActive(send) && ok;
+    return ok;
   }
 
   bool SetDeafened(bool next, AudioMediaError* error) {
@@ -886,6 +1130,11 @@ struct AudioMediaSession::Impl {
     p2p = std::make_unique<AudioPeer>("p2p", signaling.get(), event,
                                       RemoteCallback());
     if (!p2p->Create(factory.get(), rtc_config, error)) return false;
+    std::string playout_error;
+    if (!EnsurePlayout(&playout_error)) {
+      SetError(error, 1708, playout_error);
+      return false;
+    }
     if (!p2p->AddAudio(audio_track,
                        webrtc::RtpTransceiverDirection::kSendRecv,
                        "talk-p2p", error)) {
@@ -906,6 +1155,11 @@ struct AudioMediaSession::Impl {
     p2p = std::make_unique<AudioPeer>("p2p", signaling.get(), event,
                                       RemoteCallback());
     if (!p2p->Create(factory.get(), rtc_config, error)) return false;
+    std::string playout_error;
+    if (!EnsurePlayout(&playout_error)) {
+      SetError(error, 1708, playout_error);
+      return false;
+    }
     if (!p2p->SetRemote(webrtc::SdpType::kOffer, remote_offer, error)) {
       return false;
     }
@@ -929,10 +1183,21 @@ struct AudioMediaSession::Impl {
     return true;
   }
 
+  void RemoveRemoteTracks(const std::string& pc) {
+    std::lock_guard<std::mutex> lock(remote_mutex);
+    remote_tracks.erase(
+        std::remove_if(remote_tracks.begin(), remote_tracks.end(),
+                       [&pc](const RemoteTrackEntry& entry) {
+                         return entry.pc == pc;
+                       }),
+        remote_tracks.end());
+  }
+
   void CloseP2p() {
     if (!p2p) return;
     p2p->Close();
     p2p.reset();
+    RemoveRemoteTracks("p2p");
   }
 
   AudioMediaStatus Status() const {
@@ -946,16 +1211,57 @@ struct AudioMediaSession::Impl {
     out.deafened = deafened.load(std::memory_order_relaxed);
     out.sfu_paused = sfu_paused.load(std::memory_order_relaxed);
     out.volume = volume.load(std::memory_order_relaxed);
-    out.capture_frames = capture_gate ? capture_gate->frames() : 0;
+    out.capture_frames =
+        std::max(capture_gate ? capture_gate->frames() : 0,
+                 capture_monitor ? capture_monitor->frames() : 0);
+    if (adm && worker) {
+      worker->BlockingCall([this, &out] {
+        out.recording_initialized = adm->RecordingIsInitialized();
+        out.recording = adm->Recording();
+        out.playout_initialized = adm->PlayoutIsInitialized();
+        out.playing = adm->Playing();
+      });
+    }
+    out.sfu_send_active =
+        sfu_send && sfu_send->HasAudioSender() &&
+        sfu_send->AudioSenderActive();
+    out.p2p_send_active =
+        p2p && p2p->HasAudioSender() && p2p->AudioSenderActive();
+    PeerAudioStats stats;
+    if (p2p && p2p->state_name() == "connected" &&
+        p2p->CollectAudioStats(&stats)) {
+      out.p2p_audio_packets_sent += stats.packets_sent;
+      out.audio_bytes_sent += stats.bytes_sent;
+      out.audio_packets_received += stats.packets_received;
+      out.audio_bytes_received += stats.bytes_received;
+      out.remote_audio_level = std::max(out.remote_audio_level,
+                                        stats.audio_level);
+    }
+    if (sfu_send && sfu_send->state_name() == "connected" &&
+        sfu_send->CollectAudioStats(&stats)) {
+      out.sfu_audio_packets_sent += stats.packets_sent;
+      out.audio_bytes_sent += stats.bytes_sent;
+    }
+    if (sfu_recv && sfu_recv->state_name() == "connected" &&
+        sfu_recv->CollectAudioStats(&stats)) {
+      out.audio_packets_received += stats.packets_received;
+      out.audio_bytes_received += stats.bytes_received;
+      out.remote_audio_level = std::max(out.remote_audio_level,
+                                        stats.audio_level);
+    }
     {
       std::lock_guard<std::mutex> lock(remote_mutex);
       out.remote_tracks = remote_tracks.size();
+      for (const auto& entry : remote_tracks) {
+        if (entry.track && entry.track->enabled()) ++out.active_remote_tracks;
+      }
     }
     out.recording_device = recording_name;
     out.playout_device = playout_name;
     out.sfu_send_state = sfu_send ? sfu_send->state_name() : "none";
     out.sfu_recv_state = sfu_recv ? sfu_recv->state_name() : "none";
     out.p2p_state = p2p ? p2p->state_name() : "none";
+    out.last_error = last_error;
     return out;
   }
 
@@ -963,10 +1269,12 @@ struct AudioMediaSession::Impl {
   AudioMediaSession::Event event;
   bool initialized = false;
   bool shutdown = false;
+  bool fake_device = false;
   std::atomic<bool> muted{true};
   std::atomic<bool> deafened{false};
   std::atomic<bool> sfu_paused{false};
   std::atomic<double> volume{0.6};
+  std::string last_error;
   std::string recording_name;
   std::string playout_name;
 
@@ -977,6 +1285,7 @@ struct AudioMediaSession::Impl {
   webrtc::scoped_refptr<webrtc::AudioDeviceModule> adm;
   webrtc::scoped_refptr<webrtc::PeerConnectionFactoryInterface> factory;
   webrtc::scoped_refptr<webrtc::AudioTrackInterface> audio_track;
+  std::unique_ptr<CaptureMonitor> capture_monitor;
   CaptureGate* capture_gate = nullptr;
   webrtc::PeerConnectionInterface::RTCConfiguration rtc_config;
   std::unique_ptr<AudioPeer> sfu_send;
@@ -984,6 +1293,7 @@ struct AudioMediaSession::Impl {
   std::unique_ptr<AudioPeer> p2p;
   struct RemoteTrackEntry {
     std::string pc;
+    std::string mid;
     webrtc::scoped_refptr<webrtc::AudioTrackInterface> track;
   };
   mutable std::mutex remote_mutex;
@@ -1103,6 +1413,3 @@ bool AudioMediaSession::SetSfuPaused(bool paused, AudioMediaError* error) {
 AudioMediaStatus AudioMediaSession::status() const { return impl_->Status(); }
 
 }  // namespace rtcwin::webrtc_media
-
-
-

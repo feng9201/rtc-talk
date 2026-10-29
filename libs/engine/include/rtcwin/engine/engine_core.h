@@ -73,6 +73,9 @@ class EngineCore final {
                               const signaling::Json& data);
   void HandleSfuOfferRequest(const std::string& request_id,
                              const signaling::Json& data);
+  void TryCompleteSfuSwitch(bool timed_out);
+  void FailPendingSfuSwitch(int code, const std::string& message);
+  void ScheduleSfuSwitchTimeout(const std::string& request_id);
   void HandleAudioMediaEvent(const std::string& method,
                              const std::string& data_json);
   void ResetAudioMedia();
@@ -116,6 +119,7 @@ class EngineCore final {
   bool deafened_ = false;
   int heartbeat_seconds_ = 15;
   asio::steady_timer heartbeat_timer_{signaling_io_};
+  asio::steady_timer media_mode_timer_{signaling_io_};
   camera_win::CameraCaptureSession camera_;
 
   std::unique_ptr<webrtc_media::AudioMediaSession> audio_media_;
@@ -124,6 +128,10 @@ class EngineCore final {
   std::string p2p_peer_;
   bool p2p_offerer_ = false;
   bool sfu_paused_ = false;
+  bool sfu_publish_ready_ = false;
+  bool sfu_subscribe_ready_ = false;
+  std::string pending_sfu_request_id_;
+  std::string pending_sfu_room_mode_json_;
 };
 
 }  // namespace rtcwin::engine

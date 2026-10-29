@@ -57,8 +57,24 @@ int main(int argc, char** argv) {
       QStringLiteral("auto-join-uid"), QStringLiteral("联调用户 ID"),
       QStringLiteral("uid")));
   parser.addOption(QCommandLineOption(
+      QStringLiteral("auto-join-backend"),
+      QStringLiteral("联调音频后端：wasapi|fake|none，默认 none"),
+      QStringLiteral("backend")));
+  parser.addOption(QCommandLineOption(
+      QStringLiteral("auto-join-media-mode"),
+      QStringLiteral("联调媒体模式偏好：auto|sfu|p2p，默认 sfu"),
+      QStringLiteral("mode")));
+  parser.addOption(QCommandLineOption(
       QStringLiteral("auto-join-dev-token"),
       QStringLiteral("联调用 /dev/token 获取开发凭证")));
+  parser.addOption(QCommandLineOption(
+      QStringLiteral("auto-unmute-ms"),
+      QStringLiteral("入房后自动切换麦克风状态的时间"),
+      QStringLiteral("ms")));
+  parser.addOption(QCommandLineOption(
+      QStringLiteral("auto-mute-ms"),
+      QStringLiteral("入房后自动再次切换麦克风状态的时间"),
+      QStringLiteral("ms")));
   parser.addOption(QCommandLineOption(
       QStringLiteral("auto-leave-ms"), QStringLiteral("入房后自动离房间隔"),
       QStringLiteral("ms")));
@@ -98,9 +114,41 @@ int main(int argc, char** argv) {
         parser.value(QStringLiteral("auto-join-uid")).toStdString();
     options.fetch_dev_token =
         parser.isSet(QStringLiteral("auto-join-dev-token"));
-    options.audio_backend = rtcwin::domain::AudioBackend::None;
-    options.media_mode = rtcwin::domain::MediaModePreference::Sfu;
+    const QString backend = parser.value(QStringLiteral("auto-join-backend"));
+    if (backend == QStringLiteral("wasapi")) {
+      options.audio_backend = rtcwin::domain::AudioBackend::Wasapi;
+    } else if (backend == QStringLiteral("fake")) {
+      options.audio_backend = rtcwin::domain::AudioBackend::Fake;
+    } else {
+      options.audio_backend = rtcwin::domain::AudioBackend::None;
+    }
+    const QString mode = parser.value(QStringLiteral("auto-join-media-mode"));
+    if (mode == QStringLiteral("auto")) {
+      options.media_mode = rtcwin::domain::MediaModePreference::Auto;
+    } else if (mode == QStringLiteral("p2p")) {
+      options.media_mode = rtcwin::domain::MediaModePreference::P2p;
+    } else {
+      options.media_mode = rtcwin::domain::MediaModePreference::Sfu;
+    }
     window.BeginJoin(options);
+    if (parser.isSet(QStringLiteral("auto-unmute-ms"))) {
+      bool unmute_ok = false;
+      const int unmute_ms =
+          parser.value(QStringLiteral("auto-unmute-ms")).toInt(&unmute_ok);
+      if (unmute_ok && unmute_ms >= 0) {
+        QTimer::singleShot(unmute_ms, &window,
+                         &rtcwin::ui::MainWindow::ToggleMicrophone);
+      }
+    }
+    if (parser.isSet(QStringLiteral("auto-mute-ms"))) {
+      bool mute_ok = false;
+      const int mute_ms =
+          parser.value(QStringLiteral("auto-mute-ms")).toInt(&mute_ok);
+      if (mute_ok && mute_ms >= 0) {
+        QTimer::singleShot(mute_ms, &window,
+                           &rtcwin::ui::MainWindow::ToggleMicrophone);
+      }
+    }
     if (parser.isSet(QStringLiteral("auto-leave-ms"))) {
       bool leave_ok = false;
       const int leave_ms =

@@ -1,8 +1,10 @@
 #include "rtcwin/webrtc_media/audio_media_session.h"
 
+#include <chrono>
 #include <cstdlib>
 #include <iostream>
 #include <string>
+#include <thread>
 
 std::string EnvironmentValue(const char* name) {
   char* value = nullptr;
@@ -36,18 +38,10 @@ int main() {
               << '\n';
     return 2;
   }
-  if (config.audio_backend != "fake") {
-    const auto status = session.status();
-    std::cout << "real audio device smoke ok"
-              << " sfu_sdp=" << sfu_offer.sdp.size()
-              << " recording=" << status.recording_device
-              << " playout=" << status.playout_device << '\n';
-    session.Shutdown();
-    return 0;
-  }
-
   rtcwin::webrtc_media::AudioMediaSession peer;
-  if (!peer.Initialize(config, [](std::string, std::string) {}, &error)) {
+  rtcwin::webrtc_media::AudioMediaConfig peer_config = config;
+  peer_config.audio_backend = "fake";
+  if (!peer.Initialize(peer_config, [](std::string, std::string) {}, &error)) {
     std::cerr << "peer initialize failed: " << error.code << " "
               << error.message << '\n';
     return 3;
@@ -59,6 +53,28 @@ int main() {
     std::cerr << "SFU negotiation failed: " << error.code << " "
               << error.message << '\n';
     return 4;
+  }
+  if (config.audio_backend != "fake") {
+    if (!session.SetMuted(false, &error)) {
+      std::cerr << "real audio unmute failed: " << error.code << " "
+                << error.message << '\n';
+      return 5;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+    const auto status = session.status();
+    std::cout << "real audio device smoke ok"
+              << " sfu_sdp=" << sfu_offer.sdp.size()
+              << " recording=" << status.recording_device
+              << " playout=" << status.playout_device
+              << " recording_initialized=" << status.recording_initialized
+              << " recording=" << status.recording
+              << " capture_frames=" << status.capture_frames
+              << " sfu_send_active=" << status.sfu_send_active
+              << " sfu_packets_sent=" << status.sfu_audio_packets_sent
+              << '\n';
+    peer.Shutdown();
+    session.Shutdown();
+    return 0;
   }
 
   std::string p2p_offer;
@@ -102,6 +118,3 @@ int main() {
   session.Shutdown();
   return 0;
 }
-
-
-
