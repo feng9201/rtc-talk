@@ -154,19 +154,16 @@ CAbiEngineClient::CAbiEngineClient(QObject* parent) : EngineClient(parent) {
   options.on_local_frame = &CAbiEngineClient::OnLocalFrame;
   network_ = new QNetworkAccessManager(this);
   handle_ = rtcwin_create(&options);
-  // 联调诊断：RTCWIN_TRACE_EVENTS=1 时每 5s 拉一次 media.stats，
-  // 让 capture_frames / remote_tracks / p2p_state 周期性出现在跟踪日志里。
-  if (EventTraceEnabled()) {
-    trace_stats_timer_ = new QTimer(this);
-    trace_stats_timer_->setInterval(5000);
-    connect(trace_stats_timer_, &QTimer::timeout, this, [this] {
-      if (handle_ != nullptr &&
-          snapshot_.join == domain::JoinPhase::Joined) {
-        Submit(QStringLiteral("media.stats"));
-      }
-    });
-    trace_stats_timer_->start();
-  }
+  // Engine writes this small diagnostic snapshot to the rolling file log.
+  trace_stats_timer_ = new QTimer(this);
+  trace_stats_timer_->setInterval(5000);
+  connect(trace_stats_timer_, &QTimer::timeout, this, [this] {
+    if (handle_ != nullptr &&
+        snapshot_.join == domain::JoinPhase::Joined) {
+      Submit(QStringLiteral("media.stats"));
+    }
+  });
+  trace_stats_timer_->start();
 
 }
 
@@ -632,6 +629,15 @@ void CAbiEngineClient::HandleEvent(const QString& method,
       emit ErrorOccurred(error);
     } else if (method == QStringLiteral("session.ready")) {
       emit Notice(QStringLiteral("信令连接已就绪"), QStringLiteral("ok"));
+    } else if (method == QStringLiteral("diagnostics.log_path")) {
+      const QString path = event.value(QStringLiteral("data"))
+                               .toObject()
+                               .value(QStringLiteral("path"))
+                               .toString();
+      if (!path.isEmpty()) {
+        emit Notice(QStringLiteral("诊断日志：%1").arg(path),
+                    QStringLiteral("info"));
+      }
     } else if (method == QStringLiteral("media.ready")) {
       emit Notice(QStringLiteral("音频设备已就绪"), QStringLiteral("ok"));
     } else if (method == QStringLiteral("media.published")) {

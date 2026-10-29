@@ -1,7 +1,9 @@
 #include "rtcwin/engine/engine_core.h"
 
+#include "engine_log.h"
 #include "rtcwin/signaling/protocol.h"
 #include "rtcwin/webrtc_media/audio_device_service.h"
+#include "w_log_cpp.h"
 
 #include <algorithm>
 #include <chrono>
@@ -76,6 +78,8 @@ std::vector<webrtc_media::AudioIceServer> ParseIceServers(const Json& value) {
 
 EngineCore::EngineCore(const rtcwin_options& options, std::string config_json)
     : options_(options), config_json_(std::move(config_json)) {
+  InitializeEngineLogging();
+  LOG_INFO("engine starting version={} log={}", "0.1.0", EngineLogPath());
   worker_ = std::thread(&EngineCore::WorkerLoop, this);
   signaling_work_ = std::make_unique<
       asio::executor_work_guard<asio::io_context::executor_type>>(
@@ -98,6 +102,7 @@ EngineCore::~EngineCore() {
   cv_.notify_all();
   if (worker_.joinable()) worker_.join();
   camera_.Stop();
+  ShutdownEngineLogging();
 }
 
 uint64_t EngineCore::Submit(std::string method, std::string json) {
@@ -263,6 +268,9 @@ void EngineCore::HandleSessionConnectAndJoin(const Command& command) {
   const std::string display = request.value("display", uid);
   const std::string media_mode = request.value("media_mode", std::string("auto"));
   const std::string talk_mode = request.value("talk_mode", std::string("free"));
+  LOG_INFO("join request uid={} room={} backend={} source={} mode={} talk={}",
+           uid, room_id, request.value("audio_backend", std::string()),
+           request.value("audio_source", std::string()), media_mode, talk_mode);
   if (url.rfind("ws://", 0) != 0 || token.empty() || uid.empty() ||
       room_id.empty()) {
     EmitResponse(command.id, command.method, false, 400,
@@ -360,6 +368,10 @@ void EngineCore::HandleSessionConnectAndJoin(const Command& command) {
           return;
         }
         const Json hello_data = result.value("data", Json::object());
+        LOG_INFO("session hello ok session={} ice_servers={} heartbeat={}",
+                 hello_data.value("session_id", std::string()),
+                 hello_data.value("ice_servers", Json::array()).size(),
+                 hello_data.value("heartbeat_interval", 15));
         const auto ice_servers =
             ParseIceServers(hello_data.value("ice_servers", Json::array()));
         {
@@ -375,7 +387,7 @@ void EngineCore::HandleSessionConnectAndJoin(const Command& command) {
              {{"audio", {{"send", audio_requested}, {"muted", true}}},
               {"video", {{"send", false}}}}},
             {"policy", {{"talk_mode", talk_mode}, {"media_mode", media_mode}}}};
-        signaling_->Request("room.join", join, [this](Json joined) {
+        signaling_->Request("room.join", join, [this, room_id](Json joined) {
           if (!joined.value("ok", false)) {
             const uint64_t id = session_command_id_.exchange(0);
             if (id != 0) {
@@ -391,6 +403,9 @@ void EngineCore::HandleSessionConnectAndJoin(const Command& command) {
             room_joined_ = true;
           }
           const Json data = joined.value("data", Json::object());
+          LOG_INFO("room join ok room={} media_mode={} peers={}", room_id,
+                   data.value("media_mode", std::string("sfu")),
+                   data.value("peers", Json::array()).size());
           const uint64_t id = session_command_id_.exchange(0);
           PostToWorker([this, id, data] { FinalizeJoin(id, data); });
         });
@@ -464,6 +479,14 @@ void EngineCore::HandleSessionConnectAndJoin(const Command& command) {
         return;
       }
       if (!method.empty() && message.contains("data")) {
+        if (method == "room.peerUpdated" ||
+            method == "room.peerJoined") {
+          const Json audio = data.value("audio", Json::object());
+          LOG_INFO("room peer audio method={} uid={} muted={} speaking={}",
+                   method, data.value("uid", std::string()),
+                   audio.value("muted", true),
+                   audio.value("speaking", false));
+        }
         EmitNotification(method, data.dump());
       }
     };
@@ -528,13 +551,16 @@ void EngineCore::FinalizeJoin(uint64_t command_id, const Json& data) {
   }
   EmitNotification("session.ready", response.dump());
   if (!audio_requested) {
+    LOG_INFO("join finalized without audio backend=none");
     EmitNotification("media.disabled", "{\"reason\":\"backend_none\"}");
     return;
   }
   if (!initialized) {
+    LOG_ERR("audio media initialization failed error={}", error);
     EmitMediaError(1710, "音频媒体初始化失败", error);
     return;
   }
+  LOG_INFO("join finalized media_enabled=true");
   StartMediaForCurrentMode();
 }
 
@@ -584,6 +610,8 @@ bool EngineCore::InitializeAudioMedia(const Json& join_data,
                        EscapeJson(status.recording_device) +
                        "\",\"playout_device\":\"" +
                        EscapeJson(status.playout_device) + "\"}");
+  LOG_INFO("audio media ready source={} recording_device={} playout_device={}",
+           config.audio_source, status.recording_device, status.playout_device);
   return true;
 }
 
@@ -607,6 +635,7 @@ void EngineCore::PublishSfu() {
   webrtc_media::AudioSfuOffer offer;
   webrtc_media::AudioMediaError error;
   if (!audio_media_->CreateSfuPublishOffer(&offer, &error)) {
+    LOG_ERR("sfu offer failed code={} error={}", error.code, error.message);
     if (!pending_sfu_request_id_.empty()) {
       FailPendingSfuSwitch(error.code == 0 ? 1730 : error.code,
                            error.message.empty()
@@ -622,6 +651,8 @@ void EngineCore::PublishSfu() {
                     {"kind", "audio"},
                     {"source", offer.source}});
   Json request = {{"sdp", offer.sdp}, {"tracks", tracks}};
+  LOG_INFO("sfu publish offer source={} mid={} sdp_bytes={}", offer.source,
+           offer.audio_mid, offer.sdp.size());
   PostToSignaling([this, request = std::move(request)] {
     if (!signaling_) return;
     signaling_->Request(
@@ -629,6 +660,7 @@ void EngineCore::PublishSfu() {
           if (!result.value("ok", false)) {
             const int code = ResponseCode(result);
             const std::string message = ResponseMessage(result);
+            LOG_ERR("sfu publish rejected code={} message={}", code, message);
             PostToWorker([this, code, message] {
               if (!pending_sfu_request_id_.empty()) {
                 FailPendingSfuSwitch(code, message);
@@ -669,6 +701,8 @@ void EngineCore::ApplySfuAnswer(const std::string& sdp) {
   }
   sfu_publish_ready_ = true;
   sfu_paused_ = !p2p_session_.empty();
+  LOG_INFO("sfu publish answer applied sdp_bytes={} paused={}", sdp.size(),
+           sfu_paused_);
   if (!audio_media_->SetSfuPaused(sfu_paused_, &error)) {
     EmitMediaError(error.code, "更新 SFU 暂停状态失败", error.message);
   }
@@ -682,6 +716,7 @@ void EngineCore::StartP2p() {
     return;
   }
   if (p2p_session_.empty() || p2p_peer_.empty()) {
+    LOG_WARN("p2p allocation missing, falling back to sfu");
     EmitNotification("p2p.state",
                      "{\"state\":\"failed\",\"reason\":\"missing_allocation\"}");
     EmitMediaError(1732, "P2P 分配参数缺失", "回退到 SFU 音频");
@@ -693,6 +728,7 @@ void EngineCore::StartP2p() {
     return;
   }
   if (!p2p_offerer_) {
+    LOG_INFO("p2p awaiting offer session={} peer={}", p2p_session_, p2p_peer_);
     EmitNotification("p2p.state",
                      "{\"session\":\"" + EscapeJson(p2p_session_) +
                          "\",\"state\":\"awaiting_offer\"}");
@@ -701,6 +737,7 @@ void EngineCore::StartP2p() {
   std::string offer;
   webrtc_media::AudioMediaError error;
   if (!audio_media_->CreateP2pOffer(&offer, &error)) {
+    LOG_ERR("p2p offer failed code={} error={}", error.code, error.message);
     EmitMediaError(error.code, "创建 P2P 音频 offer 失败", error.message);
     EmitNotification("p2p.state",
                      "{\"session\":\"" + EscapeJson(p2p_session_) +
@@ -708,6 +745,8 @@ void EngineCore::StartP2p() {
     return;
   }
   Json event = {{"session", p2p_session_}, {"to", p2p_peer_}, {"sdp", offer}};
+  LOG_INFO("p2p offer sent session={} peer={} sdp_bytes={}", p2p_session_,
+           p2p_peer_, offer.size());
   PostToSignaling([this, event = std::move(event)] {
     if (signaling_) signaling_->Notify("p2p.offer", event);
   });
@@ -721,6 +760,8 @@ void EngineCore::ApplyP2pOffer(const std::string& session,
                                const std::string& from,
                                const std::string& sdp) {
   if (session.empty() || from.empty() || sdp.empty()) return;
+  LOG_INFO("p2p offer received session={} from={} sdp_bytes={}", session, from,
+           sdp.size());
   if (p2p_session_.empty()) {
     p2p_session_ = session;
     p2p_peer_ = from;
@@ -734,6 +775,8 @@ void EngineCore::ApplyP2pOffer(const std::string& session,
   std::string answer;
   webrtc_media::AudioMediaError error;
   if (!audio_media_->CreateP2pAnswer(sdp, &answer, &error)) {
+    LOG_ERR("p2p answer create failed session={} code={} error={}", session,
+              error.code, error.message);
     EmitMediaError(error.code, "创建 P2P 音频 answer 失败", error.message);
     EmitNotification("p2p.state",
                      "{\"session\":\"" + EscapeJson(session) +
@@ -758,6 +801,8 @@ void EngineCore::ApplyP2pAnswer(const std::string& session,
   }
   webrtc_media::AudioMediaError error;
   if (!audio_media_->ApplyP2pAnswer(sdp, &error)) {
+    LOG_ERR("p2p answer apply failed session={} code={} error={}", session,
+              error.code, error.message);
     EmitMediaError(error.code, "应用 P2P 音频 answer 失败", error.message);
     EmitNotification("p2p.state",
                      "{\"session\":\"" + EscapeJson(session) +
@@ -780,6 +825,7 @@ void EngineCore::HandleMediaModeRequest(const std::string& request_id,
   PostToWorker([this, request_id, data] {
     const std::string mode =
         data.value("mode", data.value("media_mode", std::string()));
+    LOG_INFO("media mode request id={} mode={}", request_id, mode);
     if (!audio_media_) {
       PostToSignaling([this, request_id] {
         if (signaling_) {
@@ -993,6 +1039,7 @@ void EngineCore::HandleAudioMediaEvent(const std::string& method,
   if (method == "audio.connection") {
     const std::string pc = data.value("pc", std::string());
     const std::string state = data.value("state", std::string());
+    LOG_INFO("audio connection pc={} state={}", pc, state);
     if (pc == "p2p") {
       if (state == "connected") {
         sfu_paused_ = true;
@@ -1066,6 +1113,7 @@ void EngineCore::HandleMediaSetMute(const Command& command) {
     return;
   }
   const bool muted = request["muted"].get<bool>();
+  LOG_INFO("media.setMute requested muted={}", muted);
   const uint64_t generation = mute_generation_.fetch_add(1) + 1;
   webrtc_media::AudioMediaError media_error;
   if (muted && !audio_media_->SetMuted(true, &media_error)) {
@@ -1100,6 +1148,10 @@ void EngineCore::HandleMediaSetMute(const Command& command) {
                 audio_media_ &&
                 audio_media_->SetMuted(effective, &media_error);
             Json state = {{"muted", applied ? effective : true}};
+            LOG_INFO(
+                "media.setMute confirmed requested={} server_ok={} "
+                "effective={} applied={} error={}",
+                muted, server_ok, effective, applied, media_error.message);
             EmitNotification("media.muted", state.dump());
             if (!server_ok) {
               EmitResponse(command_id, "media.setMute", false,
@@ -1165,6 +1217,14 @@ void EngineCore::HandleMediaStats(const Command& command) {
     return;
   }
   const auto status = audio_media_->status();
+  LOG_INFO(
+      "media stats source={} muted={} recording={} capture_frames={} "
+      "sfu={}/{} p2p={}/{} sent={} recv={} remote_tracks={} level={}",
+      media_config_.audio_source, status.muted, status.recording,
+      status.capture_frames, status.sfu_send_state, status.sfu_recv_state,
+      status.p2p_state, status.p2p_connected, status.p2p_audio_packets_sent,
+      status.audio_packets_received, status.remote_tracks,
+      status.remote_audio_level);
   Json data = {
       {"initialized", status.initialized},
       {"sfu_send_ready", status.sfu_send_ready},
@@ -1302,6 +1362,8 @@ void EngineCore::OnCameraFrame(const camera_win::I420Frame& frame) {
 void EngineCore::EmitResponse(uint64_t id, const std::string& method, bool ok,
                               int error_code, const std::string& message,
                               const std::string& data_json) {
+  LOG_INFO("response id={} method={} ok={} code={} message={}", id, method, ok,
+           error_code, message);
   if (options_.on_event == nullptr) return;
   std::ostringstream json;
   json << "{\"v\":1,\"type\":\"res\",\"id\":" << id
@@ -1319,6 +1381,7 @@ void EngineCore::EmitResponse(uint64_t id, const std::string& method, bool ok,
 
 void EngineCore::EmitNotification(const std::string& method,
                                   const std::string& data_json) {
+  LOG_INFO("notification method={}", method);
   if (options_.on_event == nullptr) return;
   std::ostringstream json;
   json << "{\"v\":1,\"type\":\"ntf\",\"method\":\""

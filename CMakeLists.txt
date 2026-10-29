@@ -34,7 +34,19 @@ find_package(Qt5 5.15 REQUIRED COMPONENTS Core Gui Widgets Network OpenGL)
 find_package(OpenGL REQUIRED)
 find_package(asio CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
+find_package(spdlog CONFIG REQUIRED)
 find_package(Threads REQUIRED)
+
+set(LOGCPP_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+set(LOGCPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(LOGCPP_SUPPORT_SQLITE OFF CACHE BOOL "" FORCE)
+add_subdirectory(third_party/log-cpp)
+set_target_properties(log-cpp PROPERTIES
+  MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+)
+target_compile_definitions(log-cpp
+  PRIVATE $<$<CONFIG:Debug>:_HAS_ITERATOR_DEBUGGING=0>
+)
 
 if(RTCWIN_BUILD_WEBRTC_MEDIA)
   include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/webrtc.cmake")

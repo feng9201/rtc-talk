@@ -392,6 +392,8 @@ void LoopbackAudioCapture::PushPending() {
   }
 }
 
-void LoopbackAudioCapture::RecordError(long hr) { last_error_ = hr; }
+void LoopbackAudioCapture::RecordError(long hr) {
+  last_error_ = hr;
+}
 
 }  // namespace rtcwin::webrtc_media

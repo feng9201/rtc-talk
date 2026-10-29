@@ -1,0 +1,25 @@
+BasedOnStyle: Google
+Language: Cpp
+Standard: c++17
+#一行最大120字节,超过换行(0表示不限制)
+ColumnLimit: 120
+#提取指针对齐
+DerivePointerAlignment: false
+#指针对齐风格 left int* a|right int *a
+PointerAlignment: Right
+#预处理指令缩减
+IndentPPDirectives: AfterHash
+#大括号列表风格
+Cpp11BracedListStyle: false
+#模板声明断行
+AlwaysBreakTemplateDeclarations: true
+#短的case标签在一行
+AllowShortCaseLabelsOnASingleLine: true
+#是否在模板关键字template之后插入空格
+SpaceAfterTemplateKeyword: true
+#允许短语法块在单行上
+AllowShortBlocksOnASingleLine: true
+# 缩进宽度
+IndentWidth: 4
+#Tab宽度
+TabWidth : 4

@@ -1,6 +1,7 @@
 #include "rtcwin/webrtc_media/audio_media_session.h"
 #include "rtcwin/webrtc_media/switchable_audio_device.h"
 
+
 #include "api/audio/audio_frame.h"
 #include "api/audio/audio_frame_processor.h"
 #include "api/audio/audio_processing.h"
@@ -1030,7 +1031,10 @@ struct AudioMediaSession::Impl {
       }
       return adm->Playing() || adm->StartPlayout() == 0;
     });
-    if (!ok && detail) *detail = "启动音频播放失败";
+    if (!ok) {
+      if (detail) *detail = "启动音频播放失败";
+    } else {
+    }
     return ok;
   }
 

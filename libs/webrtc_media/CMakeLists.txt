@@ -13,7 +13,10 @@ target_include_directories(rtcwin_webrtc_media
   PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include"
 )
 
-target_link_libraries(rtcwin_webrtc_media PRIVATE rtcwin_webrtc ole32)
+target_link_libraries(rtcwin_webrtc_media PRIVATE
+  rtcwin_webrtc
+  ole32
+)
 
 target_compile_definitions(rtcwin_webrtc_media
   PUBLIC $<$<CONFIG:Debug>:_HAS_ITERATOR_DEBUGGING=0>

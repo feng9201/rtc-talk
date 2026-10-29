@@ -1,0 +1,27 @@
+{
+    "name": "log-cpp",
+    "version": "1.0.0",
+    "description": "Thin spdlog facade with per-sink levels, optional Qt header formatter and sqlite",
+    "license": "UNLICENSED",
+    "dependencies": [
+        "spdlog",
+        {
+            "name": "vcpkg-cmake",
+            "host": true
+        },
+        {
+            "name": "vcpkg-cmake-config",
+            "host": true
+        }
+    ],
+    "default-features": [],
+    "features": {
+        "shared": {
+            "description": "Build log-cpp as a shared library (DLL/.so/.dylib). Without this feature, linkage follows the triplet (x64-windows = dynamic, x64-windows-static = static)."
+        },
+        "sqlite": {
+            "description": "Enable SQLite log sink",
+            "dependencies": ["sqlitecpp"]
+        }
+    }
+}

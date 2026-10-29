@@ -1,5 +1,7 @@
 add_library(rtcwin_engine SHARED
   include/rtcwin/engine/engine_core.h
+  src/engine_log.h
+  src/engine_log.cpp
   src/engine_core.cpp
   src/client_api.cpp
 )
@@ -18,7 +20,12 @@ target_compile_definitions(rtcwin_engine PRIVATE
 target_compile_options(rtcwin_engine PRIVATE
   $<$<CXX_COMPILER_ID:MSVC>:/utf-8 /EHsc /GR /W3>
 )
-target_link_libraries(rtcwin_engine PRIVATE rtcwin_camera_win rtcwin_signaling rtcwin_webrtc_media)
+target_link_libraries(rtcwin_engine PRIVATE
+  rtcwin_camera_win
+  rtcwin_signaling
+  rtcwin_webrtc_media
+  log-cpp::log-cpp
+)
 set_target_properties(rtcwin_engine PROPERTIES
   CXX_STANDARD 17
   CXX_STANDARD_REQUIRED ON

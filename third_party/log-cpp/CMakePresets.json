@@ -1,0 +1,57 @@
+{
+  "version": 5,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 15,
+    "patch": 0
+  },
+  "include": [],
+  "configurePresets": [
+    {
+      "name": "default",
+      "displayName": "",
+      "description": "Default build",
+      "binaryDir": "${sourceDir}/build/default",
+      "generator": "Ninja",
+        "cacheVariables": {
+            "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+            "CMAKE_EXPORT_COMPILE_COMMANDS": {
+                "type": "INTERNAL",
+                "value": "1"
+            },
+            "LOGCPP_BUILD_SHARED": "ON",
+            "LOGCPP_BUILD_TESTS": "ON",
+            "LOGCPP_SUPPORT_SQLITE": "ON"
+        },
+      "environment": {
+        "VCPKG_ROOT": "D:/vcpkg"
+      }
+    },
+    {
+      "name": "msvc",
+      "displayName": "",
+      "description": "Default build",
+      "binaryDir": "${sourceDir}/build/msvc",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": {
+          "type": "INTERNAL",
+          "value": "1"
+        }
+      },
+      "environment": {
+        "VCPKG_ROOT": "D:/vcpkg"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "default",
+      "configurePreset": "default"
+    },
+    {
+      "name": "msvc",
+      "configurePreset": "msvc"
+    }
+  ]
+}
