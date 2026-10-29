@@ -3,9 +3,9 @@
 > 快照日期：2026-10-29  
 > 仓库：`D:\google\webrtc-win-client\rtc-talk-win`  
 > 分支：`rtc-talk-win`  
-> 本地最新提交：`01be148 feat: 接入log-cpp诊断日志`
+> 本地最新提交：`81cb77c docs: 记录B3交付包与验证证据`
 >
-> 当前状态：S3.2 音频主链路已通过短链路验证；S4.1 摄像头 SFU 发布、远端 I420 回传和 muxPlayer 房间渲染已通过双端验证；B1-B3（命令/事件门面、信令传输、会话状态机）已完成。屏幕共享、P2P 视频和多路压力仍未完成。
+> 当前状态：S3.2 音频主链路已通过短链路验证；S4.1 摄像头 SFU 发布、远端 I420 回传和 muxPlayer 房间渲染已通过双端验证；B1-B5（门面、信令、状态机、媒体编排、媒体管线）已完成。屏幕共享、P2P 视频和多路压力仍未完成。
 > 旧工程：`D:\google\webrtc-win-client\rtc-talk`，只读参考，禁止修改或提交。
 
 本文档面向后续接入业务、继续媒体开发、做代码评审或发布验收的工程师。它描述当前真实代码状态，不把计划中的能力写成已完成能力。
@@ -17,7 +17,7 @@
 
 | 类别 | 仓库 / 分支 / 提交 | 本工程中的用途 | 权限 |
 |---|---|---|---|
-| 当前生产工程 | `D:\google\webrtc-win-client\rtc-talk-win` / `rtc-talk-win` / `01be148` + S4.1/B1-B3 工作树 | 真正交付工程、当前开发分支 | 可开发、可提交到 `rtc-talk-win` |
+| 当前生产工程 | `D:\google\webrtc-win-client\rtc-talk-win` / `rtc-talk-win` / `81cb77c` + S4.1/B1-B5 工作树 | 真正交付工程、当前开发分支 | 可开发、可提交到 `rtc-talk-win` |
 | 服务端权威参考 | `D:\google\webrtc-win-client\rtc-talk` / `origin/main` / `8e6ff57` | 服务端行为、协议口径、S4 差异和联调依据 | 只读 |
 | 旧 Windows 客户端功能参考 | `origin/feat/windows-client` / `df22708` | `client-win` demo、既有音视频功能和联调逻辑参考 | 只读 |
 | 旧 Windows 生产实现参考 | `origin/codex/feat/windows-production-client` / `bbb3891` | P5 UI、生产模块、历史改造和验收记录参考 | 只读 |
@@ -356,19 +356,18 @@ flowchart LR
 
 | 文件 | 作用 |
 |---|---|
-| `libs/engine/include/rtcwin/engine/engine_core.h` | Engine 私有接口和状态 |
-| `libs/engine/src/engine_core.cpp` | 命令分发、信令编排、房间和音频媒体协调 |
+| `libs/engine/src/engine_core.cpp` | 线程、命令队列、模块装配和 C ABI 内核入口 |
+| `libs/engine/src/session_controller.cpp` | 连接、hello、入房、离房、心跳和信令回调 |
+| `libs/engine/src/media_orchestrator.cpp` | 摄像头、媒体命令、SFU/P2P 协商和媒体事件 |
+| `libs/engine/src/session_state_machine.cpp` | 会话 phase/media mode/generation 状态机 |
 | `libs/engine/src/client_api.cpp` | C ABI 实例化和 Submit |
 
 Engine 当前关键职责：
 
-- `HandleSessionConnectAndJoin`
-- `FinalizeJoin`
-- `InitializeMedia`
-- `PublishSfu`
-- `ApplySfuAnswer`
-- `StartP2p`
-- `ApplyP2pOffer`
+- `EngineCore`：线程、命令队列、模块装配、生命周期
+- `SessionController`：连接、入房、离房、心跳、信令回调
+- `MediaOrchestrator`：摄像头、SFU/P2P、媒体命令和统计
+- `SessionStateMachine`：会话状态和 generation 隔离
 - `ApplyP2pAnswer`
 - `ApplyP2pCandidate`
 - `HandleMediaModeRequest`
@@ -1091,7 +1090,7 @@ real audio device smoke ok sfu_sdp=1012 recording=麦克风 (5- Logitech Webcam 
 ### P1：生产架构风险
 
 1. `EngineCore` 仍然过大。
-   - B1-B3 已移出命令/事件门面、信令运行时和会话生命周期状态。
+   - B1-B5 已移出命令/事件门面、信令运行时、会话生命周期、媒体编排和媒体管线。
    - 房间编排、媒体协调、P2P/SFU 切换、设备控制和统计仍在 `EngineCore`。
    - 建议下一步拆：
      - `SessionController`
@@ -1375,7 +1374,12 @@ tests/signaling_smoke.cpp
 
 债务清单（按严重度）：
 
-1. **`EngineCore` 上帝类（部分缓解）**：截至 B3，命令/事件门面、信令传输和会话状态机已迁出；`engine_core.cpp` 仍约 1598 行，媒体编排、P2P/SFU 切换、摄像头控制、统计和设备生命周期仍集中在 `EngineCore`。会话状态已不再使用散的 `bool`/`string` 组合，下一阶段仍需 B4 Media Orchestrator 拆分。
+1. **`EngineCore` 上帝类（已解决）**：B4/B5 完成后
+   `engine_core.cpp` 约 198 行，只保留线程、命令队列、模块装配和入口；
+   会话生命周期已进入 `SessionController`，媒体域已进入
+   `MediaOrchestrator`，MediaSession 内部已拆出
+   `AudioPipeline`、`VideoPipeline`、`SdpNegotiator`、`MediaPeer`、
+   `RemoteTrackRegistry`、`StatsCollector`。
 2. **信令层未执行依赖隔离纪律**：`signaling_client.h` 公共头直接 `#include <asio.hpp>` 与 `<websocketpp/...>`，`webrtc_media` 做到了零泄漏而 signaling 没有，需 PImpl 化。
 3. **协议健壮性缺口（部分解决）**（见 17.2 第 3 条裁决）：B3 已补齐会话 generation guard，旧信令、媒体和帧回调会被隔离；仍未实现 resume，断线仍整场重置；`mute_generation_` 仍只是局部保护；静音 UI 乐观更新未区分请求态/确认态（老工程 PTT 踩过同款坑）。
 4. 该 review 完成时视频路径仅完成本地预览；S4.1 后续已补上 SFU 摄像头发布、consumer 映射和远端 I420 直注入 muxPlayer。屏幕共享与 P2P 视频仍是后续债务。
@@ -1597,14 +1601,22 @@ build/windows-x64/s4-smoke2/b-engine.log
    会占用服务端 `video_max_publishers` 的“新视频轨”判断名额。若房间策略允许的
    发布者数小于成员数，后续需要改为首次开摄像头时再重协商添加 video m-line。
 
-### 18.9 EngineCore 生产化拆分计划（待执行）
+### 18.9 EngineCore 生产化拆分（B1-B5 已完成）
 
 当前体量：
 
 | 文件 | 行数 | 问题 |
 |---|---:|---|
-| `libs/engine/src/engine_core.cpp` | 1507 | 编排、状态、设备、媒体和 timer 仍集中；命令、事件和信令运行时已移出 |
-| `libs/webrtc_media/src/media_session.cpp` | 1783 | 音频、视频、SDP、Peer、Stats 集中在一个 PImpl |
+| `libs/engine/src/engine_core.cpp` | 198 | 线程、命令队列、模块装配和 C ABI 入口 |
+| `libs/engine/src/session_controller.cpp` | 445 | 连接、hello、入房、离房、心跳和信令回调 |
+| `libs/engine/src/media_orchestrator.cpp` | 1248 | 摄像头、媒体命令、SFU/P2P 协商和媒体事件 |
+| `libs/webrtc_media/src/media_session.cpp` | 636 | MediaSession 公共 PImpl、Peer 组合和生命周期 |
+| `libs/webrtc_media/src/audio_pipeline.cpp` | 386 | ADM、设备、采集、播放、静音和音量 |
+| `libs/webrtc_media/src/video_pipeline.cpp` | 60 | 摄像头视频源、视频轨和帧推送 |
+| `libs/webrtc_media/src/media_peer.cpp` | 469 | PeerConnection 生命周期和媒体轨控制 |
+| `libs/webrtc_media/src/remote_track_registry.cpp` | 214 | 远端音频/视频轨、sink 和启用状态 |
+| `libs/webrtc_media/src/sdp_negotiator.cpp` | 193 | offer/answer 创建、设置和超时 |
+| `libs/webrtc_media/src/peer_stats_collector.cpp` | 92 | RTCStats 采集和聚合 |
 | `libs/client_gateway/src/c_abi_engine_client.cpp` | 872 | C ABI 解析、HTTP、帧邮箱和快照更新集中 |
 
 拆分顺序：
@@ -1623,16 +1635,19 @@ build/windows-x64/s4-smoke2/b-engine.log
    绑定，信令、媒体事件、远端帧和定时器回调均先校验 generation。
    已删除 `EngineCore` 内的 `session_ready_`、`room_joined_`、
    `media_enabled_`、`media_mode_` 和独立 `session_command_id_`。
-4. **B4 Media Orchestrator**：抽出发布/订阅、P2P 到 SFU 切换、camera/screen
-   控制；MediaSession 仍负责 libwebrtc，但不再承载业务时序。
-5. **B5 MediaSession 内聚拆分**：`AudioPipeline`、`VideoPipeline`、
-   `SdpNegotiator`、`MediaPeer`、`RemoteTrackRegistry`、`StatsCollector`。
+4. **B4 Media Orchestrator（已完成）**：发布/订阅、P2P 到 SFU 切换、
+   camera/screen 控制、媒体命令和统计已从 EngineCore 迁出。新增
+   `SessionController`，EngineCore 仅保留线程、命令路由和模块装配。
+5. **B5 MediaSession 内聚拆分（已完成）**：已拆出 `AudioPipeline`、
+   `VideoPipeline`、`SdpNegotiator`、`MediaPeer`、
+   `RemoteTrackRegistry`、`StatsCollector`；MediaSession 只负责组合和
+   对外 API。
 6. 每步只做结构迁移，行为不变；每步后跑 Release/Debug CTest、短双端
    camera smoke，并保持 C ABI 不破坏。
 
 目标：
 
-- `engine_core.cpp` 降到 300 行以内，只保留装配、线程和命令入口。
+- `engine_core.cpp` 已降到 198 行，只保留装配、线程和命令入口。
 - 不允许在 `EngineCore` 内直接拼 JSON 或处理 SDP。
 - P2P/SFU 切换、摄像头控制不再依赖隐式 bool 时序。
 
@@ -1640,6 +1655,11 @@ build/windows-x64/s4-smoke2/b-engine.log
 
 - Release/Debug 全量构建通过。
 - Release/Debug CTest 5/5（新增 `rtcwin_session_state_tests`）。
+- B5 双客户端 SFU 摄像头回归通过：A `camera_frames=15 -> 89`、
+  `video_packets_sent=0 -> 491`；B `video_packets_received=57`；
+  两端 `room.leave ok=true`。
+- B5 真实 WASAPI 双端回归通过：双方 `recording=true`，取消静音后
+  `capture_frames` 增长，静音后停发；远端收到音频包并读到音平。
 - B3 双客户端短链路通过：A `camera_frames=27 -> 140`、
   `video_packets_sent=15 -> 246`；B `video_packets_received=100`；
   两端 `room.leave ok=true`。

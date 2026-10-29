@@ -3,10 +3,14 @@ add_library(rtcwin_engine SHARED
   include/rtcwin/engine/engine_command.h
   include/rtcwin/engine/engine_command_router.h
   include/rtcwin/engine/engine_event_sink.h
+  include/rtcwin/engine/media_orchestrator.h
+  include/rtcwin/engine/session_controller.h
   include/rtcwin/engine/session_state_machine.h
   include/rtcwin/engine/signaling_transport.h
   src/engine_command_router.cpp
   src/engine_event_sink.cpp
+  src/media_orchestrator.cpp
+  src/session_controller.cpp
   src/session_state_machine.cpp
   src/signaling_transport.cpp
   src/engine_log.h

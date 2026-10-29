@@ -14,7 +14,8 @@ class EngineEventSink final {
 
   void EmitResponse(std::uint64_t id, const std::string& method, bool ok,
                     int error_code, const std::string& message,
-                    const signaling::Json& data);
+                    const signaling::Json& data =
+                        signaling::Json::object());
   void EmitNotification(const std::string& method,
                         const signaling::Json& data);
 

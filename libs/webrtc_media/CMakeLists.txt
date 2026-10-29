@@ -3,14 +3,27 @@ add_library(rtcwin_webrtc_media STATIC
   include/rtcwin/webrtc_media/loopback_audio_capture.h
   include/rtcwin/webrtc_media/media_session.h
   include/rtcwin/webrtc_media/switchable_audio_device.h
+  src/audio_pipeline.cpp
+  src/audio_pipeline.h
   src/audio_device_service.cpp
   src/loopback_audio_capture.cpp
+  src/media_error.h
+  src/media_peer.cpp
+  src/media_peer.h
   src/media_session.cpp
+  src/peer_stats_collector.cpp
+  src/peer_stats_collector.h
   src/remote_video_sink.cpp
   src/remote_video_sink.h
+  src/remote_track_registry.cpp
+  src/remote_track_registry.h
+  src/sdp_negotiator.cpp
+  src/sdp_negotiator.h
   src/switchable_audio_device.cpp
   src/video_track_source.cpp
   src/video_track_source.h
+  src/video_pipeline.cpp
+  src/video_pipeline.h
   src/video/h264_bitstream.cpp
   src/video/h264_bitstream.h
   src/video/mf_h264_codec.cpp

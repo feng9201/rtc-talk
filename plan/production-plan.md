@@ -1,8 +1,8 @@
 # rtc-talk-win 详细开发计划（muxPlayer 优先）
 
-> 状态：S1、S2、S3.1 已完成；S3.2 音频 P2P/SFU 主链路已提交；S4.1 摄像头 SFU 发布与远端 muxPlayer 渲染已通过双端短链路验证；B1-B3 生产化拆分已完成，S4 的屏幕共享、P2P 视频和多路压力验收仍待完成。
+> 状态：S1、S2、S3.1 已完成；S3.2 音频 P2P/SFU 主链路已提交；S4.1 摄像头 SFU 发布与远端 muxPlayer 渲染已通过双端短链路验证；B1-B5 生产化拆分已完成，S4 的屏幕共享、P2P 视频和多路压力验收仍待完成。
 > 日期：2026-10-29
-> 当前代码基线：`rtc-talk-win@01be148` + S4.1/B1-B3 工作树
+> 当前代码基线：`rtc-talk-win@81cb77c` + S4.1/B1-B5 工作树
 > 第一验收目标：完成 muxPlayer 接入，并用本机摄像头完成真实预览联调。
 > 约束：WebRTC 音频仍由 WebRTC AudioDeviceModule 处理；muxPlayer 只作为视频渲染基础设施。
 
@@ -729,8 +729,7 @@ S1 未通过，不进入 S2。
 - 屏幕共享采集、发布、订阅和停止后立即清屏。
 - P2P 视频支路。
 - 多路视频 session pool、9 路性能、5 秒无帧回收和长时间稳定性。
-- `EngineCore` 拆分。B3 后该文件约 1598 行，仍是媒体编排、P2P/SFU 切换、
-  摄像头控制和统计的集中点；进入 S4.2 前继续 B4 Media Orchestrator 拆分。
+- 后续把 `client_gateway` 的 C ABI 解析、HTTP 和快照逻辑继续内聚拆分。
 
 S4.1 后的重构进度：
 
@@ -743,6 +742,12 @@ S4.1 后的重构进度：
 - B3 Session State Machine 已完成。
 - `SessionStateMachine` 用显式 phase/media mode 和 generation 管理连接、入房、
   离房、失败与媒体就绪状态；旧回调不能污染新会话。
+- B4 Media Orchestrator 已完成。
+- EngineCore 已降至约 198 行；`SessionController`、`MediaOrchestrator`
+  分离了会话生命周期和媒体编排。
+- B5 MediaSession 内聚拆分已完成。
+- `AudioPipeline`、`VideoPipeline`、`SdpNegotiator`、`MediaPeer`、
+  `RemoteTrackRegistry`、`StatsCollector` 已独立。
 
 交付：
 
