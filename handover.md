@@ -3,7 +3,7 @@
 > 快照日期：2026-10-29  
 > 仓库：`D:\google\webrtc-win-client\rtc-talk-win`  
 > 分支：`rtc-talk-win`  
-> 已推送音频基线：`3b79703 fix: 打通真实音频并完善P2P/SFU切换`
+> 已推送音频基线：`5ab73fa feat: 接入WASAPI系统音采集`
 >
 > 当前状态：S3.2 核心音频链路已通过 1v1 P2P、第三人切 SFU 和静音停发短链路验证；收听、音量、设备异常和完整恢复仍需继续验收。
 > 旧工程：`D:\google\webrtc-win-client\rtc-talk`，只读参考，禁止修改或提交。
@@ -17,7 +17,7 @@
 
 | 类别 | 仓库 / 分支 / 提交 | 本工程中的用途 | 权限 |
 |---|---|---|---|
-| 当前生产工程 | `D:\google\webrtc-win-client\rtc-talk-win` / `rtc-talk-win` / `3b79703` | 真正交付工程、当前开发分支 | 可开发、可提交到 `rtc-talk-win` |
+| 当前生产工程 | `D:\google\webrtc-win-client\rtc-talk-win` / `rtc-talk-win` / `5ab73fa` | 真正交付工程、当前开发分支 | 可开发、可提交到 `rtc-talk-win` |
 | 服务端权威参考 | `D:\google\webrtc-win-client\rtc-talk` / `origin/main` / `8e6ff57` | 服务端行为、协议口径、S4 差异和联调依据 | 只读 |
 | 旧 Windows 客户端功能参考 | `origin/feat/windows-client` / `df22708` | `client-win` demo、既有音视频功能和联调逻辑参考 | 只读 |
 | 旧 Windows 生产实现参考 | `origin/codex/feat/windows-production-client` / `bbb3891` | P5 UI、生产模块、历史改造和验收记录参考 | 只读 |
@@ -72,7 +72,7 @@
 | S1 | muxPlayer、本地摄像头、C ABI、P5 UI | 已完成并推送 | `de3a7f1`、摄像头预览、muxPlayer 截图 | 长稳定性测试按用户要求另行安排 |
 | S2 | 信令、认证、房间生命周期、成员快照 | 已完成并推送 | `98f1ee8`、`rtcwin_signaling_tests`、双客户端联调 | 无 |
 | S3.1 | libwebrtc 音频设备枚举与预入会选择 | 已完成并推送 | `53a8fdd`、`rtcwin_audio_devices_probe` | 无 |
-| S3.2 | 音频 PeerConnection、P2P/SFU、静音、音量、收听 | 核心完成并推送，待完整人工验收 | `3b79703`、`AudioMediaSession`、`rtcwin_audio_media_smoke` | 收听/音量听音、设备异常、离房重进和恢复 |
+| S3.2 | 音频 PeerConnection、P2P/SFU、静音、音量、收听、系统音 | 核心完成并推送，待完整人工验收 | `5ab73fa`、`AudioMediaSession`、WASAPI loopback | 收听/音量听音、设备异常、离房重进和恢复 |
 | S4 | 视频发布、远端视频、muxPlayer 渲染、屏幕共享 | 未开始 | 当前只有本地摄像头预览 | SFU video、P2P video、consume mid 映射、画面回收 |
 | S5 | 成员、发言权、主持人、PTT/审核模式 | 部分完成 | 房间成员/策略/floor 快照已有；floor 请求仍为 501 | floor.request/release、revoked、keepalive、主持人操作 |
 | S6 | 设备、统计、日志和诊断 | 部分完成 | 摄像头/音频设备枚举、`media.stats` 基础字段 | RTCStats、设备热插拔、设置弹窗、脱敏日志、诊断面板 |
@@ -89,7 +89,7 @@
 
 必须明确记录以下偏差：
 
-1. `plan/production-plan.md` 已同步到 `rtc-talk-win@3b79703`，后续提交仍需持续维护基线。
+1. `plan/production-plan.md` 已同步到 `rtc-talk-win@5ab73fa`，后续提交仍需持续维护基线。
 2. `talk-protocol.md` 定义了 resume、ICE restart、P2P/SFU 先建后断、视频 m-line 等完整约束，当前 S3.2 只实现音频主链路。
 3. 第三人加入“先建 SFU、确认可用、再关 P2P”已在短链路验证，后续仍需覆盖网络异常和重复切换。
 4. 服务端计划包含 `p2p.state`、P2P 失败回退、10 秒超时和 candidate 缓存等约束，当前客户端只完成基础转发，没有完整恢复策略。
@@ -1424,10 +1424,11 @@ $env:PATH = "C:\Qt\5.15.2\msvc2019_64\bin;" + $env:PATH
 
 ### 18.6 提交记录
 
-阶段 A 修复已提交并推送：
+阶段 A 音频修复和系统音采集已提交并推送：
 
 ```text
 3b79703 fix: 打通真实音频并完善P2P/SFU切换
+5ab73fa feat: 接入WASAPI系统音采集
 ```
 
 验证提交包含 Release/Debug 全量构建、CTest 3/3、1v1 P2P、三人 SFU、
