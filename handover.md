@@ -1691,6 +1691,10 @@ build/windows-x64/p2p-screen-20261030-123251/b-p2p-screen.png
 
 仍未完成：
 
+- 同一成员 camera/screen 双路同时显示的联合验收。
+- 共享主画面 + 摄像头小画面（PIP）；当前 `VideoGrid` 以 uid 为单位只有一个
+  Tile，且 `ApplyFrame` 优先屏幕帧，导致摄像头小画面被覆盖。
+- UI 视频模型改为按 `uid + source` 管理独立 Tile。
 - 多路 muxPlayer session pool。
 - 9 路视频性能验收。
 - 5 秒无帧回收与异常断流 UI 清理。
