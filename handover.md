@@ -1801,12 +1801,12 @@ libs/client_gateway/src/c_abi_engine_client.cpp
 便携包（包含 S4.2 屏幕共享与 P2P 视频）：
 
 ```text
-D:\google\webrtc-win-client\rtc-talk-win\dist\rtc-talk-win-20261030-132716.zip
-SHA256: C8E8675BDFD3DA875AA903917E64EFFFF413843A218CD67BA61B9382186A3899
+D:\google\webrtc-win-client\rtc-talk-win\dist\rtc-talk-win-20261030-132934.zip
+SHA256: A33A41A3537B620BDED829E54714F38854B2AFEE3203E176762B71BF7BE878B7
 ```
 
-包内 `VERSION.txt` 的提交号为 `fff99ad`。旧的
-`rtc-talk-win-20261030-123649.zip` 仅保留为 S4.2 历史包，不作为当前交付包。
+包内 `VERSION.txt` 的提交号为 `f2cc1a5`。旧的
+`rtc-talk-win-20261030-132716.zip` 仅保留为 M1 早期包，不作为当前交付包。
 
 打包后的 `rtc-talk.exe` 已通过 1440x900 启动截图冒烟，截图位于
 `build/windows-x64/package/package-smoke-m1.png`。
