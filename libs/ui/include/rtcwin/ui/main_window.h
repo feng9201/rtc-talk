@@ -29,6 +29,7 @@ class MainWindow final : public FramelessWindow {
   void LeaveRoom();
   void ToggleMicrophone();
   void ToggleCamera();
+  void ToggleScreenShare();
   void ShowRoomPreview();
   void EnableCameraPreview();
 

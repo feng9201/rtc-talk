@@ -27,6 +27,11 @@ void RemoteTrackRegistry::SetTrackInfo(
   }
 }
 
+void RemoteTrackRegistry::SetP2pPeerUid(std::string uid) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  p2p_peer_uid_ = std::move(uid);
+}
+
 void RemoteTrackRegistry::AddAudioTrack(
     const std::string& pc, const std::string& mid,
     webrtc::scoped_refptr<webrtc::AudioTrackInterface> track) {
@@ -67,12 +72,12 @@ void RemoteTrackRegistry::AddVideoTrack(
       entry.track = track;
       entry.sink = std::move(sink);
       track->AddOrUpdateSink(entry.sink.get(), webrtc::VideoSinkWants());
-      ApplyVideoState(track);
+      ApplyVideoState(track, pc);
       return;
     }
   }
   track->AddOrUpdateSink(sink.get(), webrtc::VideoSinkWants());
-  ApplyVideoState(track);
+  ApplyVideoState(track, pc);
   video_tracks_.push_back(
       VideoEntry{pc, mid, std::move(track), std::move(sink)});
 }
@@ -107,13 +112,19 @@ void RemoteTrackRegistry::SetDeafened(bool deafened) {
 
 void RemoteTrackRegistry::SetSfuPaused(bool paused) {
   std::vector<AudioEntry> audio_tracks;
-  std::vector<webrtc::scoped_refptr<webrtc::VideoTrackInterface>> video_tracks;
+  struct VideoStateEntry {
+    std::string pc;
+    webrtc::scoped_refptr<webrtc::VideoTrackInterface> track;
+  };
+  std::vector<VideoStateEntry> video_tracks;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     sfu_paused_ = paused;
     audio_tracks = audio_tracks_;
     for (const auto& entry : video_tracks_) {
-      if (entry.track) video_tracks.push_back(entry.track);
+      if (entry.track) {
+        video_tracks.push_back(VideoStateEntry{entry.pc, entry.track});
+      }
     }
   }
   RunOnSignaling([this, audio_tracks = std::move(audio_tracks),
@@ -121,8 +132,8 @@ void RemoteTrackRegistry::SetSfuPaused(bool paused) {
     for (const auto& entry : audio_tracks) {
       ApplyAudioState(entry.track, entry.pc);
     }
-    for (const auto& track : video_tracks) {
-      ApplyVideoState(track);
+    for (const auto& entry : video_tracks) {
+      ApplyVideoState(entry.track, entry.pc);
     }
   });
 }
@@ -185,7 +196,10 @@ RemoteTrackInfo RemoteTrackRegistry::TrackInfoFor(
   info.mid = mid;
   info.kind = "video";
   info.source = "camera";
-  if (pc == "p2p") info.uid = "p2p";
+  if (pc == "p2p") {
+    info.uid = p2p_peer_uid_.empty() ? "p2p" : p2p_peer_uid_;
+    if (mid == "2") info.source = "screen";
+  }
   return info;
 }
 
@@ -201,9 +215,10 @@ void RemoteTrackRegistry::ApplyAudioState(
 }
 
 void RemoteTrackRegistry::ApplyVideoState(
-    const webrtc::scoped_refptr<webrtc::VideoTrackInterface>& track) const {
+    const webrtc::scoped_refptr<webrtc::VideoTrackInterface>& track,
+    const std::string& pc) const {
   if (!track) return;
-  track->set_enabled(!sfu_paused_);
+  track->set_enabled(pc != "sfu-recv" || !sfu_paused_);
 }
 
 void RemoteTrackRegistry::RemoveVideoEntriesOnSignaling(

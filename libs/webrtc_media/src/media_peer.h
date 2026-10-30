@@ -55,12 +55,17 @@ class MediaPeer final : public webrtc::PeerConnectionObserver {
   bool GetLocalSdp(std::string* sdp, MediaError* error) const;
   bool GetAudioMid(std::string* mid) const;
   bool GetVideoMid(std::string* mid) const;
+  bool GetVideoMidForTrack(const std::string& track_id,
+                           std::string* mid) const;
   bool HasAudioSender() const;
   bool AudioSenderActive() const;
   bool SetAudioSenderActive(bool active);
   bool HasVideoSender() const;
   bool VideoSenderActive(const std::string& mid) const;
+  bool VideoSenderActiveForTrack(const std::string& track_id) const;
   bool SetVideoSenderActive(const std::string& mid, bool active);
+  bool SetVideoSenderActiveForTrack(const std::string& track_id,
+                                    bool active);
   bool CollectMediaStats(PeerMediaStats* out) const;
 
   int state() const;

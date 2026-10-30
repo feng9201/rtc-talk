@@ -35,6 +35,7 @@ class RemoteTrackRegistry final {
 
   void SetVideoCallback(std::function<void(RemoteVideoFrame)> callback);
   void SetTrackInfo(const std::vector<RemoteTrackInfo>& consumers);
+  void SetP2pPeerUid(std::string uid);
 
   void AddAudioTrack(
       const std::string& pc, const std::string& mid,
@@ -69,7 +70,8 @@ class RemoteTrackRegistry final {
       const webrtc::scoped_refptr<webrtc::AudioTrackInterface>& track,
       const std::string& pc) const;
   void ApplyVideoState(
-      const webrtc::scoped_refptr<webrtc::VideoTrackInterface>& track) const;
+      const webrtc::scoped_refptr<webrtc::VideoTrackInterface>& track,
+      const std::string& pc) const;
   void RemoveVideoEntriesOnSignaling(std::vector<VideoEntry> entries);
   template <class F>
   void RunOnSignaling(F&& task) const {
@@ -86,6 +88,7 @@ class RemoteTrackRegistry final {
   std::vector<AudioEntry> audio_tracks_;
   std::vector<VideoEntry> video_tracks_;
   std::map<std::string, RemoteTrackInfo> track_info_;
+  std::string p2p_peer_uid_;
   double volume_ = 0.6;
   bool deafened_ = false;
   bool sfu_paused_ = false;

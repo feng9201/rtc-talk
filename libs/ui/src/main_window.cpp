@@ -236,6 +236,8 @@ void MainWindow::LeaveRoom() { controller_->LeaveRoom(); }
 void MainWindow::ToggleMicrophone() { controller_->ToggleMic(); }
 void MainWindow::ToggleCamera() { controller_->ToggleCamera(); }
 
+void MainWindow::ToggleScreenShare() { controller_->ToggleShare(); }
+
 void MainWindow::EnableCameraPreview() {
   auto_preview_ = true;
   if (prejoin_page_->SelectedCameraIndex() >= 0) {

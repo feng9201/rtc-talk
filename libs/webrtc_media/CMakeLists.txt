@@ -6,6 +6,8 @@ add_library(rtcwin_webrtc_media STATIC
   src/audio_pipeline.cpp
   src/audio_pipeline.h
   src/audio_device_service.cpp
+  src/desktop_video_source.cpp
+  src/desktop_video_source.h
   src/loopback_audio_capture.cpp
   src/media_error.h
   src/media_peer.cpp

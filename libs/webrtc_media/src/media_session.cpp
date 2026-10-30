@@ -289,8 +289,29 @@ struct MediaSession::Impl {
                      !sfu_paused.load(std::memory_order_relaxed)) &&
              ok;
       }
+      if (!screen_mid.empty()) {
+        ok = sfu_send->SetVideoSenderActive(
+                 screen_mid,
+                 video_pipeline_.screen_enabled() &&
+                     !sfu_paused.load(std::memory_order_relaxed)) &&
+             ok;
+      }
     }
-    if (p2p) ok = p2p->SetAudioSenderActive(send) && ok;
+    if (p2p) {
+      ok = p2p->SetAudioSenderActive(send) && ok;
+      if (p2p_video_enabled && video_pipeline_.track()) {
+        ok = p2p->SetVideoSenderActiveForTrack(
+                 video_pipeline_.track()->id(),
+                 video_pipeline_.enabled()) &&
+             ok;
+      }
+      if (p2p_video_enabled && video_pipeline_.screen_track()) {
+        ok = p2p->SetVideoSenderActiveForTrack(
+                 video_pipeline_.screen_track()->id(),
+                 video_pipeline_.screen_enabled()) &&
+             ok;
+      }
+    }
     return ok;
   }
 
@@ -304,6 +325,21 @@ struct MediaSession::Impl {
       video_pipeline_.SetEnabled(false, nullptr);
       ApplySendState();
       SetError(error, 1731, "更新摄像头发送状态失败");
+      return false;
+    }
+    return true;
+  }
+
+  bool SetScreenEnabled(bool enabled, MediaError* error) {
+    if (!initialized || !video_pipeline_.screen_track()) {
+      SetError(error, 1734, "屏幕共享媒体未初始化");
+      return false;
+    }
+    if (!video_pipeline_.SetScreenEnabled(enabled, error)) return false;
+    if (!ApplySendState()) {
+      video_pipeline_.SetScreenEnabled(false, nullptr);
+      ApplySendState();
+      SetError(error, 1736, "更新屏幕共享发送状态失败");
       return false;
     }
     return true;
@@ -342,12 +378,25 @@ struct MediaSession::Impl {
         return false;
       }
     }
+    if (config.screen_publish_enabled) {
+      if (!sfu_send->AddVideoTrack(
+              video_pipeline_.screen_track(),
+              webrtc::RtpTransceiverDirection::kSendOnly, "talk", error)) {
+        return false;
+      }
+    }
     if (!sfu_send->CreateAndSetLocal(true, error)) return false;
     sfu_send->SetAudioSenderActive(false);
     camera_mid.clear();
     if (config.camera_publish_enabled &&
         sfu_send->GetVideoMid(&camera_mid)) {
       sfu_send->SetVideoSenderActive(camera_mid, false);
+    }
+    screen_mid.clear();
+    if (config.screen_publish_enabled && video_pipeline_.screen_track() &&
+        sfu_send->GetVideoMidForTrack(video_pipeline_.screen_track()->id(),
+                                      &screen_mid)) {
+      sfu_send->SetVideoSenderActive(screen_mid, false);
     }
     if (out == nullptr) {
       SetError(error, 1722, "offer 输出为空");
@@ -356,6 +405,7 @@ struct MediaSession::Impl {
     if (!sfu_send->GetLocalSdp(&out->sdp, error)) return false;
     if (!sfu_send->GetAudioMid(&out->audio_mid)) out->audio_mid = "0";
     out->camera_mid = camera_mid;
+    out->screen_mid = screen_mid;
     out->source = config.audio_source == "system" ? "screen" : "mic";
     return true;
   }
@@ -385,12 +435,14 @@ struct MediaSession::Impl {
     return sfu_recv->GetLocalSdp(answer, error);
   }
 
-  bool CreateP2pOffer(std::string* offer, MediaError* error) {
+  bool CreateP2pOffer(bool include_video, std::string* offer,
+                      MediaError* error) {
     if (!initialized) {
       SetError(error, 1724, "音频媒体会话未初始化");
       return false;
     }
     CloseP2p();
+    p2p_video_enabled = include_video;
     p2p = std::make_unique<MediaPeer>("p2p", signaling.get(), event,
                                       RemoteCallback());
     if (!p2p->Create(factory.get(), rtc_config, error)) return false;
@@ -404,18 +456,29 @@ struct MediaSession::Impl {
                        "talk-p2p", error)) {
       return false;
     }
+    if (include_video) {
+      if (!p2p->AddVideoTrack(video_pipeline_.track(),
+                              webrtc::RtpTransceiverDirection::kSendRecv,
+                              "talk-p2p", error) ||
+          !p2p->AddVideoTrack(video_pipeline_.screen_track(),
+                              webrtc::RtpTransceiverDirection::kSendRecv,
+                              "talk-p2p", error)) {
+        return false;
+      }
+    }
     if (!p2p->CreateAndSetLocal(true, error)) return false;
     ApplySendState();
     return p2p->GetLocalSdp(offer, error);
   }
 
-  bool CreateP2pAnswer(const std::string& remote_offer, std::string* answer,
-                       MediaError* error) {
+  bool CreateP2pAnswer(const std::string& remote_offer, bool include_video,
+                       std::string* answer, MediaError* error) {
     if (!initialized) {
       SetError(error, 1725, "音频媒体会话未初始化");
       return false;
     }
     CloseP2p();
+    p2p_video_enabled = include_video;
     p2p = std::make_unique<MediaPeer>("p2p", signaling.get(), event,
                                       RemoteCallback());
     if (!p2p->Create(factory.get(), rtc_config, error)) return false;
@@ -431,6 +494,16 @@ struct MediaSession::Impl {
                        webrtc::RtpTransceiverDirection::kSendRecv,
                        "talk-p2p", error)) {
       return false;
+    }
+    if (include_video) {
+      if (!p2p->AddVideoTrack(video_pipeline_.track(),
+                              webrtc::RtpTransceiverDirection::kSendRecv,
+                              "talk-p2p", error) ||
+          !p2p->AddVideoTrack(video_pipeline_.screen_track(),
+                              webrtc::RtpTransceiverDirection::kSendRecv,
+                              "talk-p2p", error)) {
+        return false;
+      }
     }
     if (!p2p->CreateAndSetLocal(false, error)) return false;
     ApplySendState();
@@ -448,6 +521,7 @@ struct MediaSession::Impl {
   }
 
   void CloseP2p() {
+    p2p_video_enabled = false;
     if (!p2p) return;
     p2p->Close();
     p2p.reset();
@@ -463,14 +537,24 @@ struct MediaSession::Impl {
     out.p2p_connected = p2p && p2p->state_name() == "connected";
     out.sfu_paused = sfu_paused.load(std::memory_order_relaxed);
     out.camera_enabled = video_pipeline_.enabled();
+    out.screen_enabled = video_pipeline_.screen_enabled();
     audio_pipeline_.FillStatus(worker.get(), &out);
     out.sfu_send_active =
         sfu_send && sfu_send->HasAudioSender() &&
         sfu_send->AudioSenderActive();
     out.camera_sender_active =
-        sfu_send && !camera_mid.empty() &&
-        sfu_send->VideoSenderActive(camera_mid);
+        (sfu_send && !camera_mid.empty() &&
+         sfu_send->VideoSenderActive(camera_mid)) ||
+        (p2p_video_enabled && p2p && video_pipeline_.track() &&
+         p2p->VideoSenderActiveForTrack(video_pipeline_.track()->id()));
+    out.screen_sender_active =
+        (sfu_send && !screen_mid.empty() &&
+         sfu_send->VideoSenderActive(screen_mid)) ||
+        (p2p_video_enabled && p2p && video_pipeline_.screen_track() &&
+         p2p->VideoSenderActiveForTrack(
+             video_pipeline_.screen_track()->id()));
     out.camera_capture_frames = video_pipeline_.frames();
+    out.screen_capture_frames = video_pipeline_.screen_frames();
     out.p2p_send_active =
         p2p && p2p->HasAudioSender() && p2p->AudioSenderActive();
     PeerMediaStats stats;
@@ -480,6 +564,10 @@ struct MediaSession::Impl {
       out.audio_bytes_sent += stats.audio_bytes_sent;
       out.audio_packets_received += stats.audio_packets_received;
       out.audio_bytes_received += stats.audio_bytes_received;
+      out.video_packets_sent += stats.video_packets_sent;
+      out.video_bytes_sent += stats.video_bytes_sent;
+      out.video_packets_received += stats.video_packets_received;
+      out.video_bytes_received += stats.video_bytes_received;
       out.remote_audio_level = std::max(out.remote_audio_level,
                                         stats.audio_level);
     }
@@ -530,8 +618,10 @@ struct MediaSession::Impl {
   std::unique_ptr<MediaPeer> sfu_send;
   std::unique_ptr<MediaPeer> sfu_recv;
   std::unique_ptr<MediaPeer> p2p;
+  bool p2p_video_enabled = false;
   std::unique_ptr<RemoteTrackRegistry> remote_registry;
   std::string camera_mid;
+  std::string screen_mid;
 };
 
 MediaSession::MediaSession() : impl_(std::make_unique<Impl>()) {}
@@ -564,20 +654,24 @@ bool MediaSession::CreateSfuSubscribeAnswer(
                                          error);
 }
 
-bool MediaSession::CreateP2pOffer(std::string* offer,
-                                       MediaError* error) {
-  return impl_->CreateP2pOffer(offer, error);
+bool MediaSession::CreateP2pOffer(bool include_video, std::string* offer,
+                                  MediaError* error) {
+  return impl_->CreateP2pOffer(include_video, offer, error);
 }
 
 bool MediaSession::CreateP2pAnswer(const std::string& remote_offer,
-                                        std::string* answer,
-                                        MediaError* error) {
-  return impl_->CreateP2pAnswer(remote_offer, answer, error);
+                                   bool include_video, std::string* answer,
+                                   MediaError* error) {
+  return impl_->CreateP2pAnswer(remote_offer, include_video, answer, error);
 }
 
 bool MediaSession::ApplyP2pAnswer(const std::string& answer,
                                        MediaError* error) {
   return impl_->ApplyP2pAnswer(answer, error);
+}
+
+void MediaSession::SetP2pPeerUid(const std::string& uid) {
+  if (impl_->remote_registry) impl_->remote_registry->SetP2pPeerUid(uid);
 }
 
 bool MediaSession::AddP2pCandidate(const std::string& candidate,
@@ -626,9 +720,18 @@ bool MediaSession::SetCameraEnabled(bool enabled, MediaError* error) {
   return impl_->SetCameraEnabled(enabled, error);
 }
 
+bool MediaSession::SetScreenEnabled(bool enabled, MediaError* error) {
+  return impl_->SetScreenEnabled(enabled, error);
+}
+
 bool MediaSession::PushCameraFrame(const VideoFrameData& frame,
                                    MediaError* error) {
   return impl_->PushCameraFrame(frame, error);
+}
+
+void MediaSession::SetLocalScreenFrameCallback(
+    std::function<void(const VideoFrameData&)> callback) {
+  impl_->video_pipeline_.SetScreenFrameCallback(std::move(callback));
 }
 
 MediaStatus MediaSession::status() const { return impl_->Status(); }

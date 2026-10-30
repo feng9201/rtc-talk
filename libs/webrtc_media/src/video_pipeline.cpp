@@ -22,6 +22,11 @@ bool VideoPipeline::Initialize(
     camera_track_ = factory->CreateVideoTrack(camera_source_, "rtcwin-camera");
     if (!camera_track_) return false;
     camera_track_->set_enabled(true);
+    screen_source_ =
+        webrtc::make_ref_counted<DesktopVideoSource>(1920, 1080, 15);
+    screen_track_ = factory->CreateVideoTrack(screen_source_, "rtcwin-screen");
+    if (!screen_track_) return false;
+    screen_track_->set_enabled(true);
     return true;
   });
   if (!ok) SetError(error, 1707, "创建视频轨失败");
@@ -29,10 +34,14 @@ bool VideoPipeline::Initialize(
 }
 
 void VideoPipeline::Shutdown() {
+  if (screen_source_) screen_source_->Stop();
+  screen_track_ = nullptr;
+  screen_source_ = nullptr;
   camera_track_ = nullptr;
   camera_source_ = nullptr;
   signaling_ = nullptr;
   camera_enabled_.store(false, std::memory_order_relaxed);
+  screen_enabled_.store(false, std::memory_order_relaxed);
 }
 
 bool VideoPipeline::SetEnabled(bool enabled, MediaError* error) {
@@ -41,6 +50,26 @@ bool VideoPipeline::SetEnabled(bool enabled, MediaError* error) {
     return false;
   }
   camera_enabled_.store(enabled, std::memory_order_relaxed);
+  return true;
+}
+
+bool VideoPipeline::SetScreenEnabled(bool enabled, MediaError* error) {
+  if (!screen_track_ || !screen_source_) {
+    SetError(error, 1734, "屏幕共享源未初始化");
+    return false;
+  }
+  if (enabled) {
+    std::string start_error;
+    if (!screen_source_->Start(&start_error)) {
+      SetError(error, 1735,
+               start_error.empty() ? "启动屏幕共享失败" : start_error);
+      return false;
+    }
+    screen_enabled_.store(true, std::memory_order_relaxed);
+  } else {
+    screen_source_->Stop();
+    screen_enabled_.store(false, std::memory_order_relaxed);
+  }
   return true;
 }
 
@@ -55,6 +84,11 @@ bool VideoPipeline::PushFrame(const VideoFrameData& frame, MediaError* error) {
     return false;
   }
   return true;
+}
+
+void VideoPipeline::SetScreenFrameCallback(
+    std::function<void(const VideoFrameData&)> callback) {
+  if (screen_source_) screen_source_->SetFrameCallback(std::move(callback));
 }
 
 }  // namespace rtcwin::webrtc_media

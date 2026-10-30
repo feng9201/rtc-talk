@@ -28,6 +28,7 @@ struct MediaConfig {
   int volume = 60;
   bool muted = true;
   bool camera_publish_enabled = true;
+  bool screen_publish_enabled = true;
   std::vector<IceServer> ice_servers;
 };
 
@@ -69,6 +70,7 @@ struct MediaSfuOffer {
   std::string sdp;
   std::string audio_mid;
   std::string camera_mid;
+  std::string screen_mid;
   std::string source = "mic";
 };
 
@@ -82,6 +84,7 @@ struct MediaStatus {
   bool deafened = false;
   bool sfu_paused = false;
   bool camera_enabled = false;
+  bool screen_enabled = false;
   bool recording_initialized = false;
   bool recording = false;
   bool playout_initialized = false;
@@ -89,9 +92,11 @@ struct MediaStatus {
   bool sfu_send_active = false;
   bool p2p_send_active = false;
   bool camera_sender_active = false;
+  bool screen_sender_active = false;
   double volume = 0.6;
   std::uint64_t capture_frames = 0;
   std::uint64_t camera_capture_frames = 0;
+  std::uint64_t screen_capture_frames = 0;
   std::uint64_t remote_tracks = 0;
   std::uint64_t active_remote_tracks = 0;
   std::uint64_t remote_video_tracks = 0;
@@ -137,10 +142,12 @@ class MediaSession final {
                                 const std::vector<RemoteTrackInfo>& consumers,
                                 std::string* answer, MediaError* error);
 
-  bool CreateP2pOffer(std::string* offer, MediaError* error);
-  bool CreateP2pAnswer(const std::string& remote_offer, std::string* answer,
-                       MediaError* error);
+  bool CreateP2pOffer(bool include_video, std::string* offer,
+                      MediaError* error);
+  bool CreateP2pAnswer(const std::string& remote_offer, bool include_video,
+                       std::string* answer, MediaError* error);
   bool ApplyP2pAnswer(const std::string& answer, MediaError* error);
+  void SetP2pPeerUid(const std::string& uid);
   bool AddP2pCandidate(const std::string& candidate, const std::string& mid,
                        int mline_index, MediaError* error);
   void CloseP2p();
@@ -150,7 +157,10 @@ class MediaSession final {
   bool SetVolume(double volume, MediaError* error);
   bool SetSfuPaused(bool paused, MediaError* error);
   bool SetCameraEnabled(bool enabled, MediaError* error);
+  bool SetScreenEnabled(bool enabled, MediaError* error);
   bool PushCameraFrame(const VideoFrameData& frame, MediaError* error);
+  void SetLocalScreenFrameCallback(
+      std::function<void(const VideoFrameData&)> callback);
 
   MediaStatus status() const;
 

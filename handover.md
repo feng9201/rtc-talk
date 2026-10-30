@@ -5,7 +5,7 @@
 > 分支：`rtc-talk-win`  
 > 代码基线：`b3af0e8 refactor: 完成会话与媒体管线生产化拆分`
 >
-> 当前状态：S3.2 音频主链路已通过短链路验证；S4.1 摄像头 SFU 发布、远端 I420 回传和 muxPlayer 房间渲染已通过双端验证；B1-B5（门面、信令、状态机、媒体编排、媒体管线）已完成。屏幕共享、P2P 视频和多路压力仍未完成。
+> 当前状态：S3.2 音频主链路已通过短链路验证；S4.1 摄像头 SFU 和远端 muxPlayer 渲染已通过双端验证；S4.2 的屏幕共享与 P2P 视频已接通并完成截图验收；B1-B5 已完成。多路 session pool、9 路压力和 5 秒无帧回收仍未完成。
 > 旧工程：`D:\google\webrtc-win-client\rtc-talk`，只读参考，禁止修改或提交。
 
 本文档面向后续接入业务、继续媒体开发、做代码评审或发布验收的工程师。它描述当前真实代码状态，不把计划中的能力写成已完成能力。
@@ -74,7 +74,7 @@
 | S3.1 | libwebrtc 音频设备枚举与预入会选择 | 已完成并推送 | `53a8fdd`、`rtcwin_audio_devices_probe` | 无 |
 | S3.2 | 音频 PeerConnection、P2P/SFU、静音、音量、收听、系统音 | 核心完成并推送，待完整人工验收 | `5ab73fa`、`MediaSession`、WASAPI loopback | 收听/音量听音、设备异常、离房重进和恢复 |
 | S4.1 | 摄像头 SFU 发布、远端 I420、muxPlayer 房间渲染 | 代码完成，双端短链路通过 | `MediaSession`、MF H.264、`RemoteVideoSink`、`MuxVideoSurface` | 设备切换、离房重进、异常恢复 |
-| S4.2 | 屏幕共享、P2P 视频、多路视频池和压力 | 未开始 | 当前仅摄像头 SFU 路径 | screen publish/consume、P2P video、9 路性能、无帧回收 |
+| S4.2 | 屏幕共享、P2P 视频、多路视频池和压力 | 部分完成 | 屏幕采集、SFU/P2P screen producer、P2P camera/screen 已通过双端截图 | 多路 session pool、9 路性能、5 秒无帧回收 |
 | S5 | 成员、发言权、主持人、PTT/审核模式 | 部分完成 | 房间成员/策略/floor 快照已有；floor 请求仍为 501 | floor.request/release、revoked、keepalive、主持人操作 |
 | S6 | 设备、统计、日志和诊断 | 部分完成 | 摄像头/音频设备枚举、`media.stats` 基础字段 | RTCStats、设备热插拔、设置弹窗、脱敏日志、诊断面板 |
 | S7 | 重连、resume、ICE refresh、安全 | 未开始 | 当前关闭后重置媒体，无 resume | generation guard、WSS、resume、ICE restart、错误恢复 |
@@ -91,10 +91,10 @@
 必须明确记录以下偏差：
 
 1. `plan/production-plan.md` 已补充 S4.1 状态；提交后仍应把基线 SHA 更新到实际提交。
-2. `talk-protocol.md` 定义了 resume、ICE restart、P2P/SFU 先建后断、视频 m-line 等完整约束，当前已实现 SFU 摄像头，但尚未覆盖 P2P 视频和屏幕共享。
+2. `talk-protocol.md` 定义了 resume、ICE restart、P2P/SFU 先建后断、视频 m-line 等完整约束；当前 SFU 摄像头/屏幕共享和 P2P 音视频三 m-line 已接入，resume/ICE restart 仍未实现。
 3. 第三人加入“先建 SFU、确认可用、再关 P2P”已在短链路验证，后续仍需覆盖网络异常和重复切换。
 4. 服务端计划包含 `p2p.state`、P2P 失败回退、10 秒超时和 candidate 缓存等约束，当前客户端只完成基础转发，没有完整恢复策略。
-5. 计划中的 S5-S8、S4.2 屏幕共享/P2P 视频、设备热插拔、WSS、resume 和安装包均不能在交接中写成已完成。
+5. 计划中的 S5-S8、S4.2 多路 session pool/压力、设备热插拔、WSS、resume 和安装包均不能在交接中写成已完成。
 
 ---
 
@@ -166,15 +166,13 @@
 - 服务端强制静音、收听静音和音量的端到端人工听音。
 - 设备拔出、设备占用、默认设备切换。
 - 断线重连/resume。
-- 屏幕共享接入 WebRTC 发布/订阅。
-- P2P 视频支路。
 - 多路视频 session pool、9 路性能和 5 秒无帧回收。
 - WSS/TLS 信令。
 - 完整生产诊断、打包和安装。
 
 ### 1.3 当前工作树状态
 
-最新本地提交为 `01be148`，S4.1 修改在提交前的工作树中。当前代码基线包含：
+当前代码基线为 `b3af0e8`，并叠加 S4.2 屏幕共享/P2P 视频工作树。
 
 - `MediaSession` 与真实 ADM 音频链路。
 - P2P/SFU 双向音频、静音门和 RTP 诊断。
@@ -487,7 +485,7 @@ sfu.offer.consumers[]
 - 不复用 muxPlayer 的 H.264/H.265 输入接口做“WebRTC 解码后再编码再解码”。
 - WebRTC 已解码的 I420 应直接注入 muxPlayer。
 - 摄像头 SFU 发布和远端 muxPlayer 渲染已完成短链路验证。
-- 屏幕共享和 P2P 视频仍未接入。
+- 屏幕共享和 P2P 音视频三 m-line 已接入；多路 session pool 仍待完成。
 
 ---
 
@@ -969,7 +967,7 @@ session.Initialize(config, event_callback, remote_video_callback, &error);
 - 没有显式 audio jitter buffer 调优。
 - 没有服务端 ICE restart/DTLS 重建策略。
 - P2P 和 SFU 的 candidate 事件只转发了必要的 P2P 字段。
-- 视频只支持 SFU 摄像头；屏幕共享和 P2P 视频未实现。
+- 摄像头、屏幕共享和 P2P 视频均已接入；当前验收覆盖双人/F 双端短链路。
 - 多路视频仍是一路一个 muxPlayer surface，尚未做 session pool 和 9 路压力验收。
 
 ---
@@ -1130,14 +1128,13 @@ real audio device smoke ok sfu_sdp=1012 recording=麦克风 (5- Logitech Webcam 
 
 ### P2：功能缺口
 
-1. 屏幕共享未实现。
-2. P2P 视频未实现；当前 `session.hello.caps.p2p_video=false`。
-3. `media.toggleScreenShare`、floor 请求仍返回 501。
-4. 多路视频池、9 路性能、5 秒无帧回收未验收。
-5. 设置弹窗目前只是占位。
-6. PTT/主持人审核模式下，本地采集门与服务端 floor 状态还需要完整联调。
-7. 系统音 loopback 已接入；非默认播放端点和设备热切换仍需继续验收。
-8. 安装包、DLL 依赖清单、签名和升级策略未实现。
+1. 屏幕共享和 P2P 视频已实现；仍需补充异常恢复和多人切换验收。
+2. `floor.request/release` 等发言权请求仍返回 501。
+3. 多路视频池、9 路性能、5 秒无帧回收未验收。
+4. 设置弹窗目前只是占位。
+5. PTT/主持人审核模式下，本地采集门与服务端 floor 状态还需要完整联调。
+6. 系统音 loopback 已接入；非默认播放端点和设备热切换仍需继续验收。
+7. 安装包、DLL 依赖清单、签名和升级策略未实现。
 
 ---
 
@@ -1667,7 +1664,39 @@ build/windows-x64/s4-smoke2/b-engine.log
 - B2 后真实双端 SFU 摄像头回归通过：发送端 `video_packets_sent=40 -> 760`，
   接收端 `video_packets_received=142 -> 861`。
 
-便携包（包含 B5）：
+### 18.10 S4.2 屏幕共享与 P2P 视频增量（2026-10-30）
+
+已完成：
+
+- `DesktopVideoSource`：WGC/DXGI 屏幕采集、最多 1920×1080、15fps、
+  BGRA 缩放和 I420 转换。
+- `VideoPipeline` 同时管理 camera/screen 视频源和两路视频轨。
+- SFU publish 预创建 audio/camera/screen 三条 m-line，并携带
+  `source=screen` producer。
+- `media.toggleScreenShare` 已实现：服务端确认后启动采集，停止时先停采并发送
+  `media.setMute{source:"screen", muted:true}`。
+- P2P 预创建 audio/camera/screen 三条 m-line；双方 `caps.p2p_video=true` 时
+  摄像头和屏幕共享均可直连。
+- P2P 远端 UID 映射和 video pause 作用域已修正；`sfu_paused` 不再禁用 P2P 视频轨。
+- 自动联调参数新增 `--auto-screen-ms`、`--auto-screen-stop-ms`。
+
+证据：
+
+```text
+build/windows-x64/screen-smoke-20261030-122443/b-screen.png
+build/windows-x64/screen-stop-smoke-20261030-122528/b-after-stop.png
+build/windows-x64/p2p-video-fix2-20261030-123224/b-p2p-video.png
+build/windows-x64/p2p-screen-20261030-123251/b-p2p-screen.png
+```
+
+仍未完成：
+
+- 多路 muxPlayer session pool。
+- 9 路视频性能验收。
+- 5 秒无帧回收与异常断流 UI 清理。
+- 多屏选择和窗口共享选择。
+
+便携包（当前仅有 B5 基线包，不包含 S4.2 增量）：
 
 ```text
 D:\google\webrtc-win-client\rtc-talk-win\dist\rtc-talk-win-20261029-223727.zip

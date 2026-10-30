@@ -84,6 +84,14 @@ int main(int argc, char** argv) {
       QStringLiteral("入房后自动开启摄像头的时间"),
       QStringLiteral("ms")));
   parser.addOption(QCommandLineOption(
+      QStringLiteral("auto-screen-ms"),
+      QStringLiteral("入房后自动开启屏幕共享的时间"),
+      QStringLiteral("ms")));
+  parser.addOption(QCommandLineOption(
+      QStringLiteral("auto-screen-stop-ms"),
+      QStringLiteral("入房后自动停止屏幕共享的时间"),
+      QStringLiteral("ms")));
+  parser.addOption(QCommandLineOption(
       QStringLiteral("auto-leave-ms"), QStringLiteral("入房后自动离房间隔"),
       QStringLiteral("ms")));
   parser.process(app);
@@ -169,6 +177,26 @@ int main(int argc, char** argv) {
       if (camera_ok && camera_ms >= 0) {
         QTimer::singleShot(camera_ms, &window,
                            &rtcwin::ui::MainWindow::ToggleCamera);
+      }
+    }
+    if (parser.isSet(QStringLiteral("auto-screen-ms"))) {
+      bool screen_ok = false;
+      const int screen_ms =
+          parser.value(QStringLiteral("auto-screen-ms")).toInt(&screen_ok);
+      if (screen_ok && screen_ms >= 0) {
+        QTimer::singleShot(screen_ms, &window,
+                           &rtcwin::ui::MainWindow::ToggleScreenShare);
+      }
+    }
+    if (parser.isSet(QStringLiteral("auto-screen-stop-ms"))) {
+      bool screen_ok = false;
+      const int screen_ms = parser
+                                .value(QStringLiteral(
+                                    "auto-screen-stop-ms"))
+                                .toInt(&screen_ok);
+      if (screen_ok && screen_ms >= 0) {
+        QTimer::singleShot(screen_ms, &window,
+                           &rtcwin::ui::MainWindow::ToggleScreenShare);
       }
     }
     if (parser.isSet(QStringLiteral("auto-leave-ms"))) {

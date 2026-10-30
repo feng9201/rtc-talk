@@ -144,7 +144,7 @@ struct SessionController::Impl {
           {"caps",
            {{"audio", {{"codecs", Json::array({"opus"})}, {"aec", "webrtc"}}},
             {"p2p", true},
-            {"p2p_video", false},
+            {"p2p_video", true},
             {"video",
              {{"codecs",
                Json::array({{{"name", "h264"}, {"hw", false}}})}}},

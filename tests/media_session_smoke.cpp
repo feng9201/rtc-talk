@@ -111,14 +111,14 @@ int main() {
   }
 
   std::string p2p_offer;
-  if (!session.CreateP2pOffer(&p2p_offer, &error) ||
+  if (!session.CreateP2pOffer(false, &p2p_offer, &error) ||
       p2p_offer.find("m=audio") == std::string::npos) {
     std::cerr << "P2P offer failed: " << error.code << " " << error.message
               << '\n';
     return 5;
   }
   std::string p2p_answer;
-  if (!peer.CreateP2pAnswer(p2p_offer, &p2p_answer, &error) ||
+  if (!peer.CreateP2pAnswer(p2p_offer, false, &p2p_answer, &error) ||
       p2p_answer.find("m=audio") == std::string::npos ||
       !session.ApplyP2pAnswer(p2p_answer, &error)) {
     std::cerr << "P2P negotiation failed: " << error.code << " "

@@ -94,6 +94,7 @@ struct MediaOrchestrator::Impl {
     const Json policy = room.value("policy", Json::object());
     const Json video = policy.value("video", Json::object());
     media_config.camera_publish_enabled = video.value("enabled", true);
+    media_config.screen_publish_enabled = video.value("enabled", true);
 
     if (mode == SessionMediaMode::P2p && join_data.contains("p2p") &&
         join_data["p2p"].is_object()) {
@@ -101,6 +102,7 @@ struct MediaOrchestrator::Impl {
       p2p_session = p2p.value("session", std::string());
       p2p_peer = p2p.value("peer", std::string());
       p2p_offerer = p2p.value("role", std::string()) == "offerer";
+      p2p_video_allowed = join_data.value("p2p_video", false);
     }
 
     media_session = std::make_unique<webrtc_media::MediaSession>();
@@ -129,6 +131,11 @@ struct MediaOrchestrator::Impl {
       media_session.reset();
       return false;
     }
+    media_session->SetLocalScreenFrameCallback(
+        [this, generation](const webrtc_media::VideoFrameData& frame) {
+          OnLocalScreenFrame(frame, generation);
+        });
+    if (!p2p_peer.empty()) media_session->SetP2pPeerUid(p2p_peer);
     if (!context.session.IsCurrent(generation)) {
       media_session->Shutdown();
       media_session.reset();
@@ -161,10 +168,12 @@ struct MediaOrchestrator::Impl {
 
   void Reset() {
     camera_generation.fetch_add(1);
+    screen_generation.fetch_add(1);
     mute_generation.fetch_add(1);
     camera_publishing.store(false);
     camera_preview_active = false;
     camera_toggle_pending = false;
+    screen_toggle_pending = false;
     StopCameraCaptureIfIdle();
     if (media_session) {
       media_session->Shutdown();
@@ -173,6 +182,7 @@ struct MediaOrchestrator::Impl {
     p2p_session.clear();
     p2p_peer.clear();
     p2p_offerer = false;
+    p2p_video_allowed = false;
     sfu_paused = false;
     sfu_publish_ready = false;
     sfu_subscribe_ready = false;
@@ -306,6 +316,12 @@ struct MediaOrchestrator::Impl {
                                   "媒体尚未就绪");
       return;
     }
+    if (context.session.media_mode() == SessionMediaMode::P2p &&
+        !p2p_video_allowed) {
+      context.events.EmitResponse(command.id, command.method, false, 409,
+                                  "P2P 视频未协商，请切换到 SFU");
+      return;
+    }
     if (camera_toggle_pending) {
       context.events.EmitResponse(command.id, command.method, false, 409,
                                   "摄像头命令正在处理中");
@@ -399,8 +415,105 @@ struct MediaOrchestrator::Impl {
   }
 
   void HandleToggleScreenShare(const EngineCommand& command) {
-    context.events.EmitResponse(command.id, command.method, false, 501,
-                                "屏幕共享将在下一子阶段接入");
+    const EngineSessionSnapshot session = context.session.snapshot();
+    const bool joined = session.phase == SessionPhase::Joined &&
+                        session.media_enabled;
+    if (!joined || !media_session) {
+      context.events.EmitResponse(command.id, command.method, false, 409,
+                                  "媒体尚未就绪");
+      return;
+    }
+    if (context.session.media_mode() == SessionMediaMode::P2p &&
+        !p2p_video_allowed) {
+      context.events.EmitResponse(command.id, command.method, false, 409,
+                                  "P2P 视频未协商，请切换到 SFU");
+      return;
+    }
+    if (screen_toggle_pending) {
+      context.events.EmitResponse(command.id, command.method, false, 409,
+                                  "屏幕共享命令正在处理中");
+      return;
+    }
+
+    const bool enable = !media_session->status().screen_enabled;
+    if (!enable) {
+      webrtc_media::MediaError stop_error;
+      if (!media_session->SetScreenEnabled(false, &stop_error)) {
+        context.events.EmitResponse(
+            command.id, command.method, false,
+            stop_error.code == 0 ? 1734 : stop_error.code,
+            stop_error.message.empty() ? "停止屏幕采集失败"
+                                       : stop_error.message);
+        return;
+      }
+    }
+
+    screen_toggle_pending = true;
+    const std::uint64_t generation = screen_generation.fetch_add(1) + 1;
+    const std::uint64_t command_id = command.id;
+    const std::uint64_t session_generation = session.generation;
+    LOG_INFO("media.toggleScreenShare generation={} enable={}", generation,
+             enable);
+    context.signaling.Request(
+        "media.setMute", Json{{"source", "screen"}, {"muted", !enable}},
+        [this, command_id, generation, session_generation,
+         enable](Json result) {
+          context.post_to_worker(
+              [this, command_id, generation, session_generation, enable,
+               result] {
+                if (generation != screen_generation.load()) {
+                  context.events.EmitResponse(
+                      command_id, "media.toggleScreenShare", false, 487,
+                      "屏幕共享命令已被更新");
+                  return;
+                }
+                if (!context.session.IsCurrent(session_generation)) {
+                  context.events.EmitResponse(
+                      command_id, "media.toggleScreenShare", false, 409,
+                      "会话已失效");
+                  return;
+                }
+                screen_toggle_pending = false;
+                const bool server_ok = result.value("ok", false);
+                webrtc_media::MediaError media_error;
+                bool applied = media_session != nullptr;
+                if (applied) {
+                  applied =
+                      media_session->SetScreenEnabled(enable, &media_error);
+                }
+                if (!server_ok || !applied) {
+                  if (media_session) {
+                    media_session->SetScreenEnabled(false, &media_error);
+                  }
+                }
+                const bool effective = server_ok && applied && enable;
+                const auto status =
+                    media_session ? media_session->status()
+                                  : webrtc_media::MediaStatus{};
+                Json state = {{"source", "screen"},
+                              {"sharing", effective},
+                              {"screen", effective},
+                              {"camera", status.camera_enabled},
+                              {"on", status.camera_enabled || effective}};
+                context.events.EmitNotification("video.state", state);
+                if (!server_ok) {
+                  context.events.EmitResponse(
+                      command_id, "media.toggleScreenShare", false,
+                      ResponseCode(result), ResponseMessage(result));
+                } else if (!applied) {
+                  context.events.EmitResponse(
+                      command_id, "media.toggleScreenShare", false,
+                      media_error.code == 0 ? 1734 : media_error.code,
+                      media_error.message.empty()
+                          ? "应用屏幕共享状态失败"
+                          : media_error.message);
+                } else {
+                  context.events.EmitResponse(
+                      command_id, "media.toggleScreenShare", true, 0, {},
+                      state);
+                }
+              });
+        });
   }
 
   void HandleSetVolume(const EngineCommand& command) {
@@ -461,14 +574,15 @@ struct MediaOrchestrator::Impl {
         "media stats source={} muted={} recording={} capture_frames={} "
         "sfu={}/{} p2p={}/{} sent={} recv={} remote_tracks={} level={} "
         "camera_frames={} camera_sender={} video_sent={} video_recv={} "
-        "remote_video_tracks={}",
+        "screen_frames={} screen_sender={} remote_video_tracks={}",
         audio_source, status.muted, status.recording, status.capture_frames,
         status.sfu_send_state, status.sfu_recv_state, status.p2p_state,
         status.p2p_connected, status.p2p_audio_packets_sent,
         status.audio_packets_received, status.remote_tracks,
         status.remote_audio_level, status.camera_capture_frames,
         status.camera_sender_active, status.video_packets_sent,
-        status.video_packets_received, status.remote_video_tracks);
+        status.video_packets_received, status.screen_capture_frames,
+        status.screen_sender_active, status.remote_video_tracks);
     Json data = {
         {"initialized", status.initialized},
         {"sfu_send_ready", status.sfu_send_ready},
@@ -479,6 +593,7 @@ struct MediaOrchestrator::Impl {
         {"deafened", status.deafened},
         {"sfu_paused", status.sfu_paused},
         {"camera_enabled", status.camera_enabled},
+        {"screen_enabled", status.screen_enabled},
         {"recording_initialized", status.recording_initialized},
         {"recording", status.recording},
         {"playout_initialized", status.playout_initialized},
@@ -486,9 +601,11 @@ struct MediaOrchestrator::Impl {
         {"sfu_send_active", status.sfu_send_active},
         {"p2p_send_active", status.p2p_send_active},
         {"camera_sender_active", status.camera_sender_active},
+        {"screen_sender_active", status.screen_sender_active},
         {"volume", status.volume},
         {"capture_frames", status.capture_frames},
         {"camera_capture_frames", status.camera_capture_frames},
+        {"screen_capture_frames", status.screen_capture_frames},
         {"remote_tracks", status.remote_tracks},
         {"active_remote_tracks", status.active_remote_tracks},
         {"remote_video_tracks", status.remote_video_tracks},
@@ -540,6 +657,8 @@ struct MediaOrchestrator::Impl {
         p2p_peer = allocation.value("peer", std::string());
         p2p_offerer =
             allocation.value("role", std::string()) == "offerer";
+        p2p_video_allowed = data.value("p2p_video", false);
+        if (media_session) media_session->SetP2pPeerUid(p2p_peer);
         if (!context.session.SetMediaMode(generation,
                                           SessionMediaMode::P2p)) {
           context.signaling.Send(
@@ -660,12 +779,46 @@ struct MediaOrchestrator::Impl {
       return true;
     }
     if (method == "media.forceMute") {
-      context.post_to_worker([this, generation] {
+      context.post_to_worker([this, generation, data] {
         if (!context.session.IsCurrent(generation)) return;
-        if (media_session) {
-          webrtc_media::MediaError error;
-          media_session->SetMuted(true, &error);
+        const std::string source =
+            data.value("source", std::string("mic"));
+        webrtc_media::MediaError error;
+        if (source == "screen") {
+          if (media_session) media_session->SetScreenEnabled(false, &error);
+          screen_generation.fetch_add(1);
+          const auto status =
+              media_session ? media_session->status()
+                            : webrtc_media::MediaStatus{};
+          context.events.EmitNotification(
+              "video.state",
+              Json{{"source", "screen"},
+                   {"sharing", false},
+                   {"screen", false},
+                   {"camera", status.camera_enabled},
+                   {"on", status.camera_enabled},
+                   {"forced", true}});
+          return;
         }
+        if (source == "camera") {
+          camera_publishing.store(false);
+          camera_generation.fetch_add(1);
+          if (media_session) media_session->SetCameraEnabled(false, &error);
+          StopCameraCaptureIfIdle();
+          const auto status =
+              media_session ? media_session->status()
+                            : webrtc_media::MediaStatus{};
+          context.events.EmitNotification(
+              "video.state",
+              Json{{"source", "camera"},
+                   {"sharing", false},
+                   {"camera", false},
+                   {"screen", status.screen_enabled},
+                   {"on", status.screen_enabled},
+                   {"forced", true}});
+          return;
+        }
+        if (media_session) media_session->SetMuted(true, &error);
         context.events.EmitNotification(
             "media.muted", Json{{"muted", true}, {"forced", true}});
       });
@@ -788,6 +941,31 @@ struct MediaOrchestrator::Impl {
     context.options.on_local_frame(context.options.userdata, &view);
   }
 
+  void OnLocalScreenFrame(const webrtc_media::VideoFrameData& frame,
+                          std::uint64_t generation) {
+    if (!context.session.IsCurrent(generation)) return;
+    if (context.options.on_local_frame == nullptr) return;
+    std::string uid;
+    {
+      std::lock_guard<std::mutex> lock(config_mutex);
+      uid = local_uid;
+    }
+    rtcwin_frame_view view{};
+    view.uid = uid.c_str();
+    view.mid = "local:screen";
+    view.i420_y = frame.data_y;
+    view.i420_u = frame.data_u;
+    view.i420_v = frame.data_v;
+    view.width = frame.width;
+    view.height = frame.height;
+    view.stride_y = frame.stride_y;
+    view.stride_u = frame.stride_u;
+    view.stride_v = frame.stride_v;
+    view.timestamp_us = frame.timestamp_us;
+    view.source = 1;
+    context.options.on_local_frame(context.options.userdata, &view);
+  }
+
   void OnRemoteVideoFrame(const webrtc_media::RemoteVideoFrame& frame,
                           std::uint64_t generation) {
     if (!context.session.IsCurrent(generation)) return;
@@ -840,11 +1018,16 @@ struct MediaOrchestrator::Impl {
                         {"kind", "video"},
                         {"source", "camera"}});
     }
+    if (!offer.screen_mid.empty()) {
+      tracks.push_back({{"mid", offer.screen_mid},
+                        {"kind", "video"},
+                        {"source", "screen"}});
+    }
     Json request = {{"sdp", offer.sdp}, {"tracks", tracks}};
     LOG_INFO("sfu publish offer source={} audio_mid={} camera_mid={} "
-             "sdp_bytes={}",
+             "screen_mid={} sdp_bytes={}",
              offer.source, offer.audio_mid, offer.camera_mid,
-             offer.sdp.size());
+             offer.screen_mid, offer.sdp.size());
     context.signaling.Request(
         "sfu.publish", request, [this, generation](Json result) {
           if (!context.session.IsCurrent(generation)) return;
@@ -936,7 +1119,7 @@ struct MediaOrchestrator::Impl {
     }
     std::string offer;
     webrtc_media::MediaError error;
-    if (!media_session->CreateP2pOffer(&offer, &error)) {
+    if (!media_session->CreateP2pOffer(p2p_video_allowed, &offer, &error)) {
       LOG_ERR("p2p offer failed code={} error={}", error.code,
               error.message);
       EmitMediaError(error.code, "创建 P2P 音频 offer 失败",
@@ -977,7 +1160,8 @@ struct MediaOrchestrator::Impl {
     p2p_offerer = false;
     std::string answer;
     webrtc_media::MediaError error;
-    if (!media_session->CreateP2pAnswer(sdp, &answer, &error)) {
+    if (!media_session->CreateP2pAnswer(sdp, p2p_video_allowed, &answer,
+                                        &error)) {
       LOG_ERR("p2p answer create failed session={} code={} error={}",
               session, error.code, error.message);
       EmitMediaError(error.code, "创建 P2P 音频 answer 失败",
@@ -1134,14 +1318,17 @@ struct MediaOrchestrator::Impl {
   std::unique_ptr<webrtc_media::MediaSession> media_session;
   std::atomic<std::uint64_t> mute_generation{0};
   std::atomic<std::uint64_t> camera_generation{0};
+  std::atomic<std::uint64_t> screen_generation{0};
   camera_win::CameraCaptureSession camera;
   bool camera_preview_active = false;
   std::atomic<bool> camera_publishing{false};
   bool camera_toggle_pending = false;
+  bool screen_toggle_pending = false;
   int camera_device_index = -1;
   std::string p2p_session;
   std::string p2p_peer;
   bool p2p_offerer = false;
+  bool p2p_video_allowed = false;
   bool sfu_paused = false;
   bool sfu_publish_ready = false;
   bool sfu_subscribe_ready = false;

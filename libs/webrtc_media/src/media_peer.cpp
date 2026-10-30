@@ -239,6 +239,26 @@ bool MediaPeer::GetVideoMid(std::string* mid) const {
   });
 }
 
+bool MediaPeer::GetVideoMidForTrack(const std::string& track_id,
+                                    std::string* mid) const {
+  return RunOnSignaling([this, track_id, mid] {
+    if (!pc_ || mid == nullptr) return false;
+    for (const auto& transceiver : pc_->GetTransceivers()) {
+      if (!transceiver ||
+          transceiver->media_type() != webrtc::MediaType::VIDEO ||
+          !transceiver->sender() || !transceiver->mid().has_value()) {
+        continue;
+      }
+      auto track = transceiver->sender()->track();
+      if (track && track->id() == track_id) {
+        *mid = *transceiver->mid();
+        return true;
+      }
+    }
+    return false;
+  });
+}
+
 bool MediaPeer::HasAudioSender() const {
   return RunOnSignaling([this] {
     if (!pc_) return false;
@@ -323,6 +343,25 @@ bool MediaPeer::VideoSenderActive(const std::string& mid) const {
   });
 }
 
+bool MediaPeer::VideoSenderActiveForTrack(const std::string& track_id) const {
+  return RunOnSignaling([this, track_id] {
+    if (!pc_) return false;
+    for (const auto& transceiver : pc_->GetTransceivers()) {
+      if (!transceiver ||
+          transceiver->media_type() != webrtc::MediaType::VIDEO ||
+          !transceiver->sender()) {
+        continue;
+      }
+      auto track = transceiver->sender()->track();
+      if (!track || track->id() != track_id) continue;
+      const auto parameters = transceiver->sender()->GetParameters();
+      return !parameters.encodings.empty() &&
+             parameters.encodings.front().active;
+    }
+    return false;
+  });
+}
+
 bool MediaPeer::SetVideoSenderActive(const std::string& mid, bool active) {
   return RunOnSignaling([this, mid, active] {
     if (!pc_) return false;
@@ -333,6 +372,30 @@ bool MediaPeer::SetVideoSenderActive(const std::string& mid, bool active) {
           *transceiver->mid() != mid) {
         continue;
       }
+      auto parameters = transceiver->sender()->GetParameters();
+      for (auto& encoding : parameters.encodings) {
+        encoding.active = active;
+        encoding.max_bitrate_bps = kVideoMaxBitrateBps;
+        encoding.max_framerate = kVideoMaxFps;
+      }
+      return transceiver->sender()->SetParameters(parameters).ok();
+    }
+    return false;
+  });
+}
+
+bool MediaPeer::SetVideoSenderActiveForTrack(const std::string& track_id,
+                                             bool active) {
+  return RunOnSignaling([this, track_id, active] {
+    if (!pc_) return false;
+    for (const auto& transceiver : pc_->GetTransceivers()) {
+      if (!transceiver ||
+          transceiver->media_type() != webrtc::MediaType::VIDEO ||
+          !transceiver->sender()) {
+        continue;
+      }
+      auto track = transceiver->sender()->track();
+      if (!track || track->id() != track_id) continue;
       auto parameters = transceiver->sender()->GetParameters();
       for (auto& encoding : parameters.encodings) {
         encoding.active = active;
