@@ -1,10 +1,12 @@
 add_library(rtcwin_application STATIC
   include/rtcwin/application/app_controller.h
   include/rtcwin/application/engine_client.h
+  include/rtcwin/application/frame_health_monitor.h
   include/rtcwin/application/settings_store.h
   include/rtcwin/application/unavailable_engine_client.h
   include/rtcwin/application/video_scene.h
   src/app_controller.cpp
+  src/frame_health_monitor.cpp
   src/settings_store.cpp
   src/unavailable_engine_client.cpp
   src/video_scene.cpp

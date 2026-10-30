@@ -126,7 +126,7 @@ command and P5 prejoin page selectors.
 .\build\windows-x64\bin\Release\rtcwin_session_state_tests.exe
 ```
 
-The full CTest set is currently six tests:
+The full CTest set is currently nine tests:
 
 - `rtcwin_tests`
 - `rtcwin_session_state_tests`
@@ -215,3 +215,39 @@ $env:PATH = "$env:QTDIR\bin;$PWD\build\windows-x64\bin\Release;$env:PATH"
 For the SFU dual-stream check, the receiver should show the screen as the main
 tile and the sharing member's camera as a rounded PIP. The sender and receiver
 must use different `RTCWIN_LOG_PATH` values when collecting diagnostics.
+## S4.4 M2 multi-surface and frame health
+
+`rtcwin_frame_health_tests` verifies:
+
+- no frame -> Waiting;
+- frame within 5 seconds -> Healthy;
+- no frame for 5 seconds -> Stale;
+- producer paused -> Paused;
+- peer left/removed -> Removed;
+- a new frame resets stale state.
+
+`rtcwin_video_surface_pool_tests` verifies:
+
+- maximum active surface capacity;
+- RAII lease release;
+- idle surface reuse;
+- no duplicate lease for one stream key;
+- shutdown clears active and idle references.
+
+`rtcwin_video_grid_stress_tests` verifies:
+
+- 9 camera streams create 9 tiles and 9 independent pool surfaces;
+- 9 x 1280x720 frame intake are cached under distinct `uid + source` keys;
+- disabling one stream returns its surface to the pool;
+- re-enabling the stream reuses the surface;
+- 100 visibility/layout cycles do not grow the surface count.
+
+Current reference result on the development machine:
+
+```text
+nine_streams_720p_intake_ms=29
+video_grid_stress_test: PASS
+```
+
+Real断流验证：暂停发送端进程后，接收端在 5 秒后清空共享画面并释放对应
+Surface，但没有伪造 peerLeft 或 producer paused 事件。

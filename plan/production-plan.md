@@ -1,7 +1,7 @@
 # rtc-talk-win 详细开发计划（muxPlayer 优先）
 
 > 状态：本文件是项目长期主计划（S0-S8/P0-P5）。当前执行状态、M1-M7 分阶段拆解、排期和验收以 `plan/gap-driven-development-plan.md` 为唯一执行分册，不另建平行计划。
-> 当前进度：S1-S4.1 已完成；S4.2 的 camera/screen 双路呈现和共享 PIP 已完成（M1）；多路视频池、9 路压力和 5 秒无帧回收仍待完成。
+> 当前进度：S1-S4.2 已完成；M1 双路/PIP 和 M2 Surface 池/帧健康均已通过技术门禁；下一步为 S5（M3 Floor/PTT/主持人）。
 > 日期：2026-10-30
 > 当前代码基线：`rtc-talk-win@f2cc1a5`
 > 第一验收目标：完成 muxPlayer 接入，并用本机摄像头完成真实预览联调。
@@ -720,16 +720,18 @@ S1 未通过，不进入 S2。
 - `log-cpp[shared]@1.0.0#4` 改由私有 vcpkg registry 提供；新增
   `rtcwin_log_adapter.dll` C ABI 边界，避免 `/MT` Engine 与 `/MD` log-cpp
   跨 CRT 传递 STL 类型。
-- Release/Debug 全量构建通过，CTest 6/6 通过（新增视频场景/布局测试）。
+- Release/Debug 全量构建通过，CTest 9/9 通过（新增帧健康、Surface Pool 和 9 路压力测试）。
 - 测试服双客户端验证：发送端 `camera_frames=31 -> 179`、
   `video_packets_sent=14 -> 293`；接收端
   `video_packets_received=53 -> 325`，远端摄像头画面正常显示。
 
-仍未完成：
+S4.2 已完成：
 
-- M1 的 P2P 双端截图、停止 camera/screen 的最终交互验收。
-- 多路视频 session pool、9 路性能、5 秒无帧回收和长时间稳定性。
-- 后续把 `client_gateway` 的 C ABI 解析、HTTP 和快照逻辑继续内聚拆分。
+- M1 双端 camera/screen、Shared PIP、停止 camera/screen 已截图验收。
+- M2 Surface Pool、FrameHealthMonitor、producer paused、peer left、
+  5 秒无帧回收已完成。
+- 9 路 720p 短时注入 29 ms；100 次显示/布局切换 Surface 数不增长。
+- 长时稳定性测试按用户要求另行安排。
 
 M1 已完成的结构改造：
 
@@ -738,6 +740,12 @@ M1 已完成的结构改造：
 - `VideoGrid`/`VideoTile` 按 `uid + source` 路由帧，Screen 主 Tile 带 camera PIP。
 - 本地帧缓存按流隔离，camera/screen 不再共享一个“最后一帧”槽位。
 - `MuxVideoSurface` 使用等比裁切铺满，PIP 带圆角裁剪和独立标签。
+M2 已完成的结构改造：
+
+- `VideoSurfacePool` 负责 9 路 Surface 上限、RAII 租赁、空闲复用和回收。
+- `FrameHealthMonitor` 负责 Waiting/Healthy/Paused/Stale/Removed 状态。
+- `VideoGrid` 每 500 ms 检查帧健康，5 秒无帧时清屏并释放 Surface。
+- C ABI 快照同步 `media.track` source、`media.producer.paused` 和 peerLeft 流清理。
 
 S4.1 后的重构进度：
 

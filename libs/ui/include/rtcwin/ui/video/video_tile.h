@@ -22,6 +22,11 @@ class VideoTile final : public QWidget {
   void SetMember(const domain::PeerState& member, bool self, bool selected,
                  bool compact = false);
   void SetSource(domain::VideoSource source, bool has_camera_pip);
+  void AttachMainSurface(
+      muxplayer_adapter::MuxVideoSurface* surface);
+  void AttachPipSurface(
+      muxplayer_adapter::MuxVideoSurface* surface);
+  void DetachSurfaces();
   void SetFrame(const domain::VideoFrame& frame);
   void SetPipFrame(const domain::VideoFrame& frame);
   void ClearFrame();
@@ -41,8 +46,6 @@ class VideoTile final : public QWidget {
  private:
   void UpdateOverlay();
   void positionOverlays();
-  void EnsurePipSurface();
-  void DestroyPipSurface();
   void positionPipSurface();
 
   QString uid_;

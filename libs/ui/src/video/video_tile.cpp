@@ -19,10 +19,6 @@ VideoTile::VideoTile(QWidget* parent) : QWidget(parent) {
   setCursor(Qt::PointingHandCursor);
   setMinimumSize(150, 100);
 
-  surface_ = new muxplayer_adapter::MuxVideoSurface(this);
-  surface_->setAttribute(Qt::WA_TransparentForMouseEvents, true);
-  surface_->SetCornerRadius(11);
-
   const auto make_label = [this](const QString& object_name) {
     auto* label = new QLabel(this);
     label->setObjectName(object_name);
@@ -43,9 +39,28 @@ VideoTile::VideoTile(QWidget* parent) : QWidget(parent) {
                      "border:1px solid #6f4e1f;border-radius:5px;"
                      "padding:2px 6px;font-size:10px;"));
   role_->hide();
+
+  pip_border_ = new QLabel(this);
+  pip_border_->setObjectName(QStringLiteral("TileCameraPipBorder"));
+  pip_border_->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+  pip_border_->setStyleSheet(
+      QStringLiteral("background:transparent;border:1px solid #4f89b5;"
+                     "border-radius:10px;"));
+  pip_border_->hide();
+
+  pip_label_ = new QLabel(QStringLiteral("摄像头"), this);
+  pip_label_->setObjectName(QStringLiteral("TileCameraPipLabel"));
+  pip_label_->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+  pip_label_->setStyleSheet(
+      QStringLiteral("background:rgba(5,9,13,220);color:#e7eef4;"
+                     "border-radius:5px;padding:2px 6px;font-size:10px;"));
+  pip_label_->hide();
 }
 
-VideoTile::~VideoTile() = default;
+VideoTile::~VideoTile() {
+  surface_ = nullptr;
+  pip_surface_ = nullptr;
+}
 
 void VideoTile::SetMember(const domain::PeerState& member, bool self,
                           bool selected, bool compact) {
@@ -61,12 +76,55 @@ void VideoTile::SetMember(const domain::PeerState& member, bool self,
 void VideoTile::SetSource(domain::VideoSource source, bool has_camera_pip) {
   source_ = source;
   has_camera_pip_ = has_camera_pip;
-  if (has_camera_pip_) {
-    EnsurePipSurface();
-  } else {
-    DestroyPipSurface();
+  if (!has_camera_pip_) {
+    if (pip_surface_ != nullptr) pip_surface_->hide();
+    if (pip_border_ != nullptr) pip_border_->hide();
+    if (pip_label_ != nullptr) pip_label_->hide();
+  } else if (pip_surface_ != nullptr) {
+    pip_surface_->show();
+    if (pip_border_ != nullptr) pip_border_->show();
+    if (pip_label_ != nullptr) pip_label_->show();
   }
   UpdateOverlay();
+  update();
+}
+
+void VideoTile::AttachMainSurface(
+    muxplayer_adapter::MuxVideoSurface* surface) {
+  if (surface_ == surface) return;
+  surface_ = surface;
+  if (surface_ != nullptr) {
+    surface_->setParent(this);
+    surface_->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    surface_->SetCornerRadius(11);
+    surface_->setGeometry(rect().adjusted(1, 1, -1, -1));
+    surface_->show();
+    surface_->lower();
+  }
+  UpdateOverlay();
+  update();
+}
+
+void VideoTile::AttachPipSurface(
+    muxplayer_adapter::MuxVideoSurface* surface) {
+  if (pip_surface_ == surface) return;
+  pip_surface_ = surface;
+  if (pip_surface_ != nullptr) {
+    pip_surface_->setParent(this);
+    pip_surface_->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    pip_surface_->SetCornerRadius(9);
+    pip_surface_->SetPlaceholder(QStringLiteral("摄像头"));
+    pip_surface_->show();
+  }
+  positionPipSurface();
+  update();
+}
+
+void VideoTile::DetachSurfaces() {
+  surface_ = nullptr;
+  pip_surface_ = nullptr;
+  if (pip_border_ != nullptr) pip_border_->hide();
+  if (pip_label_ != nullptr) pip_label_->hide();
   update();
 }
 
@@ -76,12 +134,11 @@ void VideoTile::SetFrame(const domain::VideoFrame& frame) {
 }
 
 void VideoTile::SetPipFrame(const domain::VideoFrame& frame) {
-  EnsurePipSurface();
   if (pip_surface_ != nullptr) {
     pip_surface_->SubmitFrame(frame);
     pip_surface_->show();
-    if (pip_border_ != nullptr) pip_border_->show();
-    if (pip_label_ != nullptr) pip_label_->show();
+    if (pip_border_ != nullptr && has_camera_pip_) pip_border_->show();
+    if (pip_label_ != nullptr && has_camera_pip_) pip_label_->show();
   }
   update();
 }
@@ -109,11 +166,16 @@ void VideoTile::UpdateOverlay() {
   name_->show();
 
   QString status;
-  if (source_ == domain::VideoSource::Screen) status = QStringLiteral("共享中");
-  else if (member_.screen_on && source_ == domain::VideoSource::Camera)
+  if (source_ == domain::VideoSource::Screen) {
+    status = QStringLiteral("共享中");
+  } else if (member_.screen_on &&
+             source_ == domain::VideoSource::Camera) {
     status = QStringLiteral("摄像头");
-  else if (!member_.audio_muted && member_.speaking) status = QStringLiteral("发言中");
-  else if (!member_.camera_on) status = QStringLiteral("摄像头关闭");
+  } else if (!member_.audio_muted && member_.speaking) {
+    status = QStringLiteral("发言中");
+  } else if (!member_.camera_on) {
+    status = QStringLiteral("摄像头关闭");
+  }
   status_->setText(status);
   status_->setVisible(!status.isEmpty());
   status_->adjustSize();
@@ -123,17 +185,21 @@ void VideoTile::UpdateOverlay() {
                      : QString());
   role_->setVisible(member_.role == domain::RoomRole::Host);
   role_->adjustSize();
-  surface_->SetPlaceholder(
-      source_ == domain::VideoSource::Screen
-          ? QStringLiteral("等待共享画面")
-          : (compact_ ? QStringLiteral("视频")
-                      : QStringLiteral("等待视频帧")));
+  if (surface_ != nullptr) {
+    surface_->SetPlaceholder(
+        source_ == domain::VideoSource::Screen
+            ? QStringLiteral("等待共享画面")
+            : (compact_ ? QStringLiteral("视频")
+                        : QStringLiteral("等待视频帧")));
+  }
   positionOverlays();
 }
 
 void VideoTile::resizeEvent(QResizeEvent* event) {
   QWidget::resizeEvent(event);
-  surface_->setGeometry(rect().adjusted(1, 1, -1, -1));
+  if (surface_ != nullptr) {
+    surface_->setGeometry(rect().adjusted(1, 1, -1, -1));
+  }
   positionPipSurface();
   positionOverlays();
 }
@@ -154,47 +220,12 @@ void VideoTile::positionOverlays() {
   role_->raise();
 }
 
-void VideoTile::EnsurePipSurface() {
-  if (pip_surface_ != nullptr) return;
-  pip_surface_ = new muxplayer_adapter::MuxVideoSurface(this);
-  pip_surface_->setAttribute(Qt::WA_TransparentForMouseEvents, true);
-  pip_surface_->SetCornerRadius(9);
-  pip_surface_->SetPlaceholder(QStringLiteral("摄像头"));
-  pip_surface_->setObjectName(QStringLiteral("TileCameraPip"));
-  pip_border_ = new QLabel(this);
-  pip_border_->setObjectName(QStringLiteral("TileCameraPipBorder"));
-  pip_border_->setAttribute(Qt::WA_TransparentForMouseEvents, true);
-  pip_border_->setStyleSheet(
-      QStringLiteral("background:transparent;border:1px solid #4f89b5;"
-                     "border-radius:10px;"));
-  pip_label_ = new QLabel(QStringLiteral("摄像头"), this);
-  pip_label_->setObjectName(QStringLiteral("TileCameraPipLabel"));
-  pip_label_->setAttribute(Qt::WA_TransparentForMouseEvents, true);
-  pip_label_->setStyleSheet(
-      QStringLiteral("background:rgba(5,9,13,220);color:#e7eef4;"
-                     "border-radius:5px;padding:2px 6px;font-size:10px;"));
-  positionPipSurface();
-  pip_surface_->show();
-  pip_border_->show();
-  pip_label_->show();
-}
-
-void VideoTile::DestroyPipSurface() {
-  if (pip_surface_ == nullptr) return;
-  pip_surface_->deleteLater();
-  pip_surface_ = nullptr;
-  if (pip_border_ != nullptr) {
-    pip_border_->deleteLater();
-    pip_border_ = nullptr;
-  }
-  if (pip_label_ != nullptr) {
-    pip_label_->deleteLater();
-    pip_label_ = nullptr;
-  }
-}
-
 void VideoTile::positionPipSurface() {
-  if (pip_surface_ == nullptr) return;
+  if (pip_surface_ == nullptr) {
+    if (pip_border_ != nullptr) pip_border_->hide();
+    if (pip_label_ != nullptr) pip_label_->hide();
+    return;
+  }
   const int margin = compact_ ? 8 : 11;
   const int available_width = std::max(96, width() - margin * 2);
   const int available_height = std::max(64, height() - margin * 2);
@@ -216,7 +247,12 @@ void VideoTile::positionPipSurface() {
     pip_label_->adjustSize();
     pip_label_->move(pip_rect.left() + 6, pip_rect.top() + 6);
   }
-  if (pip_surface_ != nullptr) pip_surface_->raise();
+  if (has_camera_pip_) {
+    pip_surface_->show();
+    if (pip_border_ != nullptr) pip_border_->show();
+    if (pip_label_ != nullptr) pip_label_->show();
+  }
+  pip_surface_->raise();
   if (pip_border_ != nullptr) pip_border_->raise();
   if (pip_label_ != nullptr) pip_label_->raise();
 }
@@ -228,7 +264,7 @@ void VideoTile::paintEvent(QPaintEvent* event) {
   QPainterPath path;
   path.addRoundedRect(QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5), 12, 12);
   painter.setClipPath(path);
-  if (!surface_->has_frame()) {
+  if (surface_ == nullptr || !surface_->has_frame()) {
     QLinearGradient gradient(rect().topLeft(), rect().bottomRight());
     gradient.setColorAt(0, QColor(QStringLiteral("#18252f")));
     gradient.setColorAt(1, QColor(QStringLiteral("#0a1015")));

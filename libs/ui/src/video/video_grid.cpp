@@ -1,20 +1,33 @@
 #include "rtcwin/ui/video/video_grid.h"
 
+#include <QDateTime>
 #include <QGridLayout>
 #include <QPainter>
 #include <QPainterPath>
 #include <QResizeEvent>
 #include <QSet>
+#include <QTimer>
 
 #include <utility>
+#include <vector>
 
 namespace rtcwin::ui {
 namespace {
 
+constexpr int kHealthTickMs = 500;
+constexpr int kMaxVideoSurfaces = 9;
+
 QString FrameKey(const std::string& uid, domain::VideoSource source) {
-  return QString::fromStdString(uid) + QLatin1Char('|') +
-         QString::fromStdString(domain::VideoSourceName(source));
+  return QString::fromStdString(domain::VideoStreamKeyName({uid, source}));
 }
+
+std::int64_t NowMs() { return QDateTime::currentMSecsSinceEpoch(); }
+
+struct SurfaceBinding {
+  QString key;
+  VideoTile* owner = nullptr;
+  bool pip = false;
+};
 
 }  // namespace
 
@@ -24,10 +37,25 @@ VideoGrid::VideoGrid(QWidget* parent) : QWidget(parent) {
   layout_engine_ = new QGridLayout(this);
   layout_engine_->setContentsMargins(0, 0, 0, 0);
   layout_engine_->setSpacing(10);
+
+  surface_pool_ = std::make_unique<VideoSurfacePool>(
+      this, kMaxVideoSurfaces, nullptr);
+  health_timer_ = new QTimer(this);
+  health_timer_->setInterval(kHealthTickMs);
+  connect(health_timer_, &QTimer::timeout, this,
+          &VideoGrid::TickFrameHealth);
+  health_timer_->start();
+}
+
+VideoGrid::~VideoGrid() {
+  ClearSurfaceLeases();
+  if (surface_pool_ != nullptr) surface_pool_->Shutdown();
+  surface_pool_.reset();
 }
 
 void VideoGrid::SetState(const domain::SessionSnapshot& snapshot) {
   snapshot_ = snapshot;
+  health_monitor_.Sync(snapshot_);
   Rebuild();
   ApplyPlacement();
   update();
@@ -39,13 +67,25 @@ void VideoGrid::SetFrame(const domain::VideoFrame& frame) {
   if (uid.isEmpty()) return;
   domain::VideoFrame copy = frame;
   copy.uid = uid.toStdString();
+  const domain::VideoStreamKey key{copy.uid, copy.source};
+  health_monitor_.NoteFrame(key, copy.mid, NowMs());
   auto stored = std::make_shared<domain::VideoFrame>(std::move(copy));
-  // Build the key after the move-completed object exists. Keeping key
-  // construction separate from the move avoids unspecified argument
-  // evaluation order and prevents a frame from being cached under an empty
-  // UID or a stale source.
+  cleared_stale_streams_.remove(FrameKey(stored->uid, stored->source));
   frames_.insert(FrameKey(stored->uid, stored->source), stored);
+  if (surface_leases_.find(FrameKey(stored->uid, stored->source)) ==
+      surface_leases_.end()) {
+    BindSurfaces();
+  }
   ApplyFrameToMatchingTiles(*stored);
+}
+
+VideoGridDiagnostics VideoGrid::Diagnostics() const {
+  return VideoGridDiagnostics{
+      static_cast<int>(tiles_.size()),
+      surface_pool_ != nullptr ? surface_pool_->active_count() : 0,
+      surface_pool_ != nullptr ? surface_pool_->idle_count() : 0,
+      static_cast<int>(frames_.size()),
+      static_cast<int>(health_monitor_.StaleStreams(NowMs()).size())};
 }
 
 void VideoGrid::SetLayoutMode(domain::StageLayout layout) {
@@ -85,16 +125,24 @@ void VideoGrid::Rebuild() {
   scene_ = application::VideoSceneBuilder::Build(snapshot_, layout_, filter_);
   layout_plan_ = VideoLayoutEngine::Build(scene_);
   QSet<QString> active_keys;
+  std::vector<domain::VideoStreamKey> active_streams;
   const auto apply_item =
-      [this, &active_keys](const application::VideoSceneItem& item,
-                           bool compact) {
-    VideoTile* tile = EnsureTile(item);
-    active_keys.insert(TileKey(item));
-    tile->SetMember(MemberForUid(item.uid), item.self, item.selected,
-                    compact);
-    tile->SetSource(item.source, item.has_camera_pip);
-    ApplyFrame(tile, item);
-  };
+      [this, &active_keys, &active_streams](
+          const application::VideoSceneItem& item, bool compact) {
+        VideoTile* tile = EnsureTile(item);
+        const QString key = TileKey(item);
+        active_keys.insert(key);
+        active_streams.push_back(StreamKey(item));
+        tile->SetMember(MemberForUid(item.uid), item.self, item.selected,
+                        compact);
+        tile->SetSource(item.source, item.has_camera_pip);
+        if (item.has_camera_pip) {
+          active_streams.push_back(
+              domain::VideoStreamKey{item.uid, domain::VideoSource::Camera});
+          active_keys.insert(
+              FrameKey(item.uid, domain::VideoSource::Camera));
+        }
+      };
 
   const bool compact_primary =
       scene_.mode != application::VideoSceneMode::Grid;
@@ -105,8 +153,19 @@ void VideoGrid::Rebuild() {
     apply_item(item, true);
   }
 
+  health_monitor_.RemoveExcept(active_streams);
+  for (auto it = cleared_stale_streams_.begin();
+       it != cleared_stale_streams_.end();) {
+    if (!active_keys.contains(*it)) {
+      it = cleared_stale_streams_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+
   for (auto it = tiles_.begin(); it != tiles_.end();) {
     if (!active_keys.contains(it.key())) {
+      it.value()->DetachSurfaces();
       it.value()->deleteLater();
       it = tiles_.erase(it);
     } else {
@@ -120,23 +179,46 @@ void VideoGrid::Rebuild() {
       ++it;
     }
   }
+
+  BindSurfaces();
+  for (const auto& item : scene_.primary) {
+    ApplyFrame(tiles_.value(TileKey(item), nullptr), item);
+  }
+  for (const auto& item : scene_.secondary) {
+    ApplyFrame(tiles_.value(TileKey(item), nullptr), item);
+  }
 }
 
 void VideoGrid::ApplyFrame(
     VideoTile* tile, const application::VideoSceneItem& item) {
   if (tile == nullptr) return;
   if (item.source == domain::VideoSource::Screen) {
-    if (auto frame = frames_.value(
-            FrameKey(item.uid, domain::VideoSource::Screen), nullptr)) {
-      tile->SetFrame(*frame);
+    const domain::VideoStreamKey screen_key{
+        item.uid, domain::VideoSource::Screen};
+    if (IsSurfaceRenderable(screen_key)) {
+      if (auto frame = frames_.value(FrameKey(item.uid, screen_key.source),
+                                     nullptr)) {
+        tile->SetFrame(*frame);
+      } else {
+        tile->ClearFrame();
+      }
     } else {
+      frames_.remove(FrameKey(item.uid, screen_key.source));
       tile->ClearFrame();
     }
+
     if (item.has_camera_pip) {
-      if (auto camera = frames_.value(
-              FrameKey(item.uid, domain::VideoSource::Camera), nullptr)) {
-        tile->SetPipFrame(*camera);
+      const domain::VideoStreamKey camera_key{
+          item.uid, domain::VideoSource::Camera};
+      if (IsSurfaceRenderable(camera_key)) {
+        if (auto camera = frames_.value(
+                FrameKey(item.uid, camera_key.source), nullptr)) {
+          tile->SetPipFrame(*camera);
+        } else {
+          tile->ClearPipFrame();
+        }
       } else {
+        frames_.remove(FrameKey(item.uid, camera_key.source));
         tile->ClearPipFrame();
       }
     } else {
@@ -145,9 +227,16 @@ void VideoGrid::ApplyFrame(
     return;
   }
 
+  const domain::VideoStreamKey camera_key{
+      item.uid, domain::VideoSource::Camera};
+  if (!IsSurfaceRenderable(camera_key)) {
+    frames_.remove(FrameKey(item.uid, camera_key.source));
+    tile->ClearFrame();
+    return;
+  }
   tile->ClearPipFrame();
-  if (auto frame = frames_.value(
-          FrameKey(item.uid, domain::VideoSource::Camera), nullptr)) {
+  if (auto frame = frames_.value(FrameKey(item.uid, camera_key.source),
+                                 nullptr)) {
     tile->SetFrame(*frame);
   } else {
     tile->ClearFrame();
@@ -156,21 +245,154 @@ void VideoGrid::ApplyFrame(
 
 void VideoGrid::ApplyFrameToMatchingTiles(
     const domain::VideoFrame& frame) {
+  const domain::VideoStreamKey frame_key{frame.uid, frame.source};
+  const bool renderable = IsSurfaceRenderable(frame_key);
   const auto apply_item =
-      [this, &frame](const application::VideoSceneItem& item) {
-    const bool primary = item.source == frame.source;
-    const bool camera_pip =
-        frame.source == domain::VideoSource::Camera &&
-        item.source == domain::VideoSource::Screen &&
-        item.has_camera_pip;
-    if (!primary && !camera_pip) return;
-    VideoTile* tile = tiles_.value(TileKey(item), nullptr);
-    if (tile == nullptr) return;
-    if (primary) tile->SetFrame(frame);
-    if (camera_pip) tile->SetPipFrame(frame);
-  };
+      [this, &frame, &frame_key, renderable](
+          const application::VideoSceneItem& item) {
+        const bool primary = item.source == frame.source;
+        const bool camera_pip =
+            frame.source == domain::VideoSource::Camera &&
+            item.source == domain::VideoSource::Screen &&
+            item.has_camera_pip;
+        if (!primary && !camera_pip) return;
+        VideoTile* tile = tiles_.value(TileKey(item), nullptr);
+        if (tile == nullptr) return;
+        if (primary) {
+          if (renderable) {
+            tile->SetFrame(frame);
+          } else {
+            frames_.remove(FrameKey(frame_key.uid, frame_key.source));
+            tile->ClearFrame();
+          }
+        }
+        if (camera_pip) {
+          if (renderable) {
+            tile->SetPipFrame(frame);
+          } else {
+            frames_.remove(FrameKey(frame_key.uid, frame_key.source));
+            tile->ClearPipFrame();
+          }
+        }
+      };
   for (const auto& item : scene_.primary) apply_item(item);
   for (const auto& item : scene_.secondary) apply_item(item);
+}
+
+void VideoGrid::BindSurfaces() {
+  std::vector<SurfaceBinding> bindings;
+  QSet<QString> desired_keys;
+
+  const auto add_binding =
+      [this, &bindings, &desired_keys](
+          const QString& key, VideoTile* owner, bool pip,
+          const domain::VideoStreamKey& stream_key) {
+        if (owner == nullptr || desired_keys.contains(key) ||
+            !IsSurfaceRenderable(stream_key)) {
+          return;
+        }
+        desired_keys.insert(key);
+        bindings.push_back(SurfaceBinding{key, owner, pip});
+      };
+
+  const auto collect = [this, &add_binding](
+                           const application::VideoSceneItem& item) {
+    VideoTile* tile = tiles_.value(TileKey(item), nullptr);
+    add_binding(TileKey(item), tile, false, StreamKey(item));
+    if (item.has_camera_pip) {
+      add_binding(
+          FrameKey(item.uid, domain::VideoSource::Camera), tile, true,
+          domain::VideoStreamKey{item.uid, domain::VideoSource::Camera});
+    }
+  };
+  for (const auto& item : scene_.primary) collect(item);
+  for (const auto& item : scene_.secondary) collect(item);
+
+  for (auto it = tiles_.begin(); it != tiles_.end(); ++it) {
+    it.value()->DetachSurfaces();
+  }
+  for (auto it = surface_leases_.begin(); it != surface_leases_.end();) {
+    if (!desired_keys.contains(it->first)) {
+      it = surface_leases_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+
+  for (const auto& binding : bindings) {
+    auto lease = surface_leases_.find(binding.key);
+    if (lease == surface_leases_.end()) {
+      auto acquired = surface_pool_->Acquire(binding.key, binding.owner);
+      if (!acquired) continue;
+      lease = surface_leases_.emplace(
+          binding.key, std::move(acquired)).first;
+    }
+    auto* surface = lease->second->surface();
+    if (surface == nullptr) {
+      surface_leases_.erase(lease);
+      continue;
+    }
+    surface->setParent(binding.owner);
+    if (binding.pip) {
+      binding.owner->AttachPipSurface(surface);
+    } else {
+      binding.owner->AttachMainSurface(surface);
+    }
+  }
+}
+
+void VideoGrid::ClearSurfaceLeases() {
+  for (auto it = tiles_.begin(); it != tiles_.end(); ++it) {
+    it.value()->DetachSurfaces();
+  }
+  surface_leases_.clear();
+}
+
+void VideoGrid::TickFrameHealth() {
+  const auto stale = health_monitor_.StaleStreams(NowMs());
+  bool cleared = false;
+  for (const auto& key : stale) {
+    const QString name = FrameKey(key.uid, key.source);
+    if (cleared_stale_streams_.contains(name)) continue;
+    cleared_stale_streams_.insert(name);
+    ClearStreamFrames(key);
+    cleared = true;
+  }
+  if (cleared) update();
+}
+
+void VideoGrid::ClearStreamFrames(const domain::VideoStreamKey& key) {
+  frames_.remove(FrameKey(key.uid, key.source));
+  const QString lease_key = FrameKey(key.uid, key.source);
+
+  const auto clear_item = [this, &key](const application::VideoSceneItem& item) {
+    if (item.uid != key.uid) return;
+    VideoTile* tile = tiles_.value(TileKey(item), nullptr);
+    if (tile == nullptr) return;
+    if (item.source == key.source) {
+      tile->AttachMainSurface(nullptr);
+    }
+    if (key.source == domain::VideoSource::Camera &&
+        item.source == domain::VideoSource::Screen &&
+        item.has_camera_pip) {
+      tile->AttachPipSurface(nullptr);
+    }
+  };
+  for (const auto& item : scene_.primary) clear_item(item);
+  for (const auto& item : scene_.secondary) clear_item(item);
+  surface_leases_.erase(lease_key);
+}
+
+bool VideoGrid::IsSurfaceRenderable(
+    const domain::VideoStreamKey& key) const {
+  const auto state = health_monitor_.StateFor(key, NowMs());
+  return state == application::FrameHealthState::Waiting ||
+         state == application::FrameHealthState::Healthy;
+}
+
+domain::VideoStreamKey VideoGrid::StreamKey(
+    const application::VideoSceneItem& item) {
+  return domain::VideoStreamKey{item.uid, item.source};
 }
 
 VideoTile* VideoGrid::EnsureTile(

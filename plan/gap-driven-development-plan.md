@@ -18,8 +18,8 @@
 | 执行阶段 | 对应主计划阶段 | 当前状态 |
 |---|---|---|
 | M1 视频场景和双路呈现 | S4.2 中的 UI/双流呈现部分 | 已完成，待用户阶段确认 |
-| M2 多路 Surface 和帧健康 | S4.2 剩余部分 | 下一阶段 |
-| M3 Floor、PTT 和主持人 | S5 | 未开始 |
+| M2 多路 Surface 和帧健康 | S4.2 剩余部分 | 已完成，待用户阶段确认 |
+| M3 Floor、PTT 和主持人 | S5 | 下一阶段 |
 | M4 房间设备与屏幕源 | S6 | 未开始 |
 | M5 重连、resume 和 ICE 恢复 | S7 | 未开始 |
 | M6 诊断和可观测性 | S6/S7 | 未开始 |
@@ -83,9 +83,16 @@ build/windows-x64/m1-stop-p5-20261030-132505/b-after-stop.png
 build/windows-x64/m1-stop-camera-20261030-132838/b-after-camera-stop.png
 ```
 
-仍未闭环：
+M2 已完成：
 
-- 无；M1 自动门禁已通过。
+- `VideoSurfacePool` 和 RAII Lease，活动 Surface 上限为 9。
+- `FrameHealthMonitor` 统一管理 Waiting/Healthy/Paused/Stale/Removed。
+- 5 秒无帧清屏并释放 Surface，新帧恢复后重新租赁。
+- producer paused、peerLeft、media.track state 已进入快照。
+- 9 路 720p 注入 29 ms；100 次显示/布局切换 Surface 数不增长。
+- Release/Debug CTest 9/9。
+
+M1、M2 当前等待用户确认。M3 Floor/PTT/主持人尚未开始。
 
 ## 2. 目标架构
 
@@ -188,6 +195,22 @@ struct VideoStreamKey {
 - Surface 反复创建/释放无持续增长。
 - 9 路 720p 短时性能报告。
 
+已验证：
+
+- 9 路 720p 帧注入 29 ms，9 个 stream key 独立。
+- 100 次显示/布局切换后 Surface 数不增长。
+- 暂停发送端后，接收端 5 秒清屏并释放 Surface。
+- producer paused 后共享画面立即清除并回退 camera Grid。
+- Release/Debug CTest 9/9。
+
+证据：
+
+```text
+build/windows-x64/m2-pool-smoke-20261030-164503/b.png
+build/windows-x64/m2-stale-smoke-20261030-165010/b-after-stale.png
+build/windows-x64/m2-paused-smoke-20261030-165144/b-after-pause.png
+```
+
 ### M3 Floor、PTT 和主持人
 
 范围：
@@ -286,4 +309,3 @@ struct VideoStreamKey {
 - H.265 P2P。
 - Simulcast 和多层订阅。
 - 大规模长期稳定性测试；由用户单独安排。
-

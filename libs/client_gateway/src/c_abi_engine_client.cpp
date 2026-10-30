@@ -315,6 +315,14 @@ void CAbiEngineClient::ApplyRoomNotification(const QString& method,
         break;
       }
     }
+    for (auto it = snapshot_.streams.begin();
+         it != snapshot_.streams.end();) {
+      if (it->uid == uid) {
+        it = snapshot_.streams.erase(it);
+      } else {
+        ++it;
+      }
+    }
   } else if (method == QStringLiteral("room.peerUpdated")) {
     const std::string uid =
         data.value(QStringLiteral("uid")).toString().toStdString();
@@ -752,6 +760,15 @@ void CAbiEngineClient::HandleEvent(const QString& method,
           break;
         }
       }
+      const domain::VideoSource video_source =
+          source == QStringLiteral("screen") ? domain::VideoSource::Screen
+                                             : domain::VideoSource::Camera;
+      for (domain::VideoStreamState& stream : snapshot_.streams) {
+        if (stream.uid == uid && stream.source == video_source) {
+          stream.producer_paused = paused;
+          stream.receiving = on;
+        }
+      }
       emit SnapshotChanged(snapshot_);
     } else if (method == QStringLiteral("media.track")) {
       const QJsonObject data =
@@ -777,10 +794,13 @@ void CAbiEngineClient::HandleEvent(const QString& method,
         }
         const QString uid = data.value(QStringLiteral("uid")).toString();
         if (!uid.isEmpty()) stream->uid = uid.toStdString();
-        if (data.value(QStringLiteral("source")).toString() ==
-            QStringLiteral("screen")) {
-          stream->source = domain::VideoSource::Screen;
-        }
+        stream->source =
+            data.value(QStringLiteral("source")).toString() ==
+                    QStringLiteral("screen")
+                ? domain::VideoSource::Screen
+                : domain::VideoSource::Camera;
+        stream->producer_paused = false;
+        stream->receiving = false;
         emit SnapshotChanged(snapshot_);
       }
     } else if (method == QStringLiteral("media.error")) {

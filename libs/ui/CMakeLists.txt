@@ -7,6 +7,7 @@ set(RTCWIN_UI_SOURCES
   include/rtcwin/ui/video/video_grid.h
   include/rtcwin/ui/video/video_layout.h
   include/rtcwin/ui/video/video_surface.h
+  include/rtcwin/ui/video/video_surface_pool.h
   include/rtcwin/ui/video/video_tile.h
   include/rtcwin/ui/widgets/control_button.h
   include/rtcwin/ui/widgets/icon_button.h
@@ -21,6 +22,7 @@ set(RTCWIN_UI_SOURCES
   src/video/video_layout.cpp
   src/video/video_grid.cpp
   src/video/video_surface.cpp
+  src/video/video_surface_pool.cpp
   src/video/video_tile.cpp
   src/widgets/control_button.cpp
   src/widgets/icon_button.cpp

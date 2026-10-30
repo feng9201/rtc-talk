@@ -56,6 +56,54 @@ set_target_properties(rtcwin_video_scene_tests PROPERTIES
 )
 add_test(NAME rtcwin_video_scene_tests COMMAND rtcwin_video_scene_tests)
 
+add_executable(rtcwin_frame_health_tests frame_health_monitor_test.cpp)
+target_link_libraries(rtcwin_frame_health_tests PRIVATE rtcwin_application)
+target_compile_options(rtcwin_frame_health_tests PRIVATE
+  $<$<CXX_COMPILER_ID:MSVC>:/utf-8 /EHsc /GR /W3>
+)
+set_target_properties(rtcwin_frame_health_tests PROPERTIES
+  CXX_STANDARD 17
+  CXX_STANDARD_REQUIRED ON
+  MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
+)
+add_test(NAME rtcwin_frame_health_tests COMMAND rtcwin_frame_health_tests)
+
+add_executable(rtcwin_video_surface_pool_tests video_surface_pool_test.cpp)
+target_link_libraries(rtcwin_video_surface_pool_tests PRIVATE
+  rtcwin_ui
+  Qt5::Widgets
+)
+target_compile_definitions(rtcwin_video_surface_pool_tests PRIVATE
+  $<$<CXX_COMPILER_ID:MSVC>:_SILENCE_STDEXT_ARR_ITERS_DEPRECATION_WARNING>
+)
+target_compile_options(rtcwin_video_surface_pool_tests PRIVATE
+  $<$<CXX_COMPILER_ID:MSVC>:/utf-8 /EHsc /GR /W3>
+)
+set_target_properties(rtcwin_video_surface_pool_tests PROPERTIES
+  CXX_STANDARD 17
+  CXX_STANDARD_REQUIRED ON
+  MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
+)
+add_test(NAME rtcwin_video_surface_pool_tests COMMAND rtcwin_video_surface_pool_tests)
+
+add_executable(rtcwin_video_grid_stress_tests video_grid_stress_test.cpp)
+target_link_libraries(rtcwin_video_grid_stress_tests PRIVATE
+  rtcwin_ui
+  Qt5::Widgets
+)
+target_compile_definitions(rtcwin_video_grid_stress_tests PRIVATE
+  $<$<CXX_COMPILER_ID:MSVC>:_SILENCE_STDEXT_ARR_ITERS_DEPRECATION_WARNING>
+)
+target_compile_options(rtcwin_video_grid_stress_tests PRIVATE
+  $<$<CXX_COMPILER_ID:MSVC>:/utf-8 /EHsc /GR /W3>
+)
+set_target_properties(rtcwin_video_grid_stress_tests PROPERTIES
+  CXX_STANDARD 17
+  CXX_STANDARD_REQUIRED ON
+  MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
+)
+add_test(NAME rtcwin_video_grid_stress_tests COMMAND rtcwin_video_grid_stress_tests)
+
 add_executable(rtcwin_camera_preview_smoke camera_preview_smoke.cpp)
 
 target_link_libraries(rtcwin_camera_preview_smoke PRIVATE

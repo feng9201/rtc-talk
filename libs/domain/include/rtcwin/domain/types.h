@@ -44,6 +44,21 @@ enum class VideoSource {
   Screen,
 };
 
+struct VideoStreamKey {
+  std::string uid;
+  VideoSource source = VideoSource::Camera;
+};
+
+inline bool operator==(const VideoStreamKey& left,
+                       const VideoStreamKey& right) {
+  return left.uid == right.uid && left.source == right.source;
+}
+
+inline bool operator!=(const VideoStreamKey& left,
+                       const VideoStreamKey& right) {
+  return !(left == right);
+}
+
 enum class AudioBackend {
   Wasapi,
   Fake,
@@ -244,6 +259,10 @@ inline std::string MediaModeName(MediaModePreference mode) {
 
 inline std::string VideoSourceName(VideoSource source) {
   return source == VideoSource::Screen ? "screen" : "camera";
+}
+
+inline std::string VideoStreamKeyName(const VideoStreamKey& key) {
+  return key.uid + "|" + VideoSourceName(key.source);
 }
 
 }  // namespace rtcwin::domain

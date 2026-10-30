@@ -5,7 +5,7 @@
 > 分支：`rtc-talk-win`
 > 代码基线：`f2cc1a5 test: cover stopping camera during screen share`
 >
-> 当前状态：M1 视频场景、camera/screen 双路、共享主画面 + camera PIP 已完成并推送；Release/Debug 构建和 CTest 6/6 通过；SFU/P2P 双路及停止 camera/screen 均已截图验收。下一阶段为 M2 多路 Surface 与帧健康。
+> 当前状态：M1 双路/PIP 和 M2 Surface Pool/帧健康已完成；Release/Debug 构建和 CTest 9/9 通过；9 路 720p、5 秒断流回收、producer paused 均已验证。下一阶段为 M3 Floor/PTT/主持人。
 > 旧工程：`D:\google\webrtc-win-client\rtc-talk`，只读参考，禁止修改或提交。
 
 本文档面向后续接入业务、继续媒体开发、做代码评审或发布验收的工程师。它描述当前真实代码状态，不把计划中的能力写成已完成能力。
@@ -75,7 +75,7 @@
 | S3.1 | libwebrtc 音频设备枚举与预入会选择 | 已完成并推送 | `53a8fdd`、`rtcwin_audio_devices_probe` | 无 |
 | S3.2 | 音频 PeerConnection、P2P/SFU、静音、音量、收听、系统音 | 核心完成并推送，待完整人工验收 | `5ab73fa`、`MediaSession`、WASAPI loopback | 收听/音量听音、设备异常、离房重进和恢复 |
 | S4.1 | 摄像头 SFU 发布、远端 I420、muxPlayer 房间渲染 | 代码完成，双端短链路通过 | `MediaSession`、MF H.264、`RemoteVideoSink`、`MuxVideoSurface` | 设备切换、离房重进、异常恢复 |
-| S4.2 | 屏幕共享、P2P 视频、多路视频池和压力 | 传输和单路/双路呈现完成，性能与回收未完成 | 屏幕采集、SFU/P2P screen producer、camera/screen 双路截图 | 多路 session pool、9 路性能、5 秒无帧回收 |
+| S4.2 | 屏幕共享、P2P 视频、多路视频池和压力 | 已完成并推送 | M1 双路/PIP、M2 Surface Pool/帧健康、9 路压力 | 长稳定性测试按用户要求另行安排 |
 | S5 | 成员、发言权、主持人、PTT/审核模式 | 部分完成 | 房间成员/策略/floor 快照已有；floor 请求仍为 501 | floor.request/release、revoked、keepalive、主持人操作 |
 | S6 | 设备、统计、日志和诊断 | 部分完成 | 摄像头/音频设备枚举、`media.stats` 基础字段 | RTCStats、设备热插拔、设置弹窗、脱敏日志、诊断面板 |
 | S7 | 重连、resume、ICE refresh、安全 | 未开始 | 当前关闭后重置媒体，无 resume | generation guard、WSS、resume、ICE restart、错误恢复 |
@@ -87,6 +87,7 @@
 | P4 | UI 本地预览联调 | 已完成并推送 | P5 预入会页、真实摄像头截图 | 视觉改动必须继续对照 P5 |
 | P5 | 第一里程碑稳定性与提交验收 | 已完成阶段验收 | Release/Debug 构建、既有联调 | 长稳定性测试按用户明确要求执行 |
 | M1 | 视频场景、camera/screen 双路、共享主画面 + PIP | 已完成并推送 | `fff99ad`、`f2cc1a5`、`rtcwin_video_scene_tests`、SFU/P2P 截图 | 仅待用户按阶段流程确认，无技术缺口 |
+| M2 | Surface Pool、帧健康、5 秒无帧回收、9 路压力 | 代码完成待用户确认 | `rtcwin_frame_health_tests`、`rtcwin_video_surface_pool_tests`、`rtcwin_video_grid_stress_tests`、断流截图 | 无技术缺口，等待阶段确认 |
 
 ### 0.4 当前计划偏差
 
@@ -164,18 +165,17 @@
 
 ### 1.2 当前阶段确认与剩余验收
 
-M1 已通过技术门禁：
+M1、M2 已通过技术门禁：
 
-- camera/screen 使用 `uid + source` 独立 Tile。
-- SFU、P2P 双端 camera/screen 已截图。
-- 共享主画面 + camera PIP 已完成。
-- 停止 screen 后回退到 camera Grid。
-- 停止 camera 后 screen 保留、PIP 消失。
-- Release/Debug 构建通过，CTest 6/6 通过。
+- M1：camera/screen 使用 `uid + source` 独立 Tile，SFU/P2P 双路、
+  Shared PIP、停止 camera/screen 已完成。
+- M2：`VideoSurfacePool`、`FrameHealthMonitor`、9 路 Surface 上限、
+  5 秒无帧回收、producer paused 和 peerLeft 清理已完成。
+- 9 路 720p 帧注入 29 ms；100 次显示/布局切换 Surface 数不增长。
+- Release/Debug 构建通过，CTest 9/9 通过。
 
-M1 目前只等待用户按阶段流程确认。仍未验收的生产能力：
+M1、M2 目前等待用户按阶段流程确认。仍未验收的生产能力：
 
-- 多路视频 Surface 池、9 路性能、5 秒无帧回收。
 - Floor/PTT、主持人授权、全员静音、踢人和策略更新。
 - 会议中设备切换、热插拔、多屏/窗口共享和系统音端点选择。
 - resume、ICE refresh/restart 和 P2P 失败回退。
@@ -184,13 +184,12 @@ M1 目前只等待用户按阶段流程确认。仍未验收的生产能力：
 
 ### 1.3 当前工作树状态
 
-当前分支 `rtc-talk-win` 与远端同步，工作树干净。
+M2 代码位于当前 `rtc-talk-win` 工作树，提交号和包信息在阶段提交后更新。
 
 - M1 代码提交：`f2cc1a5`。
 - M1 场景模型提交：`fff99ad`。
-- 当前 CTest 集：6 个测试，Release/Debug 均 6/6。
-- 最终便携包：`dist/rtc-talk-win-20261030-132934.zip`。
-- M1 证据和包 SHA256：见 §18.12。
+- 当前 CTest 集：9 个测试，Release/Debug 均 9/9。
+- M2 证据：见 §18.13。
 
 ### 1.4 计划入口与当前下一步
 
@@ -204,14 +203,14 @@ M1 目前只等待用户按阶段流程确认。仍未验收的生产能力：
 | 执行阶段 | 主计划映射 | 状态 |
 |---|---|---|
 | M1 视频场景和双路呈现 | S4.2 UI/双流呈现 | 已完成，待用户确认 |
-| M2 多路 Surface 和帧健康 | S4.2 剩余部分 | 下一阶段 |
-| M3 Floor、PTT 和主持人 | S5 | 未开始 |
+| M2 多路 Surface 和帧健康 | S4.2 剩余部分 | 已完成，待用户确认 |
+| M3 Floor、PTT 和主持人 | S5 | 下一阶段 |
 | M4 房间设备与屏幕源 | S6 | 未开始 |
 | M5 重连、resume 和 ICE 恢复 | S7 | 未开始 |
 | M6 诊断和可观测性 | S6/S7 | 未开始 |
 | M7 安全和发布 | S7/S8 | 未开始 |
 
-当前下一步只有一项：用户确认 M1 后，按执行分册开始 M2。M2-M7 的详细范围、
+当前下一步只有一项：用户确认 M2 后，按执行分册开始 M3。M3-M7 的详细范围、
 接口、验收和估算不得在交接文档中另写一套。
 
 ---
@@ -1312,8 +1311,8 @@ client-b / room-demo / uid-b
 - [ ] `VCPKG_ROOT` 指向本地 vcpkg。
 - [ ] Release 构建通过。
 - [ ] Debug 构建通过。
-- [ ] Release CTest 6/6（包含 `rtcwin_video_scene_tests`）。
-- [ ] Debug CTest 6/6（包含 `rtcwin_video_scene_tests`）。
+- [ ] Release CTest 9/9（包含帧健康、Surface Pool 和 9 路压力测试）。
+- [ ] Debug CTest 9/9（包含帧健康、Surface Pool 和 9 路压力测试）。
 - [ ] fake 音频探针通过。
 - [ ] 真实 wasapi 短链路通过。
 - [ ] 双客户端真实音频联调完成后再宣布 S3.2 完成。
@@ -1846,3 +1845,45 @@ SHA256: A33A41A3537B620BDED829E54714F38854B2AFEE3203E176762B71BF7BE878B7
 
 打包后的 `rtc-talk.exe` 已通过 1440x900 启动截图冒烟，截图位于
 `build/windows-x64/package/package-smoke-m1.png`。
+### 18.13 M2 多路 Surface 与帧健康（2026-10-30）
+
+本轮实现：
+
+- application 层新增 `FrameHealthMonitor`，状态为 Waiting / Healthy /
+  Paused / Stale / Removed，5 秒无帧阈值集中在单一状态机。
+- UI 层新增 `VideoSurfacePool` 和 RAII `VideoSurfaceLease`，活动 Surface
+  上限 9，支持空闲复用、容量约束和可重复 Shutdown。
+- `VideoGrid` 每 500 ms 检查帧健康；Stale 时清空帧并释放 Surface，新帧到达
+  后重新租赁 Surface。
+- producer paused 时清除画面并回退场景；peerLeft 同时删除 peer 和其视频流。
+- Client Gateway 同步 `media.track.source`、`media.producer.paused`、
+  `receiving` 和 peerLeft 流清理。
+- `VideoTile` 不再自行创建/销毁 Surface，只绑定 Pool 注入的 Main/PIP Surface。
+- `VideoGridDiagnostics` 提供 Tile、活动 Surface、空闲 Surface、帧缓存和 Stale
+  数量，便于测试和后续状态面板接入。
+
+新增测试：
+
+- `rtcwin_frame_health_tests`
+- `rtcwin_video_surface_pool_tests`
+- `rtcwin_video_grid_stress_tests`
+
+验证结果：
+
+- Release/Debug CTest 均为 9/9。
+- 9 路 1280×720 帧注入耗时 29 ms。
+- 9 个 Surface stream key 独立，无重复租约。
+- 100 次显示/布局切换后 Surface 数不增长。
+- 暂停发送端进程后，接收端在 5 秒后清屏并释放 Surface。
+- producer paused 后共享画面立即清除并回退 camera Grid。
+- 重构后 P2P camera+screen 和 Shared PIP 截图回归通过。
+
+证据：
+
+```text
+build/windows-x64/m2-pool-smoke-20261030-164503/b.png
+build/windows-x64/m2-stale-smoke-20261030-165010/b-after-stale.png
+build/windows-x64/m2-paused-smoke-20261030-165144/b-after-pause.png
+```
+
+M2 目前等待用户阶段确认。M3 Floor/PTT/主持人尚未开始。
