@@ -161,5 +161,30 @@ $env:PATH = "$env:QTDIR\bin;" + $env:PATH
 ```
 
 Launch a second client in the same room with a different UID. Use distinct
-`RTCWIN_LOG_PATH` values when collecting diagnostics. S4.1 is camera-only;
-screen sharing and P2P video remain future work.
+`RTCWIN_LOG_PATH` values when collecting diagnostics.
+
+## S4.2 screen sharing and P2P video
+
+Automated screen-sharing flags:
+
+```powershell
+--auto-screen-ms 3000
+--auto-screen-stop-ms 7000
+```
+
+For P2P validation, launch both clients with:
+
+```powershell
+--auto-join-media-mode p2p
+```
+
+The client now pre-creates `audio/camera/screen` m-lines for P2P and advertises
+`caps.p2p_video=true`. Screen capture uses libwebrtc DesktopCapturer with
+WGC/DXGI and converts BGRA to I420 before publishing.
+
+Expected evidence:
+
+- Sender `screen_frames` and `screen_sender` increase.
+- SFU/P2P receiver `video_packets_received` increases.
+- Stopping screen sharing sends `media.setMute{source:"screen",muted:true}` and
+  the remote shared tile clears without waiting for RTP timeout.

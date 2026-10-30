@@ -3,7 +3,7 @@
 > 快照日期：2026-10-29  
 > 仓库：`D:\google\webrtc-win-client\rtc-talk-win`  
 > 分支：`rtc-talk-win`  
-> 代码基线：`b3af0e8 refactor: 完成会话与媒体管线生产化拆分`
+> 代码基线：`bd5cd94 feat: 接入屏幕共享与P2P视频`
 >
 > 当前状态：S3.2 音频主链路已通过短链路验证；S4.1 摄像头 SFU 和远端 muxPlayer 渲染已通过双端验证；S4.2 的屏幕共享与 P2P 视频已接通并完成截图验收；B1-B5 已完成。多路 session pool、9 路压力和 5 秒无帧回收仍未完成。
 > 旧工程：`D:\google\webrtc-win-client\rtc-talk`，只读参考，禁止修改或提交。
@@ -17,7 +17,7 @@
 
 | 类别 | 仓库 / 分支 / 提交 | 本工程中的用途 | 权限 |
 |---|---|---|---|
-| 当前生产工程 | `D:\google\webrtc-win-client\rtc-talk-win` / `rtc-talk-win` / `b3af0e8` | 真正交付工程、当前开发分支 | 可开发、可提交到 `rtc-talk-win` |
+| 当前生产工程 | `D:\google\webrtc-win-client\rtc-talk-win` / `rtc-talk-win` / `bd5cd94` | 真正交付工程、当前开发分支 | 可开发、可提交到 `rtc-talk-win` |
 | 服务端权威参考 | `D:\google\webrtc-win-client\rtc-talk` / `origin/main` / `8e6ff57` | 服务端行为、协议口径、S4 差异和联调依据 | 只读 |
 | 旧 Windows 客户端功能参考 | `origin/feat/windows-client` / `df22708` | `client-win` demo、既有音视频功能和联调逻辑参考 | 只读 |
 | 旧 Windows 生产实现参考 | `origin/codex/feat/windows-production-client` / `bbb3891` | P5 UI、生产模块、历史改造和验收记录参考 | 只读 |
@@ -1696,15 +1696,15 @@ build/windows-x64/p2p-screen-20261030-123251/b-p2p-screen.png
 - 5 秒无帧回收与异常断流 UI 清理。
 - 多屏选择和窗口共享选择。
 
-便携包（当前仅有 B5 基线包，不包含 S4.2 增量）：
+便携包（包含 S4.2 屏幕共享与 P2P 视频）：
 
 ```text
-D:\google\webrtc-win-client\rtc-talk-win\dist\rtc-talk-win-20261029-223727.zip
-SHA256: E6369155BCC54264463035FC9ECF792264AFEE8B34D3F78534766B9224B6404B
+D:\google\webrtc-win-client\rtc-talk-win\dist\rtc-talk-win-20261030-123649.zip
+SHA256: 1CEE48011387CA340C0BE0B337BE407C029FA097AB8B2D35A2150D2F5AE97412
 ```
 
-包内 `VERSION.txt` 的提交号为 `b3af0e8`。旧的
-`rtc-talk-win-20261029-221208.zip` 仅保留为 B3 历史包，不作为当前交付包。
+包内 `VERSION.txt` 的提交号为 `bd5cd94`。旧的
+`rtc-talk-win-20261029-223727.zip` 仅保留为 B5 历史包，不作为当前交付包。
 
 打包后的 `rtc-talk.exe` 已通过 1440x900 启动截图冒烟，截图位于
-`build/windows-x64/package/package-smoke-b5.png`。
+`build/windows-x64/package/package-smoke-s4.2.png`。
