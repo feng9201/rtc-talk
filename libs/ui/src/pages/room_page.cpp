@@ -18,6 +18,9 @@
 #include <QTimer>
 #include <QVBoxLayout>
 
+#include <algorithm>
+#include <iterator>
+
 namespace rtcwin::ui {
 namespace {
 
@@ -205,13 +208,15 @@ QWidget* RoomPage::BuildControlBar() {
   connect(mic_, &ControlButton::clicked, this, [this] {
     if (state_.talk_mode == domain::TalkMode::Free) {
       emit MicToggleRequested();
+    } else if (state_.talk_mode == domain::TalkMode::Moderated) {
+      emit MicFloorToggleRequested();
     }
   });
   connect(mic_, &ControlButton::pressed, this, [this] {
-    if (state_.talk_mode != domain::TalkMode::Free) emit MicFloorPressed();
+    if (state_.talk_mode == domain::TalkMode::Ptt) emit MicFloorPressed();
   });
   connect(mic_, &ControlButton::released, this, [this] {
-    if (state_.talk_mode != domain::TalkMode::Free) emit MicFloorReleased();
+    if (state_.talk_mode == domain::TalkMode::Ptt) emit MicFloorReleased();
   });
   connect(camera_, &ControlButton::clicked, this,
           &RoomPage::CameraToggleRequested);
@@ -327,13 +332,27 @@ void RoomPage::UpdateHeader() {
     floor_->setText(QStringLiteral("自由发言"));
     floor_->SetTone(QStringLiteral("default"));
   } else if (state_.floor.holder_uid.empty()) {
-    floor_->setText(QStringLiteral("等待发言"));
+    const int queue_position = QueuePosition();
+    floor_->setText(queue_position > 0
+                        ? QStringLiteral("排队中 · 第%1位").arg(queue_position)
+                        : QStringLiteral("等待发言"));
     floor_->SetTone(QStringLiteral("default"));
   } else {
     const QString holder = state_.floor.self_has_floor
                                ? QStringLiteral("我")
                                : Text(state_.floor.holder_uid);
-    floor_->setText(QStringLiteral("发言：%1").arg(holder));
+    QString text = QStringLiteral("发言：%1").arg(holder);
+    if (state_.floor.deadline_epoch_ms > 0) {
+      const qint64 remaining =
+          std::max<qint64>(0, state_.floor.deadline_epoch_ms -
+                                 QDateTime::currentMSecsSinceEpoch());
+      text += QStringLiteral(" · %1s").arg((remaining + 999) / 1000);
+    }
+    const int queue_position = QueuePosition();
+    if (queue_position > 0) {
+      text += QStringLiteral(" · 排队第%1位").arg(queue_position);
+    }
+    floor_->setText(text);
     floor_->SetTone(QStringLiteral("ok"));
   }
   if (preview_mode_) {
@@ -369,16 +388,19 @@ void RoomPage::UpdateControls() {
       mic_->SetTone(state_.mic_muted ? QStringLiteral("muted")
                                      : QStringLiteral("active"));
     } else {
+      const bool queued = QueuePosition() > 0;
       mic_->SetIcon(state_.floor.self_has_floor ? theme::Icon::Mic
                                                 : theme::Icon::MicOff);
       mic_->SetText(state_.floor.self_has_floor
                         ? QStringLiteral("正在发言")
                         : state_.talk_mode == domain::TalkMode::Ptt
                               ? QStringLiteral("按住说话")
-                              : QStringLiteral("申请发言"));
+                              : queued ? QStringLiteral("取消排队")
+                                       : QStringLiteral("申请发言"));
       mic_->SetTone(state_.floor.self_has_floor
                         ? QStringLiteral("active")
-                        : QStringLiteral("default"));
+                        : queued ? QStringLiteral("warn")
+                                 : QStringLiteral("default"));
     }
   }
   if (camera_ != nullptr) {
@@ -405,7 +427,9 @@ void RoomPage::UpdateControls() {
     control_hint_->setText(
         state_.talk_mode == domain::TalkMode::Free
             ? QStringLiteral("自由发言 · 点击麦克风切换闭麦状态")
-            : QStringLiteral("按住麦克风申请并占用发言权"));
+            : state_.talk_mode == domain::TalkMode::Ptt
+                  ? QStringLiteral("按住麦克风申请发言，松开释放")
+                  : QStringLiteral("点击麦克风申请发言，再次点击取消或释放"));
   }
 }
 
@@ -511,20 +535,34 @@ void RoomPage::UpdateMemberPanel() {
   const bool host = state_.self_role == domain::RoomRole::Host;
   mute_all_->setVisible(host);
   member_floor_->setText(state_.floor.holder_uid.empty()
-                             ? QStringLiteral("发言权：未授予")
+                             ? (QueuePosition() > 0
+                                    ? QStringLiteral("发言权：排队第%1位")
+                                          .arg(QueuePosition())
+                                    : QStringLiteral("发言权：未授予"))
                              : QStringLiteral("发言权：%1")
                                    .arg(Text(state_.floor.holder_uid)));
   const auto self = SelfPeer();
   if (auto* row = member_rows_.value(Text(self.uid))) {
-    row->SetMember(self, true, host,
+    row->SetMember(self, true, false, false,
                    Text(state_.selected_uid) == Text(self.uid));
   }
   for (const auto& peer : state_.peers) {
     if (auto* row = member_rows_.value(Text(peer.uid))) {
       row->SetMember(peer, false, host,
+                     host && state_.talk_mode != domain::TalkMode::Free,
                      Text(state_.selected_uid) == Text(peer.uid));
     }
   }
+}
+
+int RoomPage::QueuePosition() const {
+  const auto it = std::find(state_.floor.queue.begin(),
+                            state_.floor.queue.end(),
+                            state_.self_uid);
+  if (it == state_.floor.queue.end()) return 0;
+  return static_cast<int>(
+             std::distance(state_.floor.queue.begin(), it)) +
+         1;
 }
 
 domain::PeerState RoomPage::SelfPeer() const {

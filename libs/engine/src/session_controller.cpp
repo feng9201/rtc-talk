@@ -335,6 +335,57 @@ struct SessionController::Impl {
     });
   }
 
+  void RequestControl(const EngineCommand& command,
+                      const std::string& method, Json payload) {
+    const auto session = context.session.snapshot();
+    if (session.phase != SessionPhase::Joined) {
+      EmitResponse(command.id, command.method, false, 409,
+                   "尚未加入房间");
+      return;
+    }
+    const std::uint64_t generation = session.generation;
+    context.signaling.Request(
+        method, std::move(payload),
+        [this, id = command.id, method, generation](Json result) {
+          if (!context.session.IsCurrent(generation)) return;
+          if (!result.value("ok", false)) {
+            EmitResponse(id, method, false, ResponseCode(result),
+                         ResponseMessage(result));
+            return;
+          }
+          EmitResponse(id, method, true, 0, {},
+                       result.value("data", Json::object()));
+        });
+  }
+
+  void RequestFloor(const EngineCommand& command) {
+    RequestControl(command, "floor.request", Json::object());
+  }
+
+  void ReleaseFloor(const EngineCommand& command) {
+    RequestControl(command, "floor.release", Json::object());
+  }
+
+  void GrantFloor(const EngineCommand& command) {
+    RequestControl(command, "host.grant", command.data);
+  }
+
+  void MuteAll(const EngineCommand& command) {
+    RequestControl(command, "host.muteAll", command.data);
+  }
+
+  void KickMember(const EngineCommand& command) {
+    RequestControl(command, "host.kick", command.data);
+  }
+
+  void SetPolicy(const EngineCommand& command) {
+    RequestControl(command, "host.setPolicy", command.data);
+  }
+
+  void SubscribeLevels(const EngineCommand& command) {
+    RequestControl(command, "room.subscribeLevels", command.data);
+  }
+
   void CancelHeartbeat() { heartbeat_timer.cancel(); }
 
  private:
@@ -376,6 +427,15 @@ struct SessionController::Impl {
     }
     LOG_INFO("join finalized media_enabled=true");
     context.media.Start(generation);
+    context.signaling.Request(
+        "room.subscribeLevels", Json{{"enabled", true}},
+        [this, generation](Json result) {
+          if (!context.session.IsCurrent(generation)) return;
+          if (!result.value("ok", false)) {
+            LOG_WARN("room.subscribeLevels failed code={} message={}",
+                     ResponseCode(result), ResponseMessage(result));
+          }
+        });
   }
 
   void ScheduleHeartbeat(int seconds, std::uint64_t generation) {
@@ -438,6 +498,34 @@ void SessionController::Leave(const EngineCommand& command) {
 
 void SessionController::Disconnect(const EngineCommand& command) {
   impl_->Disconnect(command);
+}
+
+void SessionController::RequestFloor(const EngineCommand& command) {
+  impl_->RequestFloor(command);
+}
+
+void SessionController::ReleaseFloor(const EngineCommand& command) {
+  impl_->ReleaseFloor(command);
+}
+
+void SessionController::GrantFloor(const EngineCommand& command) {
+  impl_->GrantFloor(command);
+}
+
+void SessionController::MuteAll(const EngineCommand& command) {
+  impl_->MuteAll(command);
+}
+
+void SessionController::KickMember(const EngineCommand& command) {
+  impl_->KickMember(command);
+}
+
+void SessionController::SetPolicy(const EngineCommand& command) {
+  impl_->SetPolicy(command);
+}
+
+void SessionController::SubscribeLevels(const EngineCommand& command) {
+  impl_->SubscribeLevels(command);
 }
 
 void SessionController::CancelHeartbeat() { impl_->CancelHeartbeat(); }

@@ -26,6 +26,11 @@ class EngineClient : public QObject {
   virtual void SetDeafened(bool deafened) = 0;
   virtual void RequestFloor() = 0;
   virtual void ReleaseFloor() = 0;
+  virtual void GrantFloor(const std::string& uid, bool allow) = 0;
+  virtual void MuteAll(const std::vector<std::string>& except) = 0;
+  virtual void KickMember(const std::string& uid) = 0;
+  virtual void UpdateRoomPolicy(const domain::RoomPolicyPatch& patch) = 0;
+  virtual void SubscribeLevels(bool enabled) = 0;
   virtual void SelectPeer(const std::string& uid) = 0;
   virtual void RefreshCameras() = 0;
   virtual void RefreshAudioDevices() = 0;

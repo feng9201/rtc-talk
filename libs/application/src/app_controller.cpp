@@ -9,12 +9,15 @@ namespace rtcwin::application {
 AppController::AppController(std::unique_ptr<EngineClient> engine,
                              QObject* parent)
     : QObject(parent), engine_(std::move(engine)) {
+  floor_controller_ = std::make_unique<FloorController>(engine_.get());
+  host_controller_ = std::make_unique<HostController>(engine_.get());
   connect(engine_.get(), &EngineClient::SnapshotChanged, this,
           &AppController::ApplySnapshot);
   connect(engine_.get(), &EngineClient::Joined, this, [this] {
     busy_ = false;
     snapshot_.connection = domain::ConnectionPhase::Ready;
     snapshot_.join = domain::JoinPhase::Joined;
+    floor_controller_->Sync(snapshot_);
     emit SnapshotChanged(snapshot_);
     emit BusyChanged(false, QStringLiteral("已进入房间"));
     emit Joined();
@@ -22,6 +25,7 @@ AppController::AppController(std::unique_ptr<EngineClient> engine,
   connect(engine_.get(), &EngineClient::Left, this, [this] {
     busy_ = false;
     snapshot_ = {};
+    floor_controller_->Sync(snapshot_);
     emit SnapshotChanged(snapshot_);
     emit BusyChanged(false, QStringLiteral("已离开房间"));
     emit Left();
@@ -65,6 +69,7 @@ void AppController::BeginJoin(const domain::PrejoinOptions& options) {
   snapshot_.self_role = domain::RoomRole::Host;
   snapshot_.talk_mode = options.talk_mode;
   snapshot_.policy.talk_mode = options.talk_mode;
+  floor_controller_->Sync(snapshot_);
   busy_ = true;
   emit SnapshotChanged(snapshot_);
   emit BusyChanged(true, QStringLiteral("正在连接媒体引擎…"));
@@ -82,6 +87,7 @@ void AppController::LeaveRoom() {
 
 void AppController::ToggleMic() {
   if (!domain::CanUseRoomControls(snapshot_)) return;
+  if (snapshot_.talk_mode != domain::TalkMode::Free) return;
   snapshot_.mic_muted = !snapshot_.mic_muted;
   engine_->SetMicEnabled(!snapshot_.mic_muted);
   emit SnapshotChanged(snapshot_);
@@ -110,12 +116,50 @@ void AppController::ToggleDeafened() {
 
 void AppController::RequestFloor() {
   if (!domain::CanUseRoomControls(snapshot_)) return;
-  engine_->RequestFloor();
+  floor_controller_->Request();
 }
 
 void AppController::ReleaseFloor() {
   if (!domain::CanUseRoomControls(snapshot_)) return;
-  engine_->ReleaseFloor();
+  floor_controller_->Release();
+}
+
+void AppController::ToggleFloor() {
+  if (!domain::CanUseRoomControls(snapshot_)) return;
+  floor_controller_->Toggle();
+}
+
+void AppController::GrantFloor(const std::string& uid, bool allow) {
+  if (!domain::CanUseRoomControls(snapshot_) ||
+      snapshot_.self_role != domain::RoomRole::Host) {
+    return;
+  }
+  host_controller_->Grant(uid, allow);
+}
+
+void AppController::MuteAll(const std::vector<std::string>& except) {
+  if (!domain::CanUseRoomControls(snapshot_) ||
+      snapshot_.self_role != domain::RoomRole::Host) {
+    return;
+  }
+  host_controller_->MuteAll(except);
+}
+
+void AppController::KickMember(const std::string& uid) {
+  if (!domain::CanUseRoomControls(snapshot_) ||
+      snapshot_.self_role != domain::RoomRole::Host) {
+    return;
+  }
+  host_controller_->Kick(uid);
+}
+
+void AppController::UpdateRoomPolicy(
+    const domain::RoomPolicyPatch& patch) {
+  if (!domain::CanUseRoomControls(snapshot_) ||
+      snapshot_.self_role != domain::RoomRole::Host) {
+    return;
+  }
+  host_controller_->UpdatePolicy(patch);
 }
 
 void AppController::SelectPeer(const std::string& uid) {
@@ -152,6 +196,7 @@ std::optional<domain::AppError> AppController::Validate(
 
 void AppController::ApplySnapshot(const domain::SessionSnapshot& snapshot) {
   snapshot_ = snapshot;
+  floor_controller_->Sync(snapshot_);
   emit SnapshotChanged(snapshot_);
 }
 

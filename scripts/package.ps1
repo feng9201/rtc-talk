@@ -129,10 +129,18 @@ foreach ($file in $runtimeChecks) {
 }
 
 $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+$commit = git -c safe.directory=$root -C $root rev-parse --short HEAD
+$worktree = if ([string]::IsNullOrWhiteSpace(
+    (git -c safe.directory=$root -C $root status --short))) {
+  "clean"
+} else {
+  "dirty"
+}
 $versionText = @"
 rtc-talk-win
 Build: $stamp
-Commit: $(git -c safe.directory=$root -C $root rev-parse --short HEAD)
+Commit: $commit
+Worktree: $worktree
 WebRTC ABI: 2
 "@
 Set-Content -LiteralPath (Join-Path $stage "VERSION.txt") `
@@ -153,8 +161,8 @@ rtc-talk-win 使用说明
 7. 必须同时更新 rtc-talk.exe 和 rtcwin_engine.dll，不能只替换一个文件。
 8. 当前版本支持摄像机、屏幕共享、P2P/SFU 双路视频，
    以及“共享主画面 + 摄像头 PIP”和底部成员胶片条。
-9. 当前版本仍需完成 Floor/PTT、主持人、设备热插拔、
-   resume/ICE 恢复、完整 RTCStats 和正式安装发布。
+9. M3 已接入 Floor/PTT、主持人授权/静音/踢人/策略修改和实时成员音量。
+10. 仍需完成设备热插拔、resume/ICE 恢复、完整 RTCStats 和正式安装发布。
 "@
 Set-Content -LiteralPath (Join-Path $stage "使用说明.txt") `
   -Value $usage -Encoding UTF8
@@ -176,8 +184,11 @@ $hashLines = Get-ChildItem -LiteralPath $stage -Recurse -File |
     $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
     "$hash  $relative"
   }
-Set-Content -LiteralPath (Join-Path $stage "SHA256SUMS.txt") `
-  -Value $hashLines -Encoding ASCII
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+[System.IO.File]::WriteAllLines(
+  (Join-Path $stage "SHA256SUMS.txt"),
+  [string[]]$hashLines,
+  $utf8NoBom)
 
 $zip = Join-Path $dist "rtc-talk-win-$stamp.zip"
 if (Test-Path $zip) { Remove-Item -LiteralPath $zip -Force }

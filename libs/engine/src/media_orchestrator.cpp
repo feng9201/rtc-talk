@@ -745,6 +745,36 @@ struct MediaOrchestrator::Impl {
 
   bool HandleSignalingEvent(const std::string& method, const Json& data,
                             std::uint64_t generation) {
+    if (method == "floor.state" || method == "floor.revoked") {
+      context.post_to_worker([this, method, data, generation] {
+        if (!context.session.IsCurrent(generation)) return;
+        std::string self_uid;
+        {
+          std::lock_guard<std::mutex> lock(config_mutex);
+          self_uid = local_uid;
+        }
+        std::string holder;
+        if (method == "floor.state" && data.contains("holder") &&
+            !data["holder"].is_null()) {
+          holder = data.value("holder", std::string());
+        }
+        const bool open =
+            method == "floor.state" && !self_uid.empty() &&
+            holder == self_uid;
+        if (media_session != nullptr) {
+          webrtc_media::MediaError error;
+          if (!media_session->SetMuted(!open, &error)) {
+            LOG_WARN("floor local mute failed open={} error={}", open,
+                     error.message);
+          }
+        }
+        context.events.EmitNotification(
+            "floor.local",
+            Json{{"open", open},
+                 {"reason", data.value("reason", std::string())}});
+      });
+      return false;
+    }
     if (method == "p2p.offer") {
       context.post_to_worker([this, data, generation] {
         if (!context.session.IsCurrent(generation)) return;

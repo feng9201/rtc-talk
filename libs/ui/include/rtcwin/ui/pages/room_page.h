@@ -35,6 +35,7 @@ class RoomPage final : public QWidget {
   void MicToggleRequested();
   void MicFloorPressed();
   void MicFloorReleased();
+  void MicFloorToggleRequested();
   void CameraToggleRequested();
   void ShareToggleRequested();
   void DeafenToggleRequested();
@@ -55,6 +56,7 @@ class RoomPage final : public QWidget {
   void RebuildSidePanel();
   void RefreshMembers();
   void UpdateMemberPanel();
+  int QueuePosition() const;
   domain::PeerState SelfPeer() const;
 
   domain::SessionSnapshot state_;

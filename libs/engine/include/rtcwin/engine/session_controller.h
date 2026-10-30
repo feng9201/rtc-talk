@@ -39,6 +39,13 @@ class SessionController final {
   void ConnectAndJoin(const EngineCommand& command);
   void Leave(const EngineCommand& command);
   void Disconnect(const EngineCommand& command);
+  void RequestFloor(const EngineCommand& command);
+  void ReleaseFloor(const EngineCommand& command);
+  void GrantFloor(const EngineCommand& command);
+  void MuteAll(const EngineCommand& command);
+  void KickMember(const EngineCommand& command);
+  void SetPolicy(const EngineCommand& command);
+  void SubscribeLevels(const EngineCommand& command);
   void CancelHeartbeat();
 
  private:

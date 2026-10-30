@@ -154,6 +154,34 @@ void EngineCore::RegisterCommandHandlers() {
                            [this](const EngineCommand& command) {
                              session_controller_.Leave(command);
                            });
+  command_router_.Register("floor.request",
+                           [this](const EngineCommand& command) {
+                             session_controller_.RequestFloor(command);
+                           });
+  command_router_.Register("floor.release",
+                           [this](const EngineCommand& command) {
+                             session_controller_.ReleaseFloor(command);
+                           });
+  command_router_.Register("host.grant",
+                           [this](const EngineCommand& command) {
+                             session_controller_.GrantFloor(command);
+                           });
+  command_router_.Register("host.muteAll",
+                           [this](const EngineCommand& command) {
+                             session_controller_.MuteAll(command);
+                           });
+  command_router_.Register("host.kick",
+                           [this](const EngineCommand& command) {
+                             session_controller_.KickMember(command);
+                           });
+  command_router_.Register("host.setPolicy",
+                           [this](const EngineCommand& command) {
+                             session_controller_.SetPolicy(command);
+                           });
+  command_router_.Register("room.subscribeLevels",
+                           [this](const EngineCommand& command) {
+                             session_controller_.SubscribeLevels(command);
+                           });
   command_router_.Register("session.disconnect",
                            [this](const EngineCommand& command) {
                              session_controller_.Disconnect(command);

@@ -69,6 +69,10 @@ int main(int argc, char** argv) {
       QStringLiteral("联调音频采集源：mic|system，默认 mic"),
       QStringLiteral("source")));
   parser.addOption(QCommandLineOption(
+      QStringLiteral("auto-join-talk-mode"),
+      QStringLiteral("联调对讲模式：free|ptt|moderated，默认 free"),
+      QStringLiteral("mode")));
+  parser.addOption(QCommandLineOption(
       QStringLiteral("auto-join-dev-token"),
       QStringLiteral("联调用 /dev/token 获取开发凭证")));
   parser.addOption(QCommandLineOption(
@@ -87,6 +91,50 @@ int main(int argc, char** argv) {
       QStringLiteral("auto-camera-stop-ms"),
       QStringLiteral("入房后自动关闭摄像头的时间"),
       QStringLiteral("ms")));
+  parser.addOption(QCommandLineOption(
+      QStringLiteral("auto-floor-request-ms"),
+      QStringLiteral("联调：入房后自动申请发言权的时间"),
+      QStringLiteral("ms")));
+  parser.addOption(QCommandLineOption(
+      QStringLiteral("auto-floor-release-ms"),
+      QStringLiteral("联调：入房后自动释放发言权的时间"),
+      QStringLiteral("ms")));
+  parser.addOption(QCommandLineOption(
+      QStringLiteral("auto-host-grant-uid"),
+      QStringLiteral("联调：主持人自动授权的目标 UID"),
+      QStringLiteral("uid")));
+  parser.addOption(QCommandLineOption(
+      QStringLiteral("auto-host-grant-ms"),
+      QStringLiteral("联调：自动授权时间"),
+      QStringLiteral("ms"),
+      QStringLiteral("2500")));
+  parser.addOption(QCommandLineOption(
+      QStringLiteral("auto-host-grant-allow"),
+      QStringLiteral("联调：授权 true 或收回 false"),
+      QStringLiteral("bool"),
+      QStringLiteral("true")));
+  parser.addOption(QCommandLineOption(
+      QStringLiteral("auto-host-mute-all-ms"),
+      QStringLiteral("联调：自动全员静音时间"),
+      QStringLiteral("ms")));
+  parser.addOption(QCommandLineOption(
+      QStringLiteral("auto-host-kick-uid"),
+      QStringLiteral("联调：主持人自动移出的目标 UID"),
+      QStringLiteral("uid")));
+  parser.addOption(QCommandLineOption(
+      QStringLiteral("auto-host-kick-ms"),
+      QStringLiteral("联调：自动移出时间"),
+      QStringLiteral("ms"),
+      QStringLiteral("3000")));
+  parser.addOption(QCommandLineOption(
+      QStringLiteral("auto-host-policy-ms"),
+      QStringLiteral("联调：自动修改房间策略时间"),
+      QStringLiteral("ms")));
+  parser.addOption(QCommandLineOption(
+      QStringLiteral("auto-host-policy-talk-mode"),
+      QStringLiteral("联调：修改后的对讲模式 free|ptt|moderated"),
+      QStringLiteral("mode"),
+      QStringLiteral("ptt")));
   parser.addOption(QCommandLineOption(
       QStringLiteral("auto-screen-ms"),
       QStringLiteral("入房后自动开启屏幕共享的时间"),
@@ -155,6 +203,14 @@ int main(int argc, char** argv) {
                 QStringLiteral("system")
             ? rtcwin::domain::AudioSource::System
             : rtcwin::domain::AudioSource::Microphone;
+    const QString talk_mode =
+        parser.value(QStringLiteral("auto-join-talk-mode"));
+    options.talk_mode =
+        talk_mode == QStringLiteral("ptt")
+            ? rtcwin::domain::TalkMode::Ptt
+            : talk_mode == QStringLiteral("moderated")
+                  ? rtcwin::domain::TalkMode::Moderated
+                  : rtcwin::domain::TalkMode::Free;
     window.BeginJoin(options);
     if (parser.isSet(QStringLiteral("auto-unmute-ms"))) {
       bool unmute_ok = false;
@@ -191,6 +247,88 @@ int main(int argc, char** argv) {
       if (camera_ok && camera_ms >= 0) {
         QTimer::singleShot(camera_ms, &window,
                            &rtcwin::ui::MainWindow::ToggleCamera);
+      }
+    }
+    if (parser.isSet(QStringLiteral("auto-floor-request-ms"))) {
+      bool floor_ok = false;
+      const int floor_ms =
+          parser.value(QStringLiteral("auto-floor-request-ms"))
+              .toInt(&floor_ok);
+      if (floor_ok && floor_ms >= 0) {
+        QTimer::singleShot(floor_ms, &window,
+                           &rtcwin::ui::MainWindow::RequestFloor);
+      }
+    }
+    if (parser.isSet(QStringLiteral("auto-floor-release-ms"))) {
+      bool floor_ok = false;
+      const int floor_ms =
+          parser.value(QStringLiteral("auto-floor-release-ms"))
+              .toInt(&floor_ok);
+      if (floor_ok && floor_ms >= 0) {
+        QTimer::singleShot(floor_ms, &window,
+                           &rtcwin::ui::MainWindow::ReleaseFloor);
+      }
+    }
+    if (parser.isSet(QStringLiteral("auto-host-grant-uid"))) {
+      bool grant_ok = false;
+      const int grant_ms =
+          parser.value(QStringLiteral("auto-host-grant-ms"))
+              .toInt(&grant_ok);
+      if (grant_ok && grant_ms >= 0) {
+        const QString uid =
+            parser.value(QStringLiteral("auto-host-grant-uid"));
+        const bool allow =
+            parser.value(QStringLiteral("auto-host-grant-allow"))
+                    .trimmed()
+                    .toLower() !=
+                QStringLiteral("false");
+        QTimer::singleShot(grant_ms, &window,
+                           [&window, uid, allow] {
+                             window.GrantFloor(uid, allow);
+                           });
+      }
+    }
+    if (parser.isSet(QStringLiteral("auto-host-mute-all-ms"))) {
+      bool mute_ok = false;
+      const int mute_ms =
+          parser.value(QStringLiteral("auto-host-mute-all-ms"))
+              .toInt(&mute_ok);
+      if (mute_ok && mute_ms >= 0) {
+        QTimer::singleShot(mute_ms, &window,
+                           &rtcwin::ui::MainWindow::MuteAll);
+      }
+    }
+    if (parser.isSet(QStringLiteral("auto-host-kick-uid"))) {
+      bool kick_ok = false;
+      const int kick_ms =
+          parser.value(QStringLiteral("auto-host-kick-ms"))
+              .toInt(&kick_ok);
+      if (kick_ok && kick_ms >= 0) {
+        const QString uid =
+            parser.value(QStringLiteral("auto-host-kick-uid"));
+        QTimer::singleShot(kick_ms, &window,
+                           [&window, uid] { window.KickMember(uid); });
+      }
+    }
+    if (parser.isSet(QStringLiteral("auto-host-policy-ms"))) {
+      bool policy_ok = false;
+      const int policy_ms =
+          parser.value(QStringLiteral("auto-host-policy-ms"))
+              .toInt(&policy_ok);
+      if (policy_ok && policy_ms >= 0) {
+        const QString mode =
+            parser.value(QStringLiteral("auto-host-policy-talk-mode"));
+        const auto talk_mode =
+            mode == QStringLiteral("moderated")
+                ? rtcwin::domain::TalkMode::Moderated
+                : mode == QStringLiteral("free")
+                      ? rtcwin::domain::TalkMode::Free
+                      : rtcwin::domain::TalkMode::Ptt;
+        QTimer::singleShot(policy_ms, &window, [&window, talk_mode] {
+          rtcwin::domain::RoomPolicyPatch patch;
+          patch.talk_mode = talk_mode;
+          window.UpdateRoomPolicy(patch);
+        });
       }
     }
     if (parser.isSet(QStringLiteral("auto-screen-ms"))) {

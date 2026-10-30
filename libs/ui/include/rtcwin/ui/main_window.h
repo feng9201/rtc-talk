@@ -30,6 +30,12 @@ class MainWindow final : public FramelessWindow {
   void ToggleMicrophone();
   void ToggleCamera();
   void ToggleScreenShare();
+  void RequestFloor();
+  void ReleaseFloor();
+  void MuteAll();
+  void GrantFloor(const QString& uid, bool allow);
+  void KickMember(const QString& uid);
+  void UpdateRoomPolicy(const domain::RoomPolicyPatch& patch);
   void ShowRoomPreview();
   void EnableCameraPreview();
 

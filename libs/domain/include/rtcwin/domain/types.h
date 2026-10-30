@@ -178,6 +178,18 @@ struct RoomPolicy {
   int video_max_publishers = 9;
 };
 
+struct RoomPolicyPatch {
+  std::optional<TalkMode> talk_mode;
+  std::optional<int> max_speakers;
+  std::optional<int> ptt_max_hold_seconds;
+  std::optional<bool> ptt_queue;
+  std::optional<MediaModePreference> media_mode;
+  std::optional<bool> p2p_allow_relay;
+  std::optional<int> max_peers;
+  std::optional<bool> video_enabled;
+  std::optional<int> video_max_publishers;
+};
+
 struct VideoStreamState {
   std::string mid;
   std::string uid;

@@ -1,6 +1,8 @@
 #pragma once
 
 #include "rtcwin/application/engine_client.h"
+#include "rtcwin/application/floor_controller.h"
+#include "rtcwin/application/host_controller.h"
 #include "rtcwin/application/settings_store.h"
 
 #include <QObject>
@@ -30,6 +32,11 @@ class AppController final : public QObject {
   void ToggleDeafened();
   void RequestFloor();
   void ReleaseFloor();
+  void ToggleFloor();
+  void GrantFloor(const std::string& uid, bool allow);
+  void MuteAll(const std::vector<std::string>& except = {});
+  void KickMember(const std::string& uid);
+  void UpdateRoomPolicy(const domain::RoomPolicyPatch& patch);
   void SelectPeer(const std::string& uid);
   void RefreshCameras();
   void RefreshAudioDevices();
@@ -59,6 +66,8 @@ class AppController final : public QObject {
   void ApplySnapshot(const domain::SessionSnapshot& snapshot);
 
   std::unique_ptr<EngineClient> engine_;
+  std::unique_ptr<FloorController> floor_controller_;
+  std::unique_ptr<HostController> host_controller_;
   SettingsStore settings_;
   domain::SessionSnapshot snapshot_;
   bool busy_ = false;

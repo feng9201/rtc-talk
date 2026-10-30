@@ -3,6 +3,7 @@
 #include "rtcwin/client_api.h"
 
 #include <QByteArray>
+#include <QDateTime>
 #include <QDebug>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -15,6 +16,7 @@
 #include <QUrl>
 #include <QUrlQuery>
 
+#include <algorithm>
 #include <cstring>
 #include <utility>
 
@@ -105,6 +107,66 @@ domain::TalkMode ParseTalkMode(const QString& mode) {
   if (mode == QStringLiteral("ptt")) return domain::TalkMode::Ptt;
   if (mode == QStringLiteral("moderated")) return domain::TalkMode::Moderated;
   return domain::TalkMode::Free;
+}
+
+void ApplyPolicy(const QJsonObject& policy, domain::RoomPolicy* target) {
+  if (target == nullptr || policy.isEmpty()) return;
+  if (policy.contains(QStringLiteral("talk_mode"))) {
+    target->talk_mode =
+        ParseTalkMode(policy.value(QStringLiteral("talk_mode")).toString());
+  }
+  if (policy.contains(QStringLiteral("max_speakers"))) {
+    target->max_speakers =
+        policy.value(QStringLiteral("max_speakers")).toInt(target->max_speakers);
+  }
+  if (policy.contains(QStringLiteral("ptt_max_hold_sec"))) {
+    target->ptt_max_hold_seconds =
+        policy.value(QStringLiteral("ptt_max_hold_sec"))
+            .toInt(target->ptt_max_hold_seconds);
+  }
+  if (policy.contains(QStringLiteral("ptt_queue"))) {
+    target->ptt_queue =
+        policy.value(QStringLiteral("ptt_queue")).toBool(target->ptt_queue);
+  }
+  if (policy.contains(QStringLiteral("media_mode"))) {
+    const QString media_mode =
+        policy.value(QStringLiteral("media_mode")).toString();
+    target->media_mode =
+        media_mode == QStringLiteral("sfu")
+            ? domain::MediaModePreference::Sfu
+            : media_mode == QStringLiteral("p2p")
+                  ? domain::MediaModePreference::P2p
+                  : domain::MediaModePreference::Auto;
+  }
+  if (policy.contains(QStringLiteral("p2p_allow_relay"))) {
+    target->p2p_allow_relay =
+        policy.value(QStringLiteral("p2p_allow_relay"))
+            .toBool(target->p2p_allow_relay);
+  }
+  if (policy.contains(QStringLiteral("max_peers"))) {
+    target->max_peers =
+        policy.value(QStringLiteral("max_peers")).toInt(target->max_peers);
+  }
+  if (policy.contains(QStringLiteral("video_enabled"))) {
+    target->video_enabled =
+        policy.value(QStringLiteral("video_enabled"))
+            .toBool(target->video_enabled);
+  }
+  if (policy.contains(QStringLiteral("video_max_publishers"))) {
+    target->video_max_publishers =
+        policy.value(QStringLiteral("video_max_publishers"))
+            .toInt(target->video_max_publishers);
+  }
+  const QJsonObject video = policy.value(QStringLiteral("video")).toObject();
+  if (video.contains(QStringLiteral("enabled"))) {
+    target->video_enabled =
+        video.value(QStringLiteral("enabled")).toBool(target->video_enabled);
+  }
+  if (video.contains(QStringLiteral("max_publishers"))) {
+    target->video_max_publishers =
+        video.value(QStringLiteral("max_publishers"))
+            .toInt(target->video_max_publishers);
+  }
 }
 
 domain::PeerState ParsePeer(const QJsonObject& object) {
@@ -256,28 +318,11 @@ void CAbiEngineClient::ApplyJoinData(const QJsonObject& data) {
   snapshot_.self_role =
       ParseRole(room.value(QStringLiteral("role")).toString());
   const QJsonObject policy = room.value(QStringLiteral("policy")).toObject();
-  if (!policy.isEmpty()) {
-    snapshot_.policy.talk_mode = ParseTalkMode(
-        policy.value(QStringLiteral("talk_mode")).toString());
-    snapshot_.policy.max_speakers =
-        policy.value(QStringLiteral("max_speakers")).toInt();
-    snapshot_.policy.ptt_max_hold_seconds =
-        policy.value(QStringLiteral("ptt_max_hold_sec"))
-            .toInt(snapshot_.policy.ptt_max_hold_seconds);
-    snapshot_.policy.ptt_queue =
-        policy.value(QStringLiteral("ptt_queue"))
-            .toBool(snapshot_.policy.ptt_queue);
-    snapshot_.policy.max_peers =
-        policy.value(QStringLiteral("max_peers"))
-            .toInt(snapshot_.policy.max_peers);
-    snapshot_.policy.video_enabled =
-        policy.value(QStringLiteral("video_enabled"))
-            .toBool(snapshot_.policy.video_enabled);
-    snapshot_.policy.video_max_publishers =
-        policy.value(QStringLiteral("video_max_publishers"))
-            .toInt(snapshot_.policy.video_max_publishers);
-  }
+  ApplyPolicy(policy, &snapshot_.policy);
   snapshot_.talk_mode = snapshot_.policy.talk_mode;
+  if (snapshot_.talk_mode != domain::TalkMode::Free) {
+    snapshot_.mic_muted = true;
+  }
   const QJsonObject floor = data.value(QStringLiteral("floor")).toObject();
   snapshot_.floor.holder_uid =
       floor.value(QStringLiteral("holder")).toString().toStdString();
@@ -286,8 +331,27 @@ void CAbiEngineClient::ApplyJoinData(const QJsonObject& data) {
        floor.value(QStringLiteral("queue")).toArray()) {
     snapshot_.floor.queue.push_back(value.toString().toStdString());
   }
+  snapshot_.floor.expires_in_ms =
+      static_cast<qint64>(floor.value(QStringLiteral("expires_in_ms"))
+                              .toDouble(0));
+  if (snapshot_.floor.expires_in_ms <= 0 &&
+      floor.value(QStringLiteral("expires_at")).isDouble()) {
+    snapshot_.floor.expires_in_ms = std::max<qint64>(
+        0, static_cast<qint64>(
+               floor.value(QStringLiteral("expires_at")).toDouble()) -
+               QDateTime::currentMSecsSinceEpoch());
+  }
+  snapshot_.floor.deadline_epoch_ms =
+      floor.value(QStringLiteral("expires_at")).isDouble()
+          ? static_cast<qint64>(
+                floor.value(QStringLiteral("expires_at")).toDouble())
+          : (snapshot_.floor.expires_in_ms > 0
+                 ? QDateTime::currentMSecsSinceEpoch() +
+                       snapshot_.floor.expires_in_ms
+                 : 0);
   snapshot_.floor.self_has_floor =
-      snapshot_.floor.holder_uid == snapshot_.self_uid;
+      floor.value(QStringLiteral("self")).toBool(
+          snapshot_.floor.holder_uid == snapshot_.self_uid);
   snapshot_.peers.clear();
   for (const QJsonValue& value :
        data.value(QStringLiteral("peers")).toArray()) {
@@ -400,8 +464,11 @@ void CAbiEngineClient::ApplyRoomNotification(const QString& method,
       }
     }
   } else if (method == QStringLiteral("room.policyChanged")) {
-    snapshot_.policy.talk_mode = ParseTalkMode(
-        data.value(QStringLiteral("talk_mode")).toString());
+    const QJsonObject policy =
+        data.contains(QStringLiteral("policy"))
+            ? data.value(QStringLiteral("policy")).toObject()
+            : data;
+    ApplyPolicy(policy, &snapshot_.policy);
     snapshot_.talk_mode = snapshot_.policy.talk_mode;
   } else if (method == QStringLiteral("room.mediaMode")) {
     snapshot_.media_mode =
@@ -414,8 +481,37 @@ void CAbiEngineClient::ApplyRoomNotification(const QString& method,
          data.value(QStringLiteral("queue")).toArray()) {
       snapshot_.floor.queue.push_back(value.toString().toStdString());
     }
+    snapshot_.floor.expires_in_ms =
+        static_cast<qint64>(data.value(QStringLiteral("expires_in_ms"))
+                                .toDouble(0));
+    if (snapshot_.floor.expires_in_ms <= 0 &&
+        data.value(QStringLiteral("expires_at")).isDouble()) {
+      snapshot_.floor.expires_in_ms = std::max<qint64>(
+          0, static_cast<qint64>(
+                 data.value(QStringLiteral("expires_at")).toDouble()) -
+                 QDateTime::currentMSecsSinceEpoch());
+    }
+    snapshot_.floor.deadline_epoch_ms =
+        data.value(QStringLiteral("expires_at")).isDouble()
+            ? static_cast<qint64>(
+                  data.value(QStringLiteral("expires_at")).toDouble())
+            : (snapshot_.floor.expires_in_ms > 0
+                   ? QDateTime::currentMSecsSinceEpoch() +
+                         snapshot_.floor.expires_in_ms
+                   : 0);
     snapshot_.floor.self_has_floor =
-        snapshot_.floor.holder_uid == snapshot_.self_uid;
+        data.value(QStringLiteral("self")).toBool(
+            snapshot_.floor.holder_uid == snapshot_.self_uid);
+  } else if (method == QStringLiteral("floor.local")) {
+    snapshot_.floor.self_has_floor =
+        data.value(QStringLiteral("open")).toBool(false);
+    snapshot_.mic_muted = !snapshot_.floor.self_has_floor;
+  } else if (method == QStringLiteral("floor.revoked")) {
+    snapshot_.floor.self_has_floor = false;
+    snapshot_.floor.holder_uid.clear();
+    snapshot_.floor.expires_in_ms = 0;
+    snapshot_.floor.deadline_epoch_ms = 0;
+    snapshot_.mic_muted = true;
   } else if (method == QStringLiteral("room.activeSpeaker")) {
     const std::string uid =
         data.value(QStringLiteral("uid")).toString().toStdString();
@@ -423,11 +519,20 @@ void CAbiEngineClient::ApplyRoomNotification(const QString& method,
       peer.speaking = peer.uid == uid;
     }
   } else if (method == QStringLiteral("room.audioLevels")) {
+    snapshot_.self_audio_level = 0.0;
+    for (domain::PeerState& peer : snapshot_.peers) {
+      peer.audio_level = 0.0;
+    }
     for (const QJsonValue& value :
          data.value(QStringLiteral("levels")).toArray()) {
       const QJsonObject level = value.toObject();
       const std::string uid =
           level.value(QStringLiteral("uid")).toString().toStdString();
+      if (uid == snapshot_.self_uid) {
+        snapshot_.self_audio_level =
+            level.value(QStringLiteral("level")).toDouble();
+        continue;
+      }
       for (domain::PeerState& peer : snapshot_.peers) {
         if (peer.uid == uid) {
           peer.audio_level =
@@ -436,6 +541,21 @@ void CAbiEngineClient::ApplyRoomNotification(const QString& method,
         }
       }
     }
+  } else if (method == QStringLiteral("session.kicked")) {
+    const QString reason =
+        data.value(QStringLiteral("reason")).toString();
+    domain::AppError error;
+    error.domain = domain::ErrorDomain::Session;
+    error.code = reason == QStringLiteral("replaced") ? 4101 : 4102;
+    error.operation = "session.kicked";
+    error.message = reason == QStringLiteral("replaced")
+                        ? "账号已在其他客户端登录"
+                        : "已被移出房间";
+    snapshot_ = {};
+    emit SnapshotChanged(snapshot_);
+    emit ErrorOccurred(error);
+    emit Left();
+    return;
   } else if (method == QStringLiteral("room.closed")) {
     snapshot_ = {};
     emit SnapshotChanged(snapshot_);
@@ -516,6 +636,72 @@ void CAbiEngineClient::RequestFloor() {
 }
 void CAbiEngineClient::ReleaseFloor() {
   Submit(QStringLiteral("floor.release"));
+}
+void CAbiEngineClient::GrantFloor(const std::string& uid, bool allow) {
+  Submit(QStringLiteral("host.grant"),
+         QJsonObject{{QStringLiteral("uid"),
+                      QString::fromStdString(uid)},
+                     {QStringLiteral("allow"), allow}});
+}
+void CAbiEngineClient::MuteAll(const std::vector<std::string>& except) {
+  QJsonArray excluded;
+  for (const auto& uid : except) {
+    excluded.push_back(QString::fromStdString(uid));
+  }
+  Submit(QStringLiteral("host.muteAll"),
+         QJsonObject{{QStringLiteral("except"), excluded}});
+}
+void CAbiEngineClient::KickMember(const std::string& uid) {
+  Submit(QStringLiteral("host.kick"),
+         QJsonObject{{QStringLiteral("uid"),
+                      QString::fromStdString(uid)}});
+}
+void CAbiEngineClient::UpdateRoomPolicy(
+    const domain::RoomPolicyPatch& patch) {
+  QJsonObject payload;
+  if (patch.talk_mode.has_value()) {
+    payload.insert(QStringLiteral("talk_mode"),
+                   QString::fromStdString(
+                       domain::TalkModeName(*patch.talk_mode)));
+  }
+  if (patch.max_speakers.has_value()) {
+    payload.insert(QStringLiteral("max_speakers"), *patch.max_speakers);
+  }
+  if (patch.ptt_max_hold_seconds.has_value()) {
+    payload.insert(QStringLiteral("ptt_max_hold_sec"),
+                   *patch.ptt_max_hold_seconds);
+  }
+  if (patch.ptt_queue.has_value()) {
+    payload.insert(QStringLiteral("ptt_queue"), *patch.ptt_queue);
+  }
+  if (patch.media_mode.has_value()) {
+    payload.insert(QStringLiteral("media_mode"),
+                   QString::fromStdString(
+                       domain::MediaModeName(*patch.media_mode)));
+  }
+  if (patch.p2p_allow_relay.has_value()) {
+    payload.insert(QStringLiteral("p2p_allow_relay"),
+                   *patch.p2p_allow_relay);
+  }
+  if (patch.max_peers.has_value()) {
+    payload.insert(QStringLiteral("max_peers"), *patch.max_peers);
+  }
+  QJsonObject video;
+  if (patch.video_enabled.has_value()) {
+    video.insert(QStringLiteral("enabled"), *patch.video_enabled);
+  }
+  if (patch.video_max_publishers.has_value()) {
+    video.insert(QStringLiteral("max_publishers"),
+                 *patch.video_max_publishers);
+  }
+  if (!video.isEmpty()) {
+    payload.insert(QStringLiteral("video"), video);
+  }
+  Submit(QStringLiteral("host.setPolicy"), payload);
+}
+void CAbiEngineClient::SubscribeLevels(bool enabled) {
+  Submit(QStringLiteral("room.subscribeLevels"),
+         QJsonObject{{QStringLiteral("enabled"), enabled}});
 }
 void CAbiEngineClient::SelectPeer(const std::string& uid) { Q_UNUSED(uid); }
 void CAbiEngineClient::RefreshCameras() {
@@ -818,6 +1004,9 @@ void CAbiEngineClient::HandleEvent(const QString& method,
       emit ErrorOccurred(error);
     } else if (method.startsWith(QStringLiteral("room.")) ||
                method == QStringLiteral("floor.state") ||
+               method == QStringLiteral("floor.local") ||
+               method == QStringLiteral("floor.revoked") ||
+               method == QStringLiteral("session.kicked") ||
                method == QStringLiteral("session.closed")) {
       ApplyRoomNotification(
           method, event.value(QStringLiteral("data")).toObject());
@@ -870,10 +1059,41 @@ void CAbiEngineClient::HandleEvent(const QString& method,
     } else if (method == QStringLiteral("session.connectAndJoin")) {
       ApplyJoinData(data);
       emit Joined();
+    } else if (method == QStringLiteral("host.setPolicy")) {
+      ApplyPolicy(data.value(QStringLiteral("policy")).toObject(),
+                  &snapshot_.policy);
+      snapshot_.talk_mode = snapshot_.policy.talk_mode;
+      emit SnapshotChanged(snapshot_);
     } else if (method == QStringLiteral("room.leave")) {
       snapshot_ = {};
       emit SnapshotChanged(snapshot_);
       emit Left();
+    } else if (method == QStringLiteral("floor.request")) {
+      const bool granted =
+          data.value(QStringLiteral("granted")).toBool(false);
+      if (granted) {
+        snapshot_.floor.self_has_floor = true;
+        snapshot_.floor.holder_uid = snapshot_.self_uid;
+        snapshot_.mic_muted = false;
+      } else if (data.contains(QStringLiteral("queue_pos"))) {
+        const int position =
+            data.value(QStringLiteral("queue_pos")).toInt(0);
+        if (position > 0 &&
+            std::find(snapshot_.floor.queue.begin(),
+                      snapshot_.floor.queue.end(),
+                      snapshot_.self_uid) ==
+                snapshot_.floor.queue.end()) {
+          snapshot_.floor.queue.push_back(snapshot_.self_uid);
+        }
+      }
+      emit SnapshotChanged(snapshot_);
+    } else if (method == QStringLiteral("floor.release")) {
+      snapshot_.floor.self_has_floor = false;
+      if (snapshot_.floor.holder_uid == snapshot_.self_uid) {
+        snapshot_.floor.holder_uid.clear();
+      }
+      snapshot_.mic_muted = true;
+      emit SnapshotChanged(snapshot_);
     } else if (method == QStringLiteral("session.disconnect")) {
       snapshot_ = {};
       emit SnapshotChanged(snapshot_);

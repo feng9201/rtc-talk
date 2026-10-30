@@ -3,6 +3,7 @@ set(RTCWIN_UI_SOURCES
   include/rtcwin/ui/main_window.h
   include/rtcwin/ui/pages/prejoin_page.h
   include/rtcwin/ui/pages/room_page.h
+  include/rtcwin/ui/pages/room_policy_dialog.h
   include/rtcwin/ui/theme/theme.h
   include/rtcwin/ui/video/video_grid.h
   include/rtcwin/ui/video/video_layout.h
@@ -18,6 +19,7 @@ set(RTCWIN_UI_SOURCES
   src/base/frameless_window.cpp
   src/pages/prejoin_page.cpp
   src/pages/room_page.cpp
+  src/pages/room_policy_dialog.cpp
   src/theme/theme.cpp
   src/video/video_layout.cpp
   src/video/video_grid.cpp

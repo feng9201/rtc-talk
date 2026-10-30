@@ -30,6 +30,24 @@ void UnavailableEngineClient::ToggleShare() {}
 void UnavailableEngineClient::SetDeafened(bool deafened) { Q_UNUSED(deafened); }
 void UnavailableEngineClient::RequestFloor() {}
 void UnavailableEngineClient::ReleaseFloor() {}
+void UnavailableEngineClient::GrantFloor(const std::string& uid, bool allow) {
+  Q_UNUSED(uid);
+  Q_UNUSED(allow);
+}
+void UnavailableEngineClient::MuteAll(
+    const std::vector<std::string>& except) {
+  Q_UNUSED(except);
+}
+void UnavailableEngineClient::KickMember(const std::string& uid) {
+  Q_UNUSED(uid);
+}
+void UnavailableEngineClient::UpdateRoomPolicy(
+    const domain::RoomPolicyPatch& patch) {
+  Q_UNUSED(patch);
+}
+void UnavailableEngineClient::SubscribeLevels(bool enabled) {
+  Q_UNUSED(enabled);
+}
 void UnavailableEngineClient::RefreshCameras() {}
 void UnavailableEngineClient::RefreshAudioDevices() {}
 void UnavailableEngineClient::StartCameraPreview(int device_index) { Q_UNUSED(device_index); }

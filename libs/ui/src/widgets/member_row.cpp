@@ -51,6 +51,7 @@ MemberRow::MemberRow(QWidget* parent) : QFrame(parent) {
   meta_->setObjectName(QStringLiteral("Hint"));
   text->addWidget(meta_);
   level_ = new QProgressBar(this);
+  level_->setObjectName(QStringLiteral("MemberLevel"));
   level_->setRange(0, 100);
   level_->setTextVisible(false);
   level_->setFixedHeight(3);
@@ -58,10 +59,14 @@ MemberRow::MemberRow(QWidget* parent) : QFrame(parent) {
   layout->addLayout(text, 1);
 }
 
-void MemberRow::SetMember(const domain::PeerState& member, bool self, bool host,
+void MemberRow::SetMember(const domain::PeerState& member, bool self,
+                          bool manage_members, bool manage_floor,
                           bool selected) {
   uid_ = QString::fromStdString(member.uid);
   role_ = QString::fromStdString(member.display_name);
+  self_ = self;
+  manage_members_ = manage_members;
+  manage_floor_ = manage_floor;
   avatar_->setText(theme::AvatarText(
       QString::fromStdString(member.display_name)));
   QString name = QString::fromStdString(member.display_name);
@@ -82,10 +87,11 @@ void MemberRow::SetMember(const domain::PeerState& member, bool self, bool host,
   meta_->setText(parts.join(QStringLiteral(" · ")));
   level_->setValue(
       qBound(0, qRound(member.audio_level * 100.0), 100));
+  setProperty("speaking",
+              member.speaking || member.audio_level > 0.05);
   setProperty("selected", selected);
   style()->unpolish(this);
   style()->polish(this);
-  Q_UNUSED(host);
 }
 
 void MemberRow::mousePressEvent(QMouseEvent* event) {
@@ -94,11 +100,23 @@ void MemberRow::mousePressEvent(QMouseEvent* event) {
 }
 
 void MemberRow::contextMenuEvent(QContextMenuEvent* event) {
+  if (self_ || uid_.isEmpty() ||
+      (!manage_members_ && !manage_floor_)) {
+    QFrame::contextMenuEvent(event);
+    return;
+  }
   QMenu menu(this);
-  auto* grant = menu.addAction(QStringLiteral("授予发言权"));
-  auto* revoke = menu.addAction(QStringLiteral("收回发言权"));
-  menu.addSeparator();
-  auto* kick = menu.addAction(QStringLiteral("移出房间"));
+  QAction* grant = nullptr;
+  QAction* revoke = nullptr;
+  if (manage_floor_) {
+    grant = menu.addAction(QStringLiteral("授予发言权"));
+    revoke = menu.addAction(QStringLiteral("收回发言权"));
+  }
+  QAction* kick = nullptr;
+  if (manage_members_) {
+    if (!menu.isEmpty()) menu.addSeparator();
+    kick = menu.addAction(QStringLiteral("移出房间"));
+  }
   QAction* selected = menu.exec(event->globalPos());
   if (selected == grant) emit GrantRequested(uid_, true);
   if (selected == revoke) emit GrantRequested(uid_, false);

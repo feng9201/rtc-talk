@@ -15,8 +15,8 @@ class MemberRow final : public QFrame {
  public:
   explicit MemberRow(QWidget* parent = nullptr);
 
-  void SetMember(const domain::PeerState& member, bool self, bool host,
-                 bool selected);
+  void SetMember(const domain::PeerState& member, bool self,
+                 bool manage_members, bool manage_floor, bool selected);
   const QString& uid() const { return uid_; }
 
  signals:
@@ -31,6 +31,9 @@ class MemberRow final : public QFrame {
  private:
   QString uid_;
   QString role_;
+  bool self_ = false;
+  bool manage_members_ = false;
+  bool manage_floor_ = false;
   QLabel* avatar_ = nullptr;
   QLabel* name_ = nullptr;
   QLabel* meta_ = nullptr;

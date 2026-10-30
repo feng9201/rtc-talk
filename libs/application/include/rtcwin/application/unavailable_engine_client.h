@@ -22,6 +22,11 @@ class UnavailableEngineClient final : public EngineClient {
   void SetDeafened(bool deafened) override;
   void RequestFloor() override;
   void ReleaseFloor() override;
+  void GrantFloor(const std::string& uid, bool allow) override;
+  void MuteAll(const std::vector<std::string>& except) override;
+  void KickMember(const std::string& uid) override;
+  void UpdateRoomPolicy(const domain::RoomPolicyPatch& patch) override;
+  void SubscribeLevels(bool enabled) override;
   void SelectPeer(const std::string& uid) override;
   void RefreshCameras() override;
   void RefreshAudioDevices() override;

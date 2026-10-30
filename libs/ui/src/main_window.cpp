@@ -3,6 +3,7 @@
 #include "rtcwin/application/app_controller.h"
 #include "rtcwin/client_gateway/c_abi_engine_client.h"
 #include "rtcwin/ui/pages/prejoin_page.h"
+#include "rtcwin/ui/pages/room_policy_dialog.h"
 #include "rtcwin/ui/pages/room_page.h"
 #include "rtcwin/ui/widgets/window_controls.h"
 
@@ -128,8 +129,10 @@ void MainWindow::ConnectSignals() {
           });
 
   connect(room_page_, &RoomPage::SettingsRequested, this, [this] {
-    room_page_->SetControlHint(
-        QStringLiteral("房间设置将在主持人策略模块接入"));
+    RoomPolicyDialog dialog(controller_->snapshot().policy, this);
+    connect(&dialog, &RoomPolicyDialog::PolicyChanged, controller_.get(),
+            &application::AppController::UpdateRoomPolicy);
+    dialog.exec();
   });
   connect(room_page_, &RoomPage::LeaveRequested, controller_.get(),
           &application::AppController::LeaveRoom);
@@ -139,12 +142,24 @@ void MainWindow::ConnectSignals() {
           &application::AppController::RequestFloor);
   connect(room_page_, &RoomPage::MicFloorReleased, controller_.get(),
           &application::AppController::ReleaseFloor);
+  connect(room_page_, &RoomPage::MicFloorToggleRequested, controller_.get(),
+          &application::AppController::ToggleFloor);
   connect(room_page_, &RoomPage::CameraToggleRequested, controller_.get(),
           &application::AppController::ToggleCamera);
   connect(room_page_, &RoomPage::ShareToggleRequested, controller_.get(),
           &application::AppController::ToggleShare);
   connect(room_page_, &RoomPage::DeafenToggleRequested, controller_.get(),
           &application::AppController::ToggleDeafened);
+  connect(room_page_, &RoomPage::GrantFloorRequested, this,
+          [this](const QString& uid, bool allow) {
+            controller_->GrantFloor(uid.toStdString(), allow);
+          });
+  connect(room_page_, &RoomPage::KickMemberRequested, this,
+          [this](const QString& uid) {
+            controller_->KickMember(uid.toStdString());
+          });
+  connect(room_page_, &RoomPage::MuteAllRequested, this,
+          [this] { controller_->MuteAll(); });
   connect(room_page_, &RoomPage::MemberSelected, this,
           [this](const QString& uid) {
             controller_->SelectPeer(uid.toStdString());
@@ -237,6 +252,25 @@ void MainWindow::ToggleMicrophone() { controller_->ToggleMic(); }
 void MainWindow::ToggleCamera() { controller_->ToggleCamera(); }
 
 void MainWindow::ToggleScreenShare() { controller_->ToggleShare(); }
+
+void MainWindow::RequestFloor() { controller_->RequestFloor(); }
+
+void MainWindow::ReleaseFloor() { controller_->ReleaseFloor(); }
+
+void MainWindow::MuteAll() { controller_->MuteAll(); }
+
+void MainWindow::GrantFloor(const QString& uid, bool allow) {
+  controller_->GrantFloor(uid.toStdString(), allow);
+}
+
+void MainWindow::KickMember(const QString& uid) {
+  controller_->KickMember(uid.toStdString());
+}
+
+void MainWindow::UpdateRoomPolicy(
+    const domain::RoomPolicyPatch& patch) {
+  controller_->UpdateRoomPolicy(patch);
+}
 
 void MainWindow::EnableCameraPreview() {
   auto_preview_ = true;
