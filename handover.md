@@ -1,11 +1,12 @@
 # rtc-talk-win 项目交接文档
 
-> 快照日期：2026-10-29  
-> 仓库：`D:\google\webrtc-win-client\rtc-talk-win`  
-> 分支：`rtc-talk-win`  
-> 代码基线：`bd5cd94 feat: 接入屏幕共享与P2P视频`
+> 快照日期：2026-10-30
+> 仓库：`D:\google\webrtc-win-client\rtc-talk-win`
+> 分支：`rtc-talk-win`
+> 文档基线：`a65dddb docs: record final M1 package`
+> M1 代码基线：`f2cc1a5 test: cover stopping camera during screen share`
 >
-> 当前状态：S3.2 音频主链路已通过短链路验证；S4.1 摄像头 SFU 和远端 muxPlayer 渲染已通过双端验证；S4.2 的屏幕共享与 P2P 视频已接通并完成截图验收；B1-B5 已完成。多路 session pool、9 路压力和 5 秒无帧回收仍未完成。
+> 当前状态：M1 视频场景、camera/screen 双路、共享主画面 + camera PIP 已完成并推送；Release/Debug 构建和 CTest 6/6 通过；SFU/P2P 双路及停止 camera/screen 均已截图验收。下一阶段为 M2 多路 Surface 与帧健康。
 > 旧工程：`D:\google\webrtc-win-client\rtc-talk`，只读参考，禁止修改或提交。
 
 本文档面向后续接入业务、继续媒体开发、做代码评审或发布验收的工程师。它描述当前真实代码状态，不把计划中的能力写成已完成能力。
@@ -17,7 +18,7 @@
 
 | 类别 | 仓库 / 分支 / 提交 | 本工程中的用途 | 权限 |
 |---|---|---|---|
-| 当前生产工程 | `D:\google\webrtc-win-client\rtc-talk-win` / `rtc-talk-win` / `bd5cd94` | 真正交付工程、当前开发分支 | 可开发、可提交到 `rtc-talk-win` |
+| 当前生产工程 | `D:\google\webrtc-win-client\rtc-talk-win` / `rtc-talk-win` / `a65dddb` | 真正交付工程、当前开发分支；M1 代码提交为 `f2cc1a5` | 可开发、可提交到 `rtc-talk-win` |
 | 服务端权威参考 | `D:\google\webrtc-win-client\rtc-talk` / `origin/main` / `8e6ff57` | 服务端行为、协议口径、S4 差异和联调依据 | 只读 |
 | 旧 Windows 客户端功能参考 | `origin/feat/windows-client` / `df22708` | `client-win` demo、既有音视频功能和联调逻辑参考 | 只读 |
 | 旧 Windows 生产实现参考 | `origin/codex/feat/windows-production-client` / `bbb3891` | P5 UI、生产模块、历史改造和验收记录参考 | 只读 |
@@ -42,6 +43,7 @@
 | `rtc-talk/plan/rtc-server-dev-plan.md` | 服务端房间、SFU consume/produce、P2P 分配、第三人切 SFU、失败回退和已知修复 | 判断服务端请求时序、错误码和联调行为 |
 | `rtc-talk/plan/RK3576_客户端_开发计划_b524300f.md` | 跨平台客户端完整计划、P2P/SFU 踩坑、resume、事件时序和验收经验 | 客户端媒体状态机和回归风险参考 |
 | `rtc-talk-win/plan/production-plan.md` | 当前 Windows 生产工程 S0-S8、P0-P5、门禁和维护规则 | 当前工程实施计划；文档内部基线可能早于当前提交，实施时以代码和本表状态为准 |
+| `rtc-talk-win/plan/gap-driven-development-plan.md` | M1-M7 缺口驱动实施计划、阶段门禁和验收项 | 当前阶段交付和后续排期的直接执行计划 |
 | `rtc-talk-win/docs/requirements.md` | 产品功能和非功能要求 | 功能验收 |
 | `rtc-talk-win/docs/architecture/*` | 当前生产工程架构设计 | 模块边界和后续重构 |
 | `rtc-talk-win/docs/build-and-test.md` | 构建、依赖和测试说明 | 开发环境复现 |
@@ -74,7 +76,7 @@
 | S3.1 | libwebrtc 音频设备枚举与预入会选择 | 已完成并推送 | `53a8fdd`、`rtcwin_audio_devices_probe` | 无 |
 | S3.2 | 音频 PeerConnection、P2P/SFU、静音、音量、收听、系统音 | 核心完成并推送，待完整人工验收 | `5ab73fa`、`MediaSession`、WASAPI loopback | 收听/音量听音、设备异常、离房重进和恢复 |
 | S4.1 | 摄像头 SFU 发布、远端 I420、muxPlayer 房间渲染 | 代码完成，双端短链路通过 | `MediaSession`、MF H.264、`RemoteVideoSink`、`MuxVideoSurface` | 设备切换、离房重进、异常恢复 |
-| S4.2 | 屏幕共享、P2P 视频、多路视频池和压力 | 部分完成 | 屏幕采集、SFU/P2P screen producer、P2P camera/screen 已通过双端截图 | 多路 session pool、9 路性能、5 秒无帧回收 |
+| S4.2 | 屏幕共享、P2P 视频、多路视频池和压力 | 传输和单路/双路呈现完成，性能与回收未完成 | 屏幕采集、SFU/P2P screen producer、camera/screen 双路截图 | 多路 session pool、9 路性能、5 秒无帧回收 |
 | S5 | 成员、发言权、主持人、PTT/审核模式 | 部分完成 | 房间成员/策略/floor 快照已有；floor 请求仍为 501 | floor.request/release、revoked、keepalive、主持人操作 |
 | S6 | 设备、统计、日志和诊断 | 部分完成 | 摄像头/音频设备枚举、`media.stats` 基础字段 | RTCStats、设备热插拔、设置弹窗、脱敏日志、诊断面板 |
 | S7 | 重连、resume、ICE refresh、安全 | 未开始 | 当前关闭后重置媒体，无 resume | generation guard、WSS、resume、ICE restart、错误恢复 |
@@ -85,12 +87,14 @@
 | P3 | 本地摄像头采集与 C ABI | 已完成并推送 | `de3a7f1`、S4.1 增加远端帧 ABI v2 | 无 |
 | P4 | UI 本地预览联调 | 已完成并推送 | P5 预入会页、真实摄像头截图 | 视觉改动必须继续对照 P5 |
 | P5 | 第一里程碑稳定性与提交验收 | 已完成阶段验收 | Release/Debug 构建、既有联调 | 长稳定性测试按用户明确要求执行 |
+| M1 | 视频场景、camera/screen 双路、共享主画面 + PIP | 已完成并推送 | `fff99ad`、`f2cc1a5`、`rtcwin_video_scene_tests`、SFU/P2P 截图 | 仅待用户按阶段流程确认，无技术缺口 |
 
 ### 0.4 当前计划偏差
 
 必须明确记录以下偏差：
 
-1. `plan/production-plan.md` 已补充 S4.1 状态；提交后仍应把基线 SHA 更新到实际提交。
+1. `plan/production-plan.md` 是长期 S0-S8 计划；当前执行基线以本文
+   `a65dddb` 和 `plan/gap-driven-development-plan.md` 的 M1-M7 为准。
 2. `talk-protocol.md` 定义了 resume、ICE restart、P2P/SFU 先建后断、视频 m-line 等完整约束；当前 SFU 摄像头/屏幕共享和 P2P 音视频三 m-line 已接入，resume/ICE restart 仍未实现。
 3. 第三人加入“先建 SFU、确认可用、再关 P2P”已在短链路验证，后续仍需覆盖网络异常和重复切换。
 4. 服务端计划包含 `p2p.state`、P2P 失败回退、10 秒超时和 candidate 缓存等约束，当前客户端只完成基础转发，没有完整恢复策略。
@@ -159,28 +163,162 @@
   - Engine 通过 `rtcwin_log_adapter.dll` C ABI 调用 log-cpp。
   - `/MT` Engine 与 `/MD` log-cpp 之间不传递 STL 类型。
 
-### 1.2 当前还没有验收
+### 1.2 当前阶段确认与剩余验收
 
-以下是“代码已写但还不能宣布完成”的部分：
+M1 已通过技术门禁：
 
-- 服务端强制静音、收听静音和音量的端到端人工听音。
-- 设备拔出、设备占用、默认设备切换。
-- 断线重连/resume。
-- 多路视频 session pool、9 路性能和 5 秒无帧回收。
-- WSS/TLS 信令。
-- 完整生产诊断、打包和安装。
+- camera/screen 使用 `uid + source` 独立 Tile。
+- SFU、P2P 双端 camera/screen 已截图。
+- 共享主画面 + camera PIP 已完成。
+- 停止 screen 后回退到 camera Grid。
+- 停止 camera 后 screen 保留、PIP 消失。
+- Release/Debug 构建通过，CTest 6/6 通过。
+
+M1 目前只等待用户按阶段流程确认。仍未验收的生产能力：
+
+- 多路视频 Surface 池、9 路性能、5 秒无帧回收。
+- Floor/PTT、主持人授权、全员静音、踢人和策略更新。
+- 会议中设备切换、热插拔、多屏/窗口共享和系统音端点选择。
+- resume、ICE refresh/restart 和 P2P 失败回退。
+- 完整 RTCStats、状态面板、诊断包导出。
+- WSS/TLS、Token 安全持久化和正式安装发布。
 
 ### 1.3 当前工作树状态
 
-当前代码基线为 `b3af0e8`，并叠加 S4.2 屏幕共享/P2P 视频工作树。
+当前分支 `rtc-talk-win` 与远端同步，工作树干净。
 
-- `MediaSession` 与真实 ADM 音频链路。
-- P2P/SFU 双向音频、静音门和 RTP 诊断。
-- P2P -> SFU 先建后断切换。
-- trace 脱敏、`none` 后端和远端音轨生命周期修复。
-- 摄像头 SFU H.264 发布、远端 I420 注入 muxPlayer。
-- C ABI v2：`rtcwin_frame_view.uid`。
-- Release/Debug 构建与 CTest 5/5 通过。
+- 文档 HEAD：`a65dddb`。
+- M1 代码提交：`f2cc1a5`。
+- M1 场景模型提交：`fff99ad`。
+- 当前 CTest 集：6 个测试，Release/Debug 均 6/6。
+- 最终便携包：`dist/rtc-talk-win-20261030-132934.zip`。
+- M1 证据和包 SHA256：见 §18.12。
+
+### 1.4 后续开发计划（M2 → M7）
+
+执行原则：
+
+1. 严格按 M2 → M7 顺序推进，不跨阶段堆积未验收能力。
+2. 每阶段先冻结接口和状态模型，再实现 UI/媒体链路。
+3. 每阶段必须先过 Release/Debug 构建、CTest、真实双端链路，再提交用户验收。
+4. 用户确认上一阶段后才开始下一阶段。
+5. 旧 `client-win` 只作为行为样本，不复制其类结构；新能力必须落入现有
+   application / Engine / media adapter 边界。
+
+#### M2：多路 Surface 与帧健康
+
+目标：
+
+- 新增 `VideoSurfacePool`，将 Surface 生命周期从 `VideoTile` 中解耦。
+- 新增 `FrameHealthMonitor`，统一处理 producer paused、peer left 和 5 秒无帧。
+- 隐藏/缩略 Tile 降低渲染频率，恢复时注入最新帧。
+- 限制活动 Surface 数量，避免反复创建和资源增长。
+
+关键接口：
+
+- `VideoStreamKey(uid, source)` 作为唯一流键。
+- `VideoSurfaceLease` 负责 Acquire/Release 和 RAII。
+- `FrameHealthMonitor` 输入流状态与帧时间戳，输出 `Healthy/Paused/Stale/Removed`。
+
+验收：
+
+- 9 路视频无串流、无明显 UI 卡顿。
+- 单路断流 5 秒内清空，恢复后重新出画。
+- 连续切房/切布局 100 次无 Surface 持续增长。
+- 9 路 720p 短时性能报告记录 CPU、内存、帧率和丢帧。
+
+估算：2–4 个工作日。
+
+#### M3：Floor、PTT 和主持人
+
+目标：
+
+- 新增 `FloorController`，独占 `floor.request/release/state/revoked`。
+- 新增 `HostController`，独占 `host.grant/muteAll/kick/setPolicy`。
+- 麦克风采集门由服务端 floor 权威状态驱动。
+- 接入 `room.subscribeLevels` 获取实时成员音量。
+
+验收：
+
+- free / ptt / moderated 三种模式切换。
+- PTT 按下申请、松开释放、超时、排队、递补、revoke 正确。
+- 主持人授权/收回、全员静音、踢人和策略局部更新正确。
+- UI 音量、发言人和排队状态来自真实事件。
+
+估算：3–5 个工作日，依赖服务端 floor/host 协议稳定。
+
+#### M4：房间设备与屏幕源
+
+目标：
+
+- 完成房间设置、设备面板和状态面板。
+- 支持会议中麦克风、播放、摄像头切换，不断房。
+- 接入设备热插拔、拔出、占用和默认设备回退。
+- 支持多屏、窗口共享选择和非默认系统音 loopback 端点。
+
+验收：
+
+- 设备切换失败可回滚并有明确提示。
+- 拔出设备后自动回退，不崩溃、不卡死。
+- 能选择指定屏幕、窗口和系统音端点。
+
+估算：3–5 个工作日。
+
+#### M5：重连、resume 和 ICE 恢复
+
+目标：
+
+- 新增 `ReconnectController` 和 `IceRecoveryController`。
+- 接入 `session.resume`、退避、恢复过期和恢复失败终止。
+- 接入 `session.refreshIce`、`sfu.restartIce`。
+- 完善 P2P 超时/失败回退及 kicked/replaced/fatal 分流。
+
+验收：
+
+- 断网 10 秒内恢复原房间和媒体，或明确失败。
+- TURN 凭证刷新成功。
+- ICE 失败后 SFU/P2P 按策略恢复。
+- 顶号、被踢和主动离房不错误重连。
+
+估算：2–4 个工作日。
+
+#### M6：诊断和可观测性
+
+目标：
+
+- 完整聚合 RTCStats：RTT、jitter、loss、bitrate、candidate pair。
+- 房间状态面板展示真实连接和媒体数据。
+- 日志关联 session/generation/track。
+- 支持一键导出脱敏诊断包。
+
+验收：
+
+- UI 可看到码率、丢包、RTT、远端流和设备状态。
+- 诊断包不包含 Token、完整 SDP、ICE 凭证。
+- 会话日志可还原连接、发布、订阅、暂停和恢复时间线。
+
+估算：2–4 个工作日。
+
+#### M7：安全和发布
+
+目标：
+
+- WSS/TLS 证书校验。
+- Windows Credential Manager/DPAPI Token 存储。
+- 安装包、签名、升级、回滚和卸载。
+- 版本迁移、许可证和依赖清单。
+
+验收：
+
+- 正式环境只接受 WSS。
+- Token 不明文落盘。
+- 干净 Windows 10/11 安装、升级、回滚和卸载通过。
+- 安装包完整，无缺失 DLL。
+
+估算：2–4 个工作日，不含签名证书和发布环境等待。
+
+总工程量粗估：14–26 个工作日，不含用户验收等待、长时间稳定性测试和
+第三方发布审批。
 
 ---
 
@@ -1274,17 +1412,20 @@ client-b / room-demo / uid-b
 
 - [ ] 当前分支是 `rtc-talk-win`，不是 `main`。
 - [ ] 旧工程 `rtc-talk` 没有改动。
-- [ ] `git status` 中能区分 S3.2 未提交改动和本交接文档。
+- [ ] `git status` 干净，当前 HEAD 与 `origin/rtc-talk-win` 同步。
 - [ ] `WEBRTC_SDK_DIR` 指向 M146 SDK。
 - [ ] `QTDIR` 指向 Qt 5.15 msvc2019_64。
 - [ ] `VCPKG_ROOT` 指向本地 vcpkg。
 - [ ] Release 构建通过。
 - [ ] Debug 构建通过。
-- [ ] Release CTest 5/5（包含 `rtcwin_session_state_tests`）。
-- [ ] Debug CTest 5/5（包含 `rtcwin_session_state_tests`）。
+- [ ] Release CTest 6/6（包含 `rtcwin_video_scene_tests`）。
+- [ ] Debug CTest 6/6（包含 `rtcwin_video_scene_tests`）。
 - [ ] fake 音频探针通过。
 - [ ] 真实 wasapi 短链路通过。
 - [ ] 双客户端真实音频联调完成后再宣布 S3.2 完成。
+- [ ] 双客户端 SFU/P2P camera+screen 截图通过。
+- [ ] 停止 camera/screen 后布局和画面清理正确。
+- [ ] 便携包独立启动截图冒烟通过。
 - [ ] 提交前检查 `git diff --check`。
 - [ ] 只提交到 `rtc-talk-win` 分支，不碰 `main`。
 
@@ -1691,11 +1832,12 @@ build/windows-x64/p2p-screen-20261030-123251/b-p2p-screen.png
 
 仍未完成：
 
-- M1 的 P2P 双端截图和停止 camera/screen 的最终交互验收。
 - 多路 muxPlayer session pool。
 - 9 路视频性能验收。
 - 5 秒无帧回收与异常断流 UI 清理。
 - 多屏选择和窗口共享选择。
+
+M1 的双路呈现、共享 PIP 和停止 camera/screen 已完成，详见 §18.12。
 
 ### 18.11 旧客户端功能差异审计（2026-10-30）
 
@@ -1711,7 +1853,7 @@ build/windows-x64/p2p-screen-20261030-123251/b-p2p-screen.png
 | 功能 | 当前状态 | 缺口 |
 |---|---|---|
 | 同成员 camera + screen 联合显示 | M1 已实现 | SFU/P2P 双端截图已通过 |
-| 共享主画面 + 摄像头 PIP | M1 已实现 | 待用户做 P5 视觉验收 |
+| 共享主画面 + 摄像头 PIP | M1 已实现 | P5 布局截图已通过，待用户阶段确认 |
 | 本地/1v1 画中画 | 部分 | Shared PIP 已完成；独立 1v1 页面仍待确认 |
 | camera/screen 独立 Tile | M1 已实现 | 使用 `uid + source` 作为 Tile 键 |
 | 多路 muxPlayer session pool | 未实现 | 仍是一路一个 Surface |
@@ -1798,7 +1940,7 @@ libs/client_gateway/src/c_abi_engine_client.cpp
 均已验证。M2 的 `VideoSurfacePool`、`FrameHealthMonitor`、5 秒无帧回收
 尚未开始。
 
-便携包（包含 S4.2 屏幕共享与 P2P 视频）：
+便携包（包含 M1 双路视频、P5 Shared 布局与 PIP）：
 
 ```text
 D:\google\webrtc-win-client\rtc-talk-win\dist\rtc-talk-win-20261030-132934.zip
