@@ -42,7 +42,7 @@
 | `rtc-talk/plan/rtc-server-dev-plan.md` | 服务端房间、SFU consume/produce、P2P 分配、第三人切 SFU、失败回退和已知修复 | 判断服务端请求时序、错误码和联调行为 |
 | `rtc-talk/plan/RK3576_客户端_开发计划_b524300f.md` | 跨平台客户端完整计划、P2P/SFU 踩坑、resume、事件时序和验收经验 | 客户端媒体状态机和回归风险参考 |
 | `rtc-talk-win/plan/production-plan.md` | 当前 Windows 生产工程 S0-S8、P0-P5、门禁和维护规则 | 当前工程实施计划；文档内部基线可能早于当前提交，实施时以代码和本表状态为准 |
-| `rtc-talk-win/plan/gap-driven-development-plan.md` | M1-M7 缺口驱动实施计划、阶段门禁和验收项 | 当前阶段交付和后续排期的直接执行计划 |
+| `rtc-talk-win/plan/gap-driven-development-plan.md` | M1-M7 缺口驱动实施计划、阶段门禁和验收项 | 主计划的唯一执行分册，不是平行计划 |
 | `rtc-talk-win/docs/requirements.md` | 产品功能和非功能要求 | 功能验收 |
 | `rtc-talk-win/docs/architecture/*` | 当前生产工程架构设计 | 模块边界和后续重构 |
 | `rtc-talk-win/docs/build-and-test.md` | 构建、依赖和测试说明 | 开发环境复现 |
@@ -192,131 +192,27 @@ M1 目前只等待用户按阶段流程确认。仍未验收的生产能力：
 - 最终便携包：`dist/rtc-talk-win-20261030-132934.zip`。
 - M1 证据和包 SHA256：见 §18.12。
 
-### 1.4 后续开发计划（M2 → M7）
+### 1.4 计划入口与当前下一步
 
-执行原则：
+项目只保留一套计划体系，不在 `handover.md` 重复定义另一套排期：
 
-1. 严格按 M2 → M7 顺序推进，不跨阶段堆积未验收能力。
-2. 每阶段先冻结接口和状态模型，再实现 UI/媒体链路。
-3. 每阶段必须先过 Release/Debug 构建、CTest、真实双端链路，再提交用户验收。
-4. 用户确认上一阶段后才开始下一阶段。
-5. 旧 `client-win` 只作为行为样本，不复制其类结构；新能力必须落入现有
-   application / Engine / media adapter 边界。
+- `plan/production-plan.md`：长期主计划，保留原始 S0-S8、P0-P5 范围。
+- `plan/gap-driven-development-plan.md`：当前唯一执行分册，定义 M1-M7
+  顺序、接口、验收和估算。
+- `handover.md`：只记录当前状态、证据、风险、提交和下一步，不复制计划正文。
 
-#### M2：多路 Surface 与帧健康
+| 执行阶段 | 主计划映射 | 状态 |
+|---|---|---|
+| M1 视频场景和双路呈现 | S4.2 UI/双流呈现 | 已完成，待用户确认 |
+| M2 多路 Surface 和帧健康 | S4.2 剩余部分 | 下一阶段 |
+| M3 Floor、PTT 和主持人 | S5 | 未开始 |
+| M4 房间设备与屏幕源 | S6 | 未开始 |
+| M5 重连、resume 和 ICE 恢复 | S7 | 未开始 |
+| M6 诊断和可观测性 | S6/S7 | 未开始 |
+| M7 安全和发布 | S7/S8 | 未开始 |
 
-目标：
-
-- 新增 `VideoSurfacePool`，将 Surface 生命周期从 `VideoTile` 中解耦。
-- 新增 `FrameHealthMonitor`，统一处理 producer paused、peer left 和 5 秒无帧。
-- 隐藏/缩略 Tile 降低渲染频率，恢复时注入最新帧。
-- 限制活动 Surface 数量，避免反复创建和资源增长。
-
-关键接口：
-
-- `VideoStreamKey(uid, source)` 作为唯一流键。
-- `VideoSurfaceLease` 负责 Acquire/Release 和 RAII。
-- `FrameHealthMonitor` 输入流状态与帧时间戳，输出 `Healthy/Paused/Stale/Removed`。
-
-验收：
-
-- 9 路视频无串流、无明显 UI 卡顿。
-- 单路断流 5 秒内清空，恢复后重新出画。
-- 连续切房/切布局 100 次无 Surface 持续增长。
-- 9 路 720p 短时性能报告记录 CPU、内存、帧率和丢帧。
-
-估算：2–4 个工作日。
-
-#### M3：Floor、PTT 和主持人
-
-目标：
-
-- 新增 `FloorController`，独占 `floor.request/release/state/revoked`。
-- 新增 `HostController`，独占 `host.grant/muteAll/kick/setPolicy`。
-- 麦克风采集门由服务端 floor 权威状态驱动。
-- 接入 `room.subscribeLevels` 获取实时成员音量。
-
-验收：
-
-- free / ptt / moderated 三种模式切换。
-- PTT 按下申请、松开释放、超时、排队、递补、revoke 正确。
-- 主持人授权/收回、全员静音、踢人和策略局部更新正确。
-- UI 音量、发言人和排队状态来自真实事件。
-
-估算：3–5 个工作日，依赖服务端 floor/host 协议稳定。
-
-#### M4：房间设备与屏幕源
-
-目标：
-
-- 完成房间设置、设备面板和状态面板。
-- 支持会议中麦克风、播放、摄像头切换，不断房。
-- 接入设备热插拔、拔出、占用和默认设备回退。
-- 支持多屏、窗口共享选择和非默认系统音 loopback 端点。
-
-验收：
-
-- 设备切换失败可回滚并有明确提示。
-- 拔出设备后自动回退，不崩溃、不卡死。
-- 能选择指定屏幕、窗口和系统音端点。
-
-估算：3–5 个工作日。
-
-#### M5：重连、resume 和 ICE 恢复
-
-目标：
-
-- 新增 `ReconnectController` 和 `IceRecoveryController`。
-- 接入 `session.resume`、退避、恢复过期和恢复失败终止。
-- 接入 `session.refreshIce`、`sfu.restartIce`。
-- 完善 P2P 超时/失败回退及 kicked/replaced/fatal 分流。
-
-验收：
-
-- 断网 10 秒内恢复原房间和媒体，或明确失败。
-- TURN 凭证刷新成功。
-- ICE 失败后 SFU/P2P 按策略恢复。
-- 顶号、被踢和主动离房不错误重连。
-
-估算：2–4 个工作日。
-
-#### M6：诊断和可观测性
-
-目标：
-
-- 完整聚合 RTCStats：RTT、jitter、loss、bitrate、candidate pair。
-- 房间状态面板展示真实连接和媒体数据。
-- 日志关联 session/generation/track。
-- 支持一键导出脱敏诊断包。
-
-验收：
-
-- UI 可看到码率、丢包、RTT、远端流和设备状态。
-- 诊断包不包含 Token、完整 SDP、ICE 凭证。
-- 会话日志可还原连接、发布、订阅、暂停和恢复时间线。
-
-估算：2–4 个工作日。
-
-#### M7：安全和发布
-
-目标：
-
-- WSS/TLS 证书校验。
-- Windows Credential Manager/DPAPI Token 存储。
-- 安装包、签名、升级、回滚和卸载。
-- 版本迁移、许可证和依赖清单。
-
-验收：
-
-- 正式环境只接受 WSS。
-- Token 不明文落盘。
-- 干净 Windows 10/11 安装、升级、回滚和卸载通过。
-- 安装包完整，无缺失 DLL。
-
-估算：2–4 个工作日，不含签名证书和发布环境等待。
-
-总工程量粗估：14–26 个工作日，不含用户验收等待、长时间稳定性测试和
-第三方发布审批。
+当前下一步只有一项：用户确认 M1 后，按执行分册开始 M2。M2-M7 的详细范围、
+接口、验收和估算不得在交接文档中另写一套。
 
 ---
 
