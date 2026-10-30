@@ -1700,6 +1700,52 @@ build/windows-x64/p2p-screen-20261030-123251/b-p2p-screen.png
 - 5 秒无帧回收与异常断流 UI 清理。
 - 多屏选择和窗口共享选择。
 
+### 18.11 旧客户端功能差异审计（2026-10-30）
+
+已对齐：
+
+- 麦克风、摄像头、屏幕共享、收听、音量命令。
+- SFU/P2P 摄像头与屏幕共享媒体传输。
+- `media.forceMute` 按 mic/camera/screen 分流。
+- P5 预入会设备枚举、本地摄像头预览和房间基础控制栏。
+
+仍缺失或只完成一部分：
+
+| 功能 | 当前状态 | 缺口 |
+|---|---|---|
+| 同成员 camera + screen 联合显示 | 媒体已双路发送 | UI 只显示一路 |
+| 共享主画面 + 摄像头 PIP | 未实现 | `VideoGrid` 一个 uid 只有一个 Tile |
+| 本地/1v1 画中画 | 未实现 | 旧 desktop README 中已有该布局 |
+| camera/screen 独立 Tile | 未实现 | 当前按 uid 管理，非 `uid + source` |
+| 多路 muxPlayer session pool | 未实现 | 仍是一路一个 Surface |
+| 5 秒无帧回收 | 未实现 | `VideoStreamState.producer_paused/last_frame_ms` 未驱动 UI 清理 |
+| 9 路视频性能 | 未验收 | 无多人多路压力证据 |
+| `floor.request/release` | 返回 501 | Engine 未注册命令 |
+| PTT/moderated 本地采集门 | 未闭环 | 未按 floor 权威状态开闭麦克风 |
+| 主持人授权/全员静音/踢人/策略 | 未实现 | UI 有信号/菜单，Engine 无 host.* 命令且未连接 |
+| `room.subscribeLevels` | 未实现 | 成员音量条没有服务端实时 level 来源 |
+| `floor.revoked` 一致性 | 未实现 | 被收回发言权后的本地状态回滚缺失 |
+| 房间设置弹窗 | 占位 | 当前只显示提示文字 |
+| 房间设备面板 | 占位 | 显示“等待媒体引擎枚举设备” |
+| 房间连接/媒体状态面板 | 占位 | 显示“等待媒体统计接入” |
+| 会议中设备切换 | 未实现 | 仅预入会选择设备 |
+| 设备热插拔/拔出/占用恢复 | 未实现 | 无设备变化监听和自动回退 |
+| 多屏/窗口共享选择 | 未实现 | 当前固定第一个屏幕 |
+| 非默认系统音端点选择 | 未实现 | 当前 loopback 仅默认播放端 |
+| resume/reconnect | 未实现 | 无 session_id 恢复、退避和过期处理 |
+| `session.refreshIce` / `sfu.restartIce` | 未实现 | 无 TURN 凭证刷新和 ICE restart |
+| P2P 超时及失败回退 | 部分 | SFU 切换有 5 秒保护，P2P 失败链未完整 |
+| 完整 RTCStats | 部分 | 有包/字节/音平，无 RTT、jitter、loss、码率、candidate pair |
+| WSS/TLS | 未实现 | Engine 只接受 `ws://` |
+| Token 安全持久化 | 未实现 | 仅内存输入，无 Credential Manager |
+| 安装/签名/升级 | 未实现 | 当前只有便携 ZIP |
+| 核心功能自动回归 | 部分 | 无双路联合、PTT/host、热插拔、resume 自动测试 |
+
+明确不在当前一期范围：
+
+- `call.invite` 呼叫弹窗；一期按需求直接入房。
+- H.265 P2P、simulcast 和多层订阅；属于后续能力。
+
 便携包（包含 S4.2 屏幕共享与 P2P 视频）：
 
 ```text
