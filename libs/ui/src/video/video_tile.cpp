@@ -10,6 +10,8 @@
 #include <QPainterPath>
 #include <QResizeEvent>
 
+#include <algorithm>
+
 namespace rtcwin::ui {
 
 VideoTile::VideoTile(QWidget* parent) : QWidget(parent) {
@@ -19,6 +21,7 @@ VideoTile::VideoTile(QWidget* parent) : QWidget(parent) {
 
   surface_ = new muxplayer_adapter::MuxVideoSurface(this);
   surface_->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+  surface_->SetCornerRadius(11);
 
   const auto make_label = [this](const QString& object_name) {
     auto* label = new QLabel(this);
@@ -55,13 +58,46 @@ void VideoTile::SetMember(const domain::PeerState& member, bool self,
   update();
 }
 
+void VideoTile::SetSource(domain::VideoSource source, bool has_camera_pip) {
+  source_ = source;
+  has_camera_pip_ = has_camera_pip;
+  if (has_camera_pip_) {
+    EnsurePipSurface();
+  } else {
+    DestroyPipSurface();
+  }
+  UpdateOverlay();
+  update();
+}
+
 void VideoTile::SetFrame(const domain::VideoFrame& frame) {
   if (surface_ != nullptr) surface_->SubmitFrame(frame);
   update();
 }
 
+void VideoTile::SetPipFrame(const domain::VideoFrame& frame) {
+  EnsurePipSurface();
+  if (pip_surface_ != nullptr) {
+    pip_surface_->SubmitFrame(frame);
+    pip_surface_->show();
+    if (pip_border_ != nullptr) pip_border_->show();
+    if (pip_label_ != nullptr) pip_label_->show();
+  }
+  update();
+}
+
 void VideoTile::ClearFrame() {
   if (surface_ != nullptr) surface_->Clear();
+  update();
+}
+
+void VideoTile::ClearPipFrame() {
+  if (pip_surface_ != nullptr) {
+    pip_surface_->Clear();
+    pip_surface_->hide();
+  }
+  if (pip_border_ != nullptr) pip_border_->hide();
+  if (pip_label_ != nullptr) pip_label_->hide();
   update();
 }
 
@@ -73,7 +109,9 @@ void VideoTile::UpdateOverlay() {
   name_->show();
 
   QString status;
-  if (member_.screen_on) status = QStringLiteral("共享中");
+  if (source_ == domain::VideoSource::Screen) status = QStringLiteral("共享中");
+  else if (member_.screen_on && source_ == domain::VideoSource::Camera)
+    status = QStringLiteral("摄像头");
   else if (!member_.audio_muted && member_.speaking) status = QStringLiteral("发言中");
   else if (!member_.camera_on) status = QStringLiteral("摄像头关闭");
   status_->setText(status);
@@ -85,26 +123,102 @@ void VideoTile::UpdateOverlay() {
                      : QString());
   role_->setVisible(member_.role == domain::RoomRole::Host);
   role_->adjustSize();
-  surface_->SetPlaceholder(compact_ ? QStringLiteral("视频")
-                                    : QStringLiteral("等待视频帧"));
+  surface_->SetPlaceholder(
+      source_ == domain::VideoSource::Screen
+          ? QStringLiteral("等待共享画面")
+          : (compact_ ? QStringLiteral("视频")
+                      : QStringLiteral("等待视频帧")));
   positionOverlays();
 }
 
 void VideoTile::resizeEvent(QResizeEvent* event) {
   QWidget::resizeEvent(event);
   surface_->setGeometry(rect().adjusted(1, 1, -1, -1));
+  positionPipSurface();
   positionOverlays();
 }
 
 void VideoTile::positionOverlays() {
   const int margin = compact_ ? 8 : 11;
-  name_->move(margin, height() - name_->height() - margin);
-  status_->move(margin, height() - status_->height() - name_->height() -
-                           margin * 2);
+  const int name_height = name_->height();
+  const int status_height = status_->isVisible() ? status_->height() : 0;
+  name_->move(margin, height() - name_height - margin);
+  status_->move(margin, height() - name_height - status_height -
+                           margin - (status_height > 0 ? 4 : 0));
   role_->move(margin, margin);
+  if (pip_surface_ != nullptr) pip_surface_->raise();
+  if (pip_border_ != nullptr) pip_border_->raise();
+  if (pip_label_ != nullptr) pip_label_->raise();
   name_->raise();
   status_->raise();
   role_->raise();
+}
+
+void VideoTile::EnsurePipSurface() {
+  if (pip_surface_ != nullptr) return;
+  pip_surface_ = new muxplayer_adapter::MuxVideoSurface(this);
+  pip_surface_->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+  pip_surface_->SetCornerRadius(9);
+  pip_surface_->SetPlaceholder(QStringLiteral("摄像头"));
+  pip_surface_->setObjectName(QStringLiteral("TileCameraPip"));
+  pip_border_ = new QLabel(this);
+  pip_border_->setObjectName(QStringLiteral("TileCameraPipBorder"));
+  pip_border_->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+  pip_border_->setStyleSheet(
+      QStringLiteral("background:transparent;border:1px solid #4f89b5;"
+                     "border-radius:10px;"));
+  pip_label_ = new QLabel(QStringLiteral("摄像头"), this);
+  pip_label_->setObjectName(QStringLiteral("TileCameraPipLabel"));
+  pip_label_->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+  pip_label_->setStyleSheet(
+      QStringLiteral("background:rgba(5,9,13,220);color:#e7eef4;"
+                     "border-radius:5px;padding:2px 6px;font-size:10px;"));
+  positionPipSurface();
+  pip_surface_->show();
+  pip_border_->show();
+  pip_label_->show();
+}
+
+void VideoTile::DestroyPipSurface() {
+  if (pip_surface_ == nullptr) return;
+  pip_surface_->deleteLater();
+  pip_surface_ = nullptr;
+  if (pip_border_ != nullptr) {
+    pip_border_->deleteLater();
+    pip_border_ = nullptr;
+  }
+  if (pip_label_ != nullptr) {
+    pip_label_->deleteLater();
+    pip_label_ = nullptr;
+  }
+}
+
+void VideoTile::positionPipSurface() {
+  if (pip_surface_ == nullptr) return;
+  const int margin = compact_ ? 8 : 11;
+  const int available_width = std::max(96, width() - margin * 2);
+  const int available_height = std::max(64, height() - margin * 2);
+  int pip_width =
+      std::clamp(static_cast<int>(width() * 0.25), 128, 260);
+  pip_width = std::min(pip_width, available_width);
+  int pip_height = pip_width * 9 / 16;
+  if (pip_height > available_height) {
+    pip_height = available_height;
+    pip_width = pip_height * 16 / 9;
+  }
+  const QRect pip_rect(width() - margin - pip_width,
+                       height() - margin - pip_height, pip_width,
+                       pip_height);
+  pip_surface_->setGeometry(pip_rect);
+  if (pip_border_ != nullptr) pip_border_->setGeometry(pip_rect);
+  if (pip_label_ != nullptr) {
+    pip_label_->setMaximumWidth(std::max(40, pip_width - 12));
+    pip_label_->adjustSize();
+    pip_label_->move(pip_rect.left() + 6, pip_rect.top() + 6);
+  }
+  if (pip_surface_ != nullptr) pip_surface_->raise();
+  if (pip_border_ != nullptr) pip_border_->raise();
+  if (pip_label_ != nullptr) pip_label_->raise();
 }
 
 void VideoTile::paintEvent(QPaintEvent* event) {

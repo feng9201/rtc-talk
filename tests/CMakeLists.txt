@@ -36,6 +36,26 @@ set_target_properties(rtcwin_session_state_tests PROPERTIES
 )
 add_test(NAME rtcwin_session_state_tests COMMAND rtcwin_session_state_tests)
 
+add_executable(rtcwin_video_scene_tests
+  video_scene_test.cpp
+  ../libs/ui/src/video/video_layout.cpp
+)
+target_include_directories(rtcwin_video_scene_tests PRIVATE
+  ../libs/application/include
+  ../libs/ui/include
+  ../libs/domain/include
+)
+target_link_libraries(rtcwin_video_scene_tests PRIVATE rtcwin_application)
+target_compile_options(rtcwin_video_scene_tests PRIVATE
+  $<$<CXX_COMPILER_ID:MSVC>:/utf-8 /EHsc /GR /W3>
+)
+set_target_properties(rtcwin_video_scene_tests PROPERTIES
+  CXX_STANDARD 17
+  CXX_STANDARD_REQUIRED ON
+  MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
+)
+add_test(NAME rtcwin_video_scene_tests COMMAND rtcwin_video_scene_tests)
+
 add_executable(rtcwin_camera_preview_smoke camera_preview_smoke.cpp)
 
 target_link_libraries(rtcwin_camera_preview_smoke PRIVATE

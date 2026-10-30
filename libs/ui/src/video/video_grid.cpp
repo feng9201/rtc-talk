@@ -6,13 +6,13 @@
 #include <QResizeEvent>
 #include <QSet>
 
-#include <cmath>
+#include <utility>
 
 namespace rtcwin::ui {
 namespace {
 
-QString FrameKey(const QString& uid, domain::VideoSource source) {
-  return uid + QLatin1Char('|') +
+QString FrameKey(const std::string& uid, domain::VideoSource source) {
+  return QString::fromStdString(uid) + QLatin1Char('|') +
          QString::fromStdString(domain::VideoSourceName(source));
 }
 
@@ -37,112 +37,145 @@ void VideoGrid::SetFrame(const domain::VideoFrame& frame) {
   QString uid = QString::fromStdString(frame.uid);
   if (uid.isEmpty()) uid = QString::fromStdString(snapshot_.self_uid);
   if (uid.isEmpty()) return;
-  frames_.insert(FrameKey(uid, frame.source),
-                 std::make_shared<domain::VideoFrame>(frame));
-  VideoTile* tile = tiles_.value(uid, nullptr);
-  if (tile == nullptr) return;
-  domain::PeerState member;
-  if (uid == QString::fromStdString(snapshot_.self_uid)) {
-    member.uid = snapshot_.self_uid;
-    member.camera_on = snapshot_.camera_on;
-    member.screen_on = snapshot_.sharing;
-  } else {
-    for (const auto& peer : snapshot_.peers) {
-      if (QString::fromStdString(peer.uid) == uid) {
-        member = peer;
-        break;
-      }
-    }
-  }
-  ApplyFrame(tile, member);
+  domain::VideoFrame copy = frame;
+  copy.uid = uid.toStdString();
+  auto stored = std::make_shared<domain::VideoFrame>(std::move(copy));
+  // Build the key after the move-completed object exists. Keeping key
+  // construction separate from the move avoids unspecified argument
+  // evaluation order and prevents a frame from being cached under an empty
+  // UID or a stale source.
+  frames_.insert(FrameKey(stored->uid, stored->source), stored);
+  ApplyFrameToMatchingTiles(*stored);
 }
 
 void VideoGrid::SetLayoutMode(domain::StageLayout layout) {
   layout_ = layout;
-  ApplyPlacement();
-}
-
-void VideoGrid::SetFilter(domain::StageFilter filter) {
-  filter_ = filter;
+  Rebuild();
   ApplyPlacement();
   update();
 }
 
-QVector<domain::PeerState> VideoGrid::VisibleMembers() const {
-  QVector<domain::PeerState> result;
-  domain::PeerState self;
-  self.uid = snapshot_.self_uid;
-  self.display_name = snapshot_.self_display_name;
-  self.role = snapshot_.self_role;
-  self.audio_muted = snapshot_.mic_muted;
-  self.speaking = snapshot_.floor.self_has_floor;
-  self.camera_on = snapshot_.camera_on;
-  self.screen_on = snapshot_.sharing;
-  self.audio_level = snapshot_.self_audio_level;
-  if (!self.uid.empty() || !self.display_name.empty()) result.push_back(self);
-  for (const auto& peer : snapshot_.peers) result.push_back(peer);
-  if (filter_ == domain::StageFilter::VideoOnly) {
-    QVector<domain::PeerState> video;
-    for (const auto& member : result) {
-      if (member.camera_on || member.screen_on) video.push_back(member);
-    }
-    return video;
+void VideoGrid::SetFilter(domain::StageFilter filter) {
+  filter_ = filter;
+  Rebuild();
+  ApplyPlacement();
+  update();
+}
+
+domain::PeerState VideoGrid::MemberForUid(const std::string& uid) const {
+  domain::PeerState member;
+  member.uid = uid;
+  if (uid == snapshot_.self_uid) {
+    member.display_name = snapshot_.self_display_name;
+    member.role = snapshot_.self_role;
+    member.audio_muted = snapshot_.mic_muted;
+    member.speaking = snapshot_.floor.self_has_floor;
+    member.camera_on = snapshot_.camera_on;
+    member.screen_on = snapshot_.sharing;
+    member.audio_level = snapshot_.self_audio_level;
+    return member;
   }
-  return result;
+  for (const auto& peer : snapshot_.peers) {
+    if (peer.uid == uid) return peer;
+  }
+  return member;
 }
 
 void VideoGrid::Rebuild() {
-  const auto members = VisibleMembers();
-  QSet<QString> ids;
-  for (const auto& member : members) {
-    auto* tile = EnsureTile(member);
-    ids.insert(QString::fromStdString(member.uid));
-    tile->SetMember(member,
-                    member.uid == snapshot_.self_uid,
-                    QString::fromStdString(member.uid) ==
-                        QString::fromStdString(snapshot_.selected_uid));
-    ApplyFrame(tile, member);
+  scene_ = application::VideoSceneBuilder::Build(snapshot_, layout_, filter_);
+  layout_plan_ = VideoLayoutEngine::Build(scene_);
+  QSet<QString> active_keys;
+  const auto apply_item =
+      [this, &active_keys](const application::VideoSceneItem& item,
+                           bool compact) {
+    VideoTile* tile = EnsureTile(item);
+    active_keys.insert(TileKey(item));
+    tile->SetMember(MemberForUid(item.uid), item.self, item.selected,
+                    compact);
+    tile->SetSource(item.source, item.has_camera_pip);
+    ApplyFrame(tile, item);
+  };
+
+  const bool compact_primary =
+      scene_.mode != application::VideoSceneMode::Grid;
+  for (const auto& item : scene_.primary) {
+    apply_item(item, compact_primary);
   }
+  for (const auto& item : scene_.secondary) {
+    apply_item(item, true);
+  }
+
   for (auto it = tiles_.begin(); it != tiles_.end();) {
-    if (!ids.contains(it.key())) {
-      const QString prefix = it.key() + QLatin1Char('|');
-      for (auto frame_it = frames_.begin(); frame_it != frames_.end();) {
-        if (frame_it.key().startsWith(prefix)) {
-          frame_it = frames_.erase(frame_it);
-        } else {
-          ++frame_it;
-        }
-      }
+    if (!active_keys.contains(it.key())) {
       it.value()->deleteLater();
       it = tiles_.erase(it);
     } else {
       ++it;
     }
   }
+  for (auto it = frames_.begin(); it != frames_.end();) {
+    if (!active_keys.contains(it.key())) {
+      it = frames_.erase(it);
+    } else {
+      ++it;
+    }
+  }
 }
 
-void VideoGrid::ApplyFrame(VideoTile* tile, const domain::PeerState& member) {
+void VideoGrid::ApplyFrame(
+    VideoTile* tile, const application::VideoSceneItem& item) {
   if (tile == nullptr) return;
-  const QString uid = QString::fromStdString(member.uid);
-  if (member.screen_on) {
-    if (auto frame =
-            frames_.value(FrameKey(uid, domain::VideoSource::Screen), nullptr)) {
+  if (item.source == domain::VideoSource::Screen) {
+    if (auto frame = frames_.value(
+            FrameKey(item.uid, domain::VideoSource::Screen), nullptr)) {
       tile->SetFrame(*frame);
-      return;
+    } else {
+      tile->ClearFrame();
     }
-  }
-  if (member.camera_on) {
-    if (auto frame =
-            frames_.value(FrameKey(uid, domain::VideoSource::Camera), nullptr)) {
-      tile->SetFrame(*frame);
-      return;
+    if (item.has_camera_pip) {
+      if (auto camera = frames_.value(
+              FrameKey(item.uid, domain::VideoSource::Camera), nullptr)) {
+        tile->SetPipFrame(*camera);
+      } else {
+        tile->ClearPipFrame();
+      }
+    } else {
+      tile->ClearPipFrame();
     }
+    return;
   }
-  tile->ClearFrame();
+
+  tile->ClearPipFrame();
+  if (auto frame = frames_.value(
+          FrameKey(item.uid, domain::VideoSource::Camera), nullptr)) {
+    tile->SetFrame(*frame);
+  } else {
+    tile->ClearFrame();
+  }
 }
 
-VideoTile* VideoGrid::EnsureTile(const domain::PeerState& member) {
-  const QString id = QString::fromStdString(member.uid);
+void VideoGrid::ApplyFrameToMatchingTiles(
+    const domain::VideoFrame& frame) {
+  const auto apply_item =
+      [this, &frame](const application::VideoSceneItem& item) {
+    const bool primary = item.source == frame.source;
+    const bool camera_pip =
+        frame.source == domain::VideoSource::Camera &&
+        item.source == domain::VideoSource::Screen &&
+        item.has_camera_pip;
+    if (!primary && !camera_pip) return;
+    VideoTile* tile = tiles_.value(TileKey(item), nullptr);
+    if (tile == nullptr) return;
+    if (primary) tile->SetFrame(frame);
+    if (camera_pip) tile->SetPipFrame(frame);
+  };
+  for (const auto& item : scene_.primary) apply_item(item);
+  for (const auto& item : scene_.secondary) apply_item(item);
+}
+
+VideoTile* VideoGrid::EnsureTile(
+    const application::VideoSceneItem& item) {
+  const QString id = TileKey(item);
   VideoTile* tile = tiles_.value(id, nullptr);
   if (tile != nullptr) return tile;
   tile = new VideoTile(this);
@@ -153,45 +186,42 @@ VideoTile* VideoGrid::EnsureTile(const domain::PeerState& member) {
   return tile;
 }
 
+QString VideoGrid::TileKey(const application::VideoSceneItem& item) {
+  return QString::fromStdString(application::VideoSceneKey(item));
+}
+
 void VideoGrid::ApplyPlacement() {
   while (QLayoutItem* item = layout_engine_->takeAt(0)) delete item;
-  const auto members = VisibleMembers();
-  for (const auto& member : members) {
-    if (auto* tile = tiles_.value(QString::fromStdString(member.uid))) {
-      tile->hide();
-    }
+  for (int row = 0; row < placed_rows_; ++row) {
+    layout_engine_->setRowStretch(row, 0);
   }
-  if (members.empty()) return;
-
-  if (layout_ == domain::StageLayout::Focus && members.size() > 1) {
-    const QString focus_uid =
-        snapshot_.selected_uid.empty()
-            ? QString::fromStdString(members.first().uid)
-            : QString::fromStdString(snapshot_.selected_uid);
-    VideoTile* focus = tiles_.value(focus_uid);
-    if (focus == nullptr) focus = tiles_.value(
-        QString::fromStdString(members.first().uid));
-    layout_engine_->addWidget(focus, 0, 0, 3, 2);
-    focus->show();
-    int row = 0;
-    for (const auto& member : members) {
-      if (QString::fromStdString(member.uid) == focus_uid) continue;
-      if (auto* tile = tiles_.value(QString::fromStdString(member.uid))) {
-        layout_engine_->addWidget(tile, row++, 2);
-        tile->show();
-      }
-    }
+  for (int column = 0; column < placed_columns_; ++column) {
+    layout_engine_->setColumnStretch(column, 0);
+  }
+  for (auto it = tiles_.begin(); it != tiles_.end(); ++it) {
+    it.value()->hide();
+  }
+  if (layout_plan_.cells.empty()) {
+    placed_rows_ = 0;
+    placed_columns_ = 0;
     return;
   }
 
-  int columns = 1;
-  if (members.size() > 1 && members.size() <= 4) columns = 2;
-  else if (members.size() > 4) columns = 3;
-  for (int i = 0; i < members.size(); ++i) {
-    auto* tile = tiles_.value(QString::fromStdString(members.at(i).uid));
-    layout_engine_->addWidget(tile, i / columns, i % columns);
+  for (const auto& cell : layout_plan_.cells) {
+    VideoTile* tile = tiles_.value(QString::fromStdString(cell.key));
+    if (tile == nullptr) continue;
+    layout_engine_->addWidget(tile, cell.row, cell.column, cell.row_span,
+                              cell.column_span);
     tile->show();
   }
+  for (int row = 0; row < layout_plan_.rows; ++row) {
+    layout_engine_->setRowStretch(row, 1);
+  }
+  for (int column = 0; column < layout_plan_.columns; ++column) {
+    layout_engine_->setColumnStretch(column, 1);
+  }
+  placed_rows_ = layout_plan_.rows;
+  placed_columns_ = layout_plan_.columns;
 }
 
 void VideoGrid::resizeEvent(QResizeEvent* event) {
@@ -201,7 +231,7 @@ void VideoGrid::resizeEvent(QResizeEvent* event) {
 
 void VideoGrid::paintEvent(QPaintEvent* event) {
   Q_UNUSED(event);
-  if (!VisibleMembers().empty()) return;
+  if (!layout_plan_.cells.empty()) return;
   QPainter painter(this);
   painter.setRenderHint(QPainter::Antialiasing);
   QPainterPath path;

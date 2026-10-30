@@ -52,7 +52,7 @@ class CAbiEngineClient final : public application::EngineClient {
                             const QString& token);
   void ApplyJoinData(const QJsonObject& data);
   void ApplyRoomNotification(const QString& method, const QJsonObject& data);
-  void DrainLatestLocalFrame();
+  void DrainLatestLocalFrames();
   void DrainLatestRemoteFrames();
 
   std::unique_ptr<CallbackContext> context_;
@@ -61,7 +61,7 @@ class CAbiEngineClient final : public application::EngineClient {
   QTimer* trace_stats_timer_ = nullptr;
   domain::SessionSnapshot snapshot_;
   std::mutex local_frame_mutex_;
-  std::shared_ptr<domain::VideoFrame> latest_local_frame_;
+  std::map<std::string, domain::VideoFrame> latest_local_frames_;
   std::atomic<bool> local_frame_post_pending_{false};
   std::mutex remote_frame_mutex_;
   std::map<std::string, domain::VideoFrame> latest_remote_frames_;

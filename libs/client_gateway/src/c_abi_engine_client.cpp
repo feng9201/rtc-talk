@@ -552,7 +552,8 @@ void CAbiEngineClient::OnRemoteFrame(void* userdata,
   if (copied.uid.empty()) return;
 
   CAbiEngineClient* self = context->self;
-  const std::string key = copied.uid + "|" + domain::VideoSourceName(copied.source);
+  const std::string key =
+      copied.uid + "|" + domain::VideoSourceName(copied.source);
   {
     std::lock_guard<std::mutex> lock(self->remote_frame_mutex_);
     self->latest_remote_frames_[key] = std::move(copied);
@@ -570,33 +571,38 @@ void CAbiEngineClient::OnLocalFrame(void* userdata,
   if (copied.width <= 0 || copied.y.empty()) return;
 
   CAbiEngineClient* self = context->self;
-  auto latest = std::make_shared<domain::VideoFrame>(std::move(copied));
+  const std::string stream_uid =
+      copied.uid.empty() ? "local" : copied.uid;
+  const std::string key =
+      stream_uid + "|" + domain::VideoSourceName(copied.source);
   {
     std::lock_guard<std::mutex> lock(self->local_frame_mutex_);
-    self->latest_local_frame_ = std::move(latest);
+    self->latest_local_frames_[key] = std::move(copied);
   }
   if (self->local_frame_post_pending_.exchange(true)) return;
   QMetaObject::invokeMethod(
-      self, [self] { self->DrainLatestLocalFrame(); }, Qt::QueuedConnection);
+      self, [self] { self->DrainLatestLocalFrames(); }, Qt::QueuedConnection);
 }
 
-void CAbiEngineClient::DrainLatestLocalFrame() {
-  std::shared_ptr<domain::VideoFrame> frame;
+void CAbiEngineClient::DrainLatestLocalFrames() {
+  std::map<std::string, domain::VideoFrame> frames;
   {
     std::lock_guard<std::mutex> lock(local_frame_mutex_);
-    frame = std::move(latest_local_frame_);
+    frames.swap(latest_local_frames_);
   }
   local_frame_post_pending_.store(false);
-  if (frame) emit LocalFrameReceived(*frame);
+  for (const auto& item : frames) {
+    emit LocalFrameReceived(item.second);
+  }
 
   bool has_newer_frame = false;
   {
     std::lock_guard<std::mutex> lock(local_frame_mutex_);
-    has_newer_frame = latest_local_frame_ != nullptr;
+    has_newer_frame = !latest_local_frames_.empty();
   }
   if (has_newer_frame && !local_frame_post_pending_.exchange(true)) {
     QMetaObject::invokeMethod(
-        this, [this] { DrainLatestLocalFrame(); }, Qt::QueuedConnection);
+        this, [this] { DrainLatestLocalFrames(); }, Qt::QueuedConnection);
   }
 }
 

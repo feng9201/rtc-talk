@@ -1,10 +1,11 @@
 #pragma once
 
+#include "rtcwin/application/video_scene.h"
 #include "rtcwin/domain/types.h"
+#include "rtcwin/ui/video/video_layout.h"
 #include "rtcwin/ui/video/video_tile.h"
 
 #include <QHash>
-#include <QVector>
 #include <QWidget>
 
 #include <memory>
@@ -33,15 +34,22 @@ class VideoGrid final : public QWidget {
   void paintEvent(QPaintEvent* event) override;
 
  private:
-  QVector<domain::PeerState> VisibleMembers() const;
+  domain::PeerState MemberForUid(const std::string& uid) const;
   void Rebuild();
   void ApplyPlacement();
-  VideoTile* EnsureTile(const domain::PeerState& member);
-  void ApplyFrame(VideoTile* tile, const domain::PeerState& member);
+  VideoTile* EnsureTile(const application::VideoSceneItem& item);
+  void ApplyFrame(VideoTile* tile,
+                  const application::VideoSceneItem& item);
+  void ApplyFrameToMatchingTiles(const domain::VideoFrame& frame);
+  static QString TileKey(const application::VideoSceneItem& item);
 
   domain::SessionSnapshot snapshot_;
   domain::StageLayout layout_ = domain::StageLayout::Grid;
   domain::StageFilter filter_ = domain::StageFilter::All;
+  application::VideoScene scene_;
+  VideoLayoutPlan layout_plan_;
+  int placed_rows_ = 0;
+  int placed_columns_ = 0;
   QGridLayout* layout_engine_ = nullptr;
   QHash<QString, VideoTile*> tiles_;
   QHash<QString, std::shared_ptr<domain::VideoFrame>> frames_;

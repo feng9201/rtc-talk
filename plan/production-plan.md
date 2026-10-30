@@ -719,18 +719,24 @@ S1 未通过，不进入 S2。
 - `log-cpp[shared]@1.0.0#4` 改由私有 vcpkg registry 提供；新增
   `rtcwin_log_adapter.dll` C ABI 边界，避免 `/MT` Engine 与 `/MD` log-cpp
   跨 CRT 传递 STL 类型。
-- Release/Debug 全量构建通过，CTest 5/5 通过（新增状态机测试）。
+- Release/Debug 全量构建通过，CTest 6/6 通过（新增视频场景/布局测试）。
 - 测试服双客户端验证：发送端 `camera_frames=31 -> 179`、
   `video_packets_sent=14 -> 293`；接收端
   `video_packets_received=53 -> 325`，远端摄像头画面正常显示。
 
 仍未完成：
 
-- 同一成员 camera/screen 双路同时显示的联合验收。
-- 共享布局：以屏幕共享为主画面，同时保留该成员摄像头小画面（PIP）。
-- UI 视频模型按 `uid + source` 管理独立 Tile，禁止每个成员只保留一个 Tile。
+- M1 的 P2P 双端截图、停止 camera/screen 的最终交互验收。
 - 多路视频 session pool、9 路性能、5 秒无帧回收和长时间稳定性。
 - 后续把 `client_gateway` 的 C ABI 解析、HTTP 和快照逻辑继续内聚拆分。
+
+M1 已完成的结构改造：
+
+- `VideoSceneBuilder` 位于 application 层，输出 camera/screen 独立场景项。
+- `VideoLayoutEngine` 位于 UI 层，独立计算 Grid/Focus/Shared 布局。
+- `VideoGrid`/`VideoTile` 按 `uid + source` 路由帧，Screen 主 Tile 带 camera PIP。
+- 本地帧缓存按流隔离，camera/screen 不再共享一个“最后一帧”槽位。
+- `MuxVideoSurface` 使用等比裁切铺满，PIP 带圆角裁剪和独立标签。
 
 S4.1 后的重构进度：
 

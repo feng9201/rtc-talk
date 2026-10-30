@@ -21,8 +21,11 @@ class VideoTile final : public QWidget {
 
   void SetMember(const domain::PeerState& member, bool self, bool selected,
                  bool compact = false);
+  void SetSource(domain::VideoSource source, bool has_camera_pip);
   void SetFrame(const domain::VideoFrame& frame);
+  void SetPipFrame(const domain::VideoFrame& frame);
   void ClearFrame();
+  void ClearPipFrame();
   QString uid() const { return uid_; }
 
  signals:
@@ -38,13 +41,21 @@ class VideoTile final : public QWidget {
  private:
   void UpdateOverlay();
   void positionOverlays();
+  void EnsurePipSurface();
+  void DestroyPipSurface();
+  void positionPipSurface();
 
   QString uid_;
   domain::PeerState member_;
   bool self_ = false;
   bool selected_ = false;
   bool compact_ = false;
+  domain::VideoSource source_ = domain::VideoSource::Camera;
+  bool has_camera_pip_ = false;
   muxplayer_adapter::MuxVideoSurface* surface_ = nullptr;
+  muxplayer_adapter::MuxVideoSurface* pip_surface_ = nullptr;
+  QLabel* pip_border_ = nullptr;
+  QLabel* pip_label_ = nullptr;
   QLabel* name_ = nullptr;
   QLabel* status_ = nullptr;
   QLabel* role_ = nullptr;

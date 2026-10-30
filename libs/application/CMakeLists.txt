@@ -3,9 +3,11 @@ add_library(rtcwin_application STATIC
   include/rtcwin/application/engine_client.h
   include/rtcwin/application/settings_store.h
   include/rtcwin/application/unavailable_engine_client.h
+  include/rtcwin/application/video_scene.h
   src/app_controller.cpp
   src/settings_store.cpp
   src/unavailable_engine_client.cpp
+  src/video_scene.cpp
 )
 
 target_include_directories(rtcwin_application PUBLIC

@@ -132,7 +132,7 @@ $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $versionText = @"
 rtc-talk-win
 Build: $stamp
-Commit: $(git -C $root rev-parse --short HEAD)
+Commit: $(git -c safe.directory=$root -C $root rev-parse --short HEAD)
 WebRTC ABI: 2
 "@
 Set-Content -LiteralPath (Join-Path $stage "VERSION.txt") `
@@ -151,8 +151,10 @@ rtc-talk-win 使用说明
 6. 如果对端看不到画面，使用“诊断启动.bat”启动。
    日志位置：%LOCALAPPDATA%\rtc-talk-win\logs\rtcwin.log
 7. 必须同时更新 rtc-talk.exe 和 rtcwin_engine.dll，不能只替换一个文件。
-8. 本版本 S4.1 只完成摄像头 SFU 发布和远端 muxPlayer 显示。
-   屏幕共享与 P2P 视频仍待后续实现。
+8. 当前版本支持摄像机、屏幕共享、P2P/SFU 双路视频，
+   以及“共享主画面 + 摄像头 PIP”和底部成员胶片条。
+9. 当前版本仍需完成 Floor/PTT、主持人、设备热插拔、
+   resume/ICE 恢复、完整 RTCStats 和正式安装发布。
 "@
 Set-Content -LiteralPath (Join-Path $stage "使用说明.txt") `
   -Value $usage -Encoding UTF8

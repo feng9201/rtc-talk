@@ -126,10 +126,11 @@ command and P5 prejoin page selectors.
 .\build\windows-x64\bin\Release\rtcwin_session_state_tests.exe
 ```
 
-The full CTest set is currently five tests:
+The full CTest set is currently six tests:
 
 - `rtcwin_tests`
 - `rtcwin_session_state_tests`
+- `rtcwin_video_scene_tests`
 - `rtcwin_signaling_tests`
 - `rtcwin_log_adapter_smoke`
 - `rtcwin_media_session_smoke`
@@ -188,3 +189,28 @@ Expected evidence:
 - SFU/P2P receiver `video_packets_received` increases.
 - Stopping screen sharing sends `media.setMute{source:"screen",muted:true}` and
   the remote shared tile clears without waiting for RTP timeout.
+
+## S4.3 M1 video scene and PIP
+
+`rtcwin_video_scene_tests` covers the application-layer scene policy and the
+UI-layer layout policy:
+
+- camera and screen are independent `uid + source` scene items;
+- Shared mode selects the screen as the main item;
+- a sharing member keeps a camera PIP item;
+- Grid, Focus, and Shared produce deterministic layout plans.
+
+The Qt render check can be run locally after the Release build:
+
+```powershell
+$env:QTDIR = 'C:\Qt\5.15.2\msvc2019_64'
+$env:PATH = "$env:QTDIR\bin;$PWD\build\windows-x64\bin\Release;$env:PATH"
+.\build\windows-x64\bin\Release\rtc-talk.exe `
+  --auto-preview --size 1440x900 `
+  --screenshot .\build\windows-x64\m1-camera-preview.png `
+  --screenshot-delay-ms 4000
+```
+
+For the SFU dual-stream check, the receiver should show the screen as the main
+tile and the sharing member's camera as a rounded PIP. The sender and receiver
+must use different `RTCWIN_LOG_PATH` values when collecting diagnostics.

@@ -5,6 +5,7 @@ set(RTCWIN_UI_SOURCES
   include/rtcwin/ui/pages/room_page.h
   include/rtcwin/ui/theme/theme.h
   include/rtcwin/ui/video/video_grid.h
+  include/rtcwin/ui/video/video_layout.h
   include/rtcwin/ui/video/video_surface.h
   include/rtcwin/ui/video/video_tile.h
   include/rtcwin/ui/widgets/control_button.h
@@ -17,6 +18,7 @@ set(RTCWIN_UI_SOURCES
   src/pages/prejoin_page.cpp
   src/pages/room_page.cpp
   src/theme/theme.cpp
+  src/video/video_layout.cpp
   src/video/video_grid.cpp
   src/video/video_surface.cpp
   src/video/video_tile.cpp
@@ -38,6 +40,7 @@ target_include_directories(rtcwin_ui PUBLIC
 
 target_link_libraries(rtcwin_ui
   PUBLIC
+    rtcwin_application
     rtcwin_client_gateway
     rtcwin_muxplayer_adapter
     Qt5::Core
@@ -47,6 +50,12 @@ target_link_libraries(rtcwin_ui
 
 target_compile_options(rtcwin_ui PRIVATE
   $<$<CXX_COMPILER_ID:MSVC>:/utf-8 /EHsc /GR /W3>
+)
+
+# Qt 5.15 headers use the legacy checked-array iterator with newer MSVC
+# standard libraries. The project does not use that API directly.
+target_compile_definitions(rtcwin_ui PRIVATE
+  $<$<CXX_COMPILER_ID:MSVC>:_SILENCE_STDEXT_ARR_ITERS_DEPRECATION_WARNING>
 )
 
 set_target_properties(rtcwin_ui PROPERTIES

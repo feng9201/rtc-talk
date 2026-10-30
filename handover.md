@@ -1691,10 +1691,7 @@ build/windows-x64/p2p-screen-20261030-123251/b-p2p-screen.png
 
 仍未完成：
 
-- 同一成员 camera/screen 双路同时显示的联合验收。
-- 共享主画面 + 摄像头小画面（PIP）；当前 `VideoGrid` 以 uid 为单位只有一个
-  Tile，且 `ApplyFrame` 优先屏幕帧，导致摄像头小画面被覆盖。
-- UI 视频模型改为按 `uid + source` 管理独立 Tile。
+- M1 的 P2P 双端截图和停止 camera/screen 的最终交互验收。
 - 多路 muxPlayer session pool。
 - 9 路视频性能验收。
 - 5 秒无帧回收与异常断流 UI 清理。
@@ -1713,10 +1710,10 @@ build/windows-x64/p2p-screen-20261030-123251/b-p2p-screen.png
 
 | 功能 | 当前状态 | 缺口 |
 |---|---|---|
-| 同成员 camera + screen 联合显示 | 媒体已双路发送 | UI 只显示一路 |
-| 共享主画面 + 摄像头 PIP | 未实现 | `VideoGrid` 一个 uid 只有一个 Tile |
-| 本地/1v1 画中画 | 未实现 | 旧 desktop README 中已有该布局 |
-| camera/screen 独立 Tile | 未实现 | 当前按 uid 管理，非 `uid + source` |
+| 同成员 camera + screen 联合显示 | M1 已实现 | 待 P2P 双端截图验收 |
+| 共享主画面 + 摄像头 PIP | M1 已实现 | 待用户做 P5 视觉验收 |
+| 本地/1v1 画中画 | 部分 | Shared PIP 已完成；独立 1v1 页面仍待确认 |
+| camera/screen 独立 Tile | M1 已实现 | 使用 `uid + source` 作为 Tile 键 |
 | 多路 muxPlayer session pool | 未实现 | 仍是一路一个 Surface |
 | 5 秒无帧回收 | 未实现 | `VideoStreamState.producer_paused/last_frame_ms` 未驱动 UI 清理 |
 | 9 路视频性能 | 未验收 | 无多人多路压力证据 |
@@ -1745,6 +1742,59 @@ build/windows-x64/p2p-screen-20261030-123251/b-p2p-screen.png
 
 - `call.invite` 呼叫弹窗；一期按需求直接入房。
 - H.265 P2P、simulcast 和多层订阅；属于后续能力。
+
+### 18.12 M1 视频场景与双路呈现（2026-10-30）
+
+本轮生产化结构变更：
+
+- application 层新增 `VideoSceneBuilder` 和 `VideoScene` 强类型模型，负责把
+  `SessionSnapshot` 收敛为 Grid/Focus/Shared 场景。
+- UI 层新增纯布局策略 `VideoLayoutEngine`，将场景转换为 Grid 布局计划，
+  不在页面类中散落行列判断。
+- `VideoGrid` 以 `uid + source` 管理 Tile，同一成员的 camera 和 screen
+  可以同时存在。
+- Shared 场景的 screen Tile 内嵌独立 `MuxVideoSurface` 作为 camera PIP；
+  PIP 使用等比裁切、圆角裁切、边框和“摄像头”标签。
+- Shared 布局已对齐 P5：主画面占满上方三行，其他成员位于底部成员胶片条。
+- `CAbiEngineClient` 的本地帧缓存从单槽改为按 `uid + source` 的多流缓存，
+  本地 camera/screen 不会互相覆盖；本机预览允许空 UID 帧。
+- 修复帧缓存路由缺陷：此前把帧从局部变量移入缓存后重新按 key 查询，可能得到
+  空帧，导致远端帧已经到达 `VideoGrid` 但 Tile 永远显示占位。现在缓存对象
+  直接传给 Tile，并避免依赖函数参数求值顺序。
+- `MuxVideoSurface` 改为 `KeepAspectRatioByExpanding`，保持 P5 的铺满效果，
+  同时避免视频被拉伸。
+
+新增/调整文件：
+
+```text
+libs/application/include/rtcwin/application/video_scene.h
+libs/application/src/video_scene.cpp
+libs/ui/include/rtcwin/ui/video/video_layout.h
+libs/ui/src/video/video_layout.cpp
+libs/ui/src/video/video_grid.cpp
+libs/ui/src/video/video_tile.cpp
+libs/client_gateway/src/c_abi_engine_client.cpp
+```
+
+验证：
+
+- Release/Debug 构建通过。
+- CTest 6/6 通过，新增 `rtcwin_video_scene_tests`。
+- P5 本地摄像头预览截图：
+  `build/windows-x64/m1-camera-preview-cover.png`。
+- 仅屏幕共享远端截图：
+  `build/windows-x64/m1-route-fixed-20261030-131603/b.png`。
+- camera+screen 双路远端截图：
+  `build/windows-x64/m1-dual-final-20261030-131626/b.png`；主画面为共享屏幕，
+  右下角为对讲人摄像头 PIP。
+- P2P camera+screen 双路远端截图：
+  `build/windows-x64/m1-p2p-p5-20261030-132435/b.png`。
+- 停止屏幕共享后自动回到 camera Grid：
+  `build/windows-x64/m1-stop-p5-20261030-132505/b-after-stop.png`。
+
+注意：M1 的 P2P 双端截图和停止 screen 后回退已验证；停止 camera 的双截图
+仍需在用户验收时补齐。M2 的
+`VideoSurfacePool`、`FrameHealthMonitor`、5 秒无帧回收尚未开始。
 
 便携包（包含 S4.2 屏幕共享与 P2P 视频）：
 

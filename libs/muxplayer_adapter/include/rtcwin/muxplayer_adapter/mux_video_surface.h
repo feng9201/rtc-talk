@@ -25,6 +25,7 @@ class MuxVideoSurface final : public QWidget {
   bool Open();
   bool SubmitFrame(const domain::VideoFrame& frame);
   void SetPlaceholder(const QString& text);
+  void SetCornerRadius(int radius);
   void Clear();
   void Close();
   bool has_frame() const { return has_frame_; }
@@ -35,11 +36,15 @@ class MuxVideoSurface final : public QWidget {
 
  private:
   void LayoutSurface();
+  void ApplyMask();
 
   std::unique_ptr<muxplay::FramePump> pump_;
   GLPlayWidget* gl_widget_ = nullptr;
   bool opened_ = false;
   bool has_frame_ = false;
+  int frame_width_ = 0;
+  int frame_height_ = 0;
+  int corner_radius_ = 0;
   QString placeholder_ = QStringLiteral("等待 muxPlayer 画面");
 };
 
