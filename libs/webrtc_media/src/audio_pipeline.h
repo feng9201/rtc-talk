@@ -1,5 +1,7 @@
 #pragma once
-
+/**
+ * @brief:ADM、设备选择、采集、播放、静音、音量
+*/
 #include "rtcwin/webrtc_media/media_session.h"
 
 #include "api/audio/audio_frame_processor.h"

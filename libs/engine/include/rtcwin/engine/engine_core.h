@@ -1,5 +1,7 @@
 #pragma once
-
+/**
+ * @brief:线程、命令队列、模块装配、生命周期
+*/
 #include "rtcwin/client_api.h"
 #include "rtcwin/engine/engine_command.h"
 #include "rtcwin/engine/engine_command_router.h"

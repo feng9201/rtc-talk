@@ -1,5 +1,7 @@
 #pragma once
-
+/**
+ * @brief:会话状态和 generation 隔离
+*/
 #include <cstdint>
 #include <mutex>
 #include <string>

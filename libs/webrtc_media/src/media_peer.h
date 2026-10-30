@@ -1,5 +1,7 @@
 #pragma once
-
+/**
+ * @brief:PeerConnection 生命周期和媒体轨控制
+*/
 #include "peer_stats_collector.h"
 #include "rtcwin/webrtc_media/media_session.h"
 

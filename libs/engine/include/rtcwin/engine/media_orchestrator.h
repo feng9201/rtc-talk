@@ -1,5 +1,7 @@
 #pragma once
-
+/**
+ * @brief:摄像头、媒体命令、SFU/P2P 协商、媒体事件
+*/
 #include "rtcwin/client_api.h"
 #include "rtcwin/engine/engine_command.h"
 #include "rtcwin/engine/engine_event_sink.h"

@@ -1,5 +1,7 @@
 #pragma once
-
+/**
+ * @brief:连接、session.hello、入房、离房、心跳、信令回调
+*/
 #include "rtcwin/engine/engine_command.h"
 #include "rtcwin/engine/engine_event_sink.h"
 #include "rtcwin/engine/media_orchestrator.h"

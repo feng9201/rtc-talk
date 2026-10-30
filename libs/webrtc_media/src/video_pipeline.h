@@ -1,5 +1,7 @@
 #pragma once
-
+/**
+ * @brief:摄像头视频源、视频轨、帧推送
+*/
 #include "rtcwin/webrtc_media/media_session.h"
 
 #include "api/media_stream_interface.h"

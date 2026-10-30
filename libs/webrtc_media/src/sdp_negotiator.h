@@ -1,5 +1,7 @@
 #pragma once
-
+/**
+ * @brief:offer/answer 创建、设置和超时
+*/
 #include "rtcwin/webrtc_media/media_session.h"
 
 #include "api/peer_connection_interface.h"
