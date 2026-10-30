@@ -3,7 +3,7 @@
 > 快照日期：2026-10-30
 > 仓库：`D:\google\webrtc-win-client\rtc-talk-win`
 > 分支：`rtc-talk-win`
-> 代码基线：`f2cc1a5 test: cover stopping camera during screen share`
+> 代码基线：`cd60889 feat: complete M2 surface pool and frame health`
 >
 > 当前状态：M1 双路/PIP 和 M2 Surface Pool/帧健康已完成；Release/Debug 构建和 CTest 9/9 通过；9 路 720p、5 秒断流回收、producer paused 均已验证。下一阶段为 M3 Floor/PTT/主持人。
 > 旧工程：`D:\google\webrtc-win-client\rtc-talk`，只读参考，禁止修改或提交。
@@ -17,7 +17,7 @@
 
 | 类别 | 仓库 / 分支 / 提交 | 本工程中的用途 | 权限 |
 |---|---|---|---|
-| 当前生产工程 | `D:\google\webrtc-win-client\rtc-talk-win` / `rtc-talk-win` / `f2cc1a5` | 真正交付工程、当前开发分支；文档更新以本文件所在提交为准 | 可开发、可提交到 `rtc-talk-win` |
+| 当前生产工程 | `D:\google\webrtc-win-client\rtc-talk-win` / `rtc-talk-win` / `cd60889` | 真正交付工程、当前开发分支；文档更新以本文件所在提交为准 | 可开发、可提交到 `rtc-talk-win` |
 | 服务端权威参考 | `D:\google\webrtc-win-client\rtc-talk` / `origin/main` / `8e6ff57` | 服务端行为、协议口径、S4 差异和联调依据 | 只读 |
 | 旧 Windows 客户端功能参考 | `origin/feat/windows-client` / `df22708` | `client-win` demo、既有音视频功能和联调逻辑参考 | 只读 |
 | 旧 Windows 生产实现参考 | `origin/codex/feat/windows-production-client` / `bbb3891` | P5 UI、生产模块、历史改造和验收记录参考 | 只读 |
@@ -94,7 +94,7 @@
 必须明确记录以下偏差：
 
 1. `plan/production-plan.md` 是长期 S0-S8 计划；当前执行基线以本文
-   `f2cc1a5` 和 `plan/gap-driven-development-plan.md` 的 M1-M7 为准。
+   `cd60889` 和 `plan/gap-driven-development-plan.md` 的 M1-M7 为准。
 2. `talk-protocol.md` 定义了 resume、ICE restart、P2P/SFU 先建后断、视频 m-line 等完整约束；当前 SFU 摄像头/屏幕共享和 P2P 音视频三 m-line 已接入，resume/ICE restart 仍未实现。
 3. 第三人加入“先建 SFU、确认可用、再关 P2P”已在短链路验证，后续仍需覆盖网络异常和重复切换。
 4. 服务端计划包含 `p2p.state`、P2P 失败回退、10 秒超时和 candidate 缓存等约束，当前客户端只完成基础转发，没有完整恢复策略。
@@ -184,11 +184,12 @@ M1、M2 目前等待用户按阶段流程确认。仍未验收的生产能力：
 
 ### 1.3 当前工作树状态
 
-M2 代码位于当前 `rtc-talk-win` 工作树，提交号和包信息在阶段提交后更新。
+M2 代码已提交，交接文档和最终包随本次阶段提交同步。
 
 - M1 代码提交：`f2cc1a5`。
 - M1 场景模型提交：`fff99ad`。
 - 当前 CTest 集：9 个测试，Release/Debug 均 9/9。
+- 当前便携包：`dist/rtc-talk-win-20261030-203346.zip`。
 - M2 证据：见 §18.13。
 
 ### 1.4 计划入口与当前下一步
@@ -1829,22 +1830,21 @@ libs/client_gateway/src/c_abi_engine_client.cpp
 - 停止摄像头后共享屏幕保留、PIP 消失：
   `build/windows-x64/m1-stop-camera-20261030-132838/b-after-camera-stop.png`。
 
-注意：M1 的 SFU/P2P 双端截图、停止 screen 回退、停止 camera 保留 screen
-均已验证。M2 的 `VideoSurfacePool`、`FrameHealthMonitor`、5 秒无帧回收
-尚未开始。
+均已验证；M2 实现和验收见 §18.13。
 
-便携包（包含 M1 双路视频、P5 Shared 布局与 PIP）：
+当前便携包（包含 M1 双路视频与 M2 Surface/帧健康）：
 
 ```text
-D:\google\webrtc-win-client\rtc-talk-win\dist\rtc-talk-win-20261030-132934.zip
-SHA256: A33A41A3537B620BDED829E54714F38854B2AFEE3203E176762B71BF7BE878B7
+D:\google\webrtc-win-client\rtc-talk-win\dist\rtc-talk-win-20261030-203346.zip
+SHA256: 4396821DFE7A0B38DE2300CBBD405CCB8F89CE95BC5E61D15ADA62DF41985845
 ```
 
-包内 `VERSION.txt` 的提交号为 `f2cc1a5`。旧的
-`rtc-talk-win-20261030-132716.zip` 仅保留为 M1 早期包，不作为当前交付包。
+包内 `VERSION.txt` 的提交号为 `cd60889`。旧的
+`rtc-talk-win-20261030-170040.zip` 仅保留为 M2 中间包，不作为当前交付包。
 
 打包后的 `rtc-talk.exe` 已通过 1440x900 启动截图冒烟，截图位于
-`build/windows-x64/package/package-smoke-m1.png`。
+`build/windows-x64/package/package-smoke-m2.png`。
+
 ### 18.13 M2 多路 Surface 与帧健康（2026-10-30）
 
 本轮实现：
