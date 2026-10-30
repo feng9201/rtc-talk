@@ -171,6 +171,7 @@ Automated screen-sharing flags:
 ```powershell
 --auto-screen-ms 3000
 --auto-screen-stop-ms 7000
+--auto-camera-stop-ms 9000
 ```
 
 For P2P validation, launch both clients with:

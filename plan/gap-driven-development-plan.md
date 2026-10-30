@@ -24,7 +24,7 @@
 
 ### 1.1 M1 实施状态
 
-M1 已完成代码实现，等待用户做 P5 视觉和双端交互验收：
+M1 已完成代码实现和自动门禁，等待用户做最终视觉和交互确认：
 
 - `VideoSceneBuilder` 已迁移到 application 层，输出与 QWidget 无关的场景模型。
 - `VideoLayoutEngine` 已独立到 UI 层，只计算 Grid/Focus/Shared 布局策略。
@@ -46,11 +46,12 @@ build/windows-x64/m1-route-fixed-20261030-131603/b.png
 build/windows-x64/m1-dual-final-20261030-131626/b.png
 build/windows-x64/m1-p2p-p5-20261030-132435/b.png
 build/windows-x64/m1-stop-p5-20261030-132505/b-after-stop.png
+build/windows-x64/m1-stop-camera-20261030-132838/b-after-camera-stop.png
 ```
 
 仍未闭环：
 
-- 停止 camera 的 UI 双截图验收。
+- 无；M1 自动门禁已通过。
 
 ## 2. 目标架构
 

@@ -1710,7 +1710,7 @@ build/windows-x64/p2p-screen-20261030-123251/b-p2p-screen.png
 
 | 功能 | 当前状态 | 缺口 |
 |---|---|---|
-| 同成员 camera + screen 联合显示 | M1 已实现 | 待 P2P 双端截图验收 |
+| 同成员 camera + screen 联合显示 | M1 已实现 | SFU/P2P 双端截图已通过 |
 | 共享主画面 + 摄像头 PIP | M1 已实现 | 待用户做 P5 视觉验收 |
 | 本地/1v1 画中画 | 部分 | Shared PIP 已完成；独立 1v1 页面仍待确认 |
 | camera/screen 独立 Tile | M1 已实现 | 使用 `uid + source` 作为 Tile 键 |
@@ -1791,10 +1791,12 @@ libs/client_gateway/src/c_abi_engine_client.cpp
   `build/windows-x64/m1-p2p-p5-20261030-132435/b.png`。
 - 停止屏幕共享后自动回到 camera Grid：
   `build/windows-x64/m1-stop-p5-20261030-132505/b-after-stop.png`。
+- 停止摄像头后共享屏幕保留、PIP 消失：
+  `build/windows-x64/m1-stop-camera-20261030-132838/b-after-camera-stop.png`。
 
-注意：M1 的 P2P 双端截图和停止 screen 后回退已验证；停止 camera 的双截图
-仍需在用户验收时补齐。M2 的
-`VideoSurfacePool`、`FrameHealthMonitor`、5 秒无帧回收尚未开始。
+注意：M1 的 SFU/P2P 双端截图、停止 screen 回退、停止 camera 保留 screen
+均已验证。M2 的 `VideoSurfacePool`、`FrameHealthMonitor`、5 秒无帧回收
+尚未开始。
 
 便携包（包含 S4.2 屏幕共享与 P2P 视频）：
 

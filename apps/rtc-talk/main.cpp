@@ -84,6 +84,10 @@ int main(int argc, char** argv) {
       QStringLiteral("入房后自动开启摄像头的时间"),
       QStringLiteral("ms")));
   parser.addOption(QCommandLineOption(
+      QStringLiteral("auto-camera-stop-ms"),
+      QStringLiteral("入房后自动关闭摄像头的时间"),
+      QStringLiteral("ms")));
+  parser.addOption(QCommandLineOption(
       QStringLiteral("auto-screen-ms"),
       QStringLiteral("入房后自动开启屏幕共享的时间"),
       QStringLiteral("ms")));
@@ -174,6 +178,16 @@ int main(int argc, char** argv) {
       bool camera_ok = false;
       const int camera_ms =
           parser.value(QStringLiteral("auto-camera-ms")).toInt(&camera_ok);
+      if (camera_ok && camera_ms >= 0) {
+        QTimer::singleShot(camera_ms, &window,
+                           &rtcwin::ui::MainWindow::ToggleCamera);
+      }
+    }
+    if (parser.isSet(QStringLiteral("auto-camera-stop-ms"))) {
+      bool camera_ok = false;
+      const int camera_ms =
+          parser.value(QStringLiteral("auto-camera-stop-ms"))
+              .toInt(&camera_ok);
       if (camera_ok && camera_ms >= 0) {
         QTimer::singleShot(camera_ms, &window,
                            &rtcwin::ui::MainWindow::ToggleCamera);
