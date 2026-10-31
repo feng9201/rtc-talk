@@ -3,7 +3,7 @@
 > 快照日期：2026-10-31
 > 仓库：`D:\google\webrtc-win-client\rtc-talk-win`
 > 分支：`rtc-talk-win`
-> 代码基线：`ac39c4f feat: complete M5 resume and ICE recovery` + M6 交付提交
+> 代码基线：`a236462 feat: complete M6 diagnostics and observability`
 >
 > 当前状态：M1-M6 已完成并确认；M6 RTCStats 聚合、实时状态面板和脱敏诊断包随本次提交交付；M7 安全和发布暂停，待转生产前处理。
 > 旧工程：`D:\google\webrtc-win-client\rtc-talk`，只读参考，禁止修改或提交。
@@ -17,7 +17,7 @@
 
 | 类别 | 仓库 / 分支 / 提交 | 本工程中的用途 | 权限 |
 |---|---|---|---|
-| 当前生产工程 | `D:\google\webrtc-win-client\rtc-talk-win` / `rtc-talk-win` / `ac39c4f` + 未提交 M6 | 真正交付工程、当前开发分支；文档更新以本文件所在提交为准 | 可开发、可提交到 `rtc-talk-win` |
+| 当前生产工程 | `D:\google\webrtc-win-client\rtc-talk-win` / `rtc-talk-win` / `a236462` | 真正交付工程、当前开发分支；文档更新以本文件所在提交为准 | 可开发、可提交到 `rtc-talk-win` |
 | 服务端权威参考 | `D:\google\webrtc-win-client\rtc-talk` / `origin/main` / `8e6ff57` | 服务端行为、协议口径、S4 差异和联调依据 | 只读 |
 | 旧 Windows 客户端功能参考 | `origin/feat/windows-client` / `df22708` | `client-win` demo、既有音视频功能和联调逻辑参考 | 只读 |
 | 旧 Windows 生产实现参考 | `origin/codex/feat/windows-production-client` / `bbb3891` | P5 UI、生产模块、历史改造和验收记录参考 | 只读 |
@@ -91,14 +91,14 @@
 | M3 | Floor/PTT、主持人操作、实时音量 | 已完成并提交 | `737ac65`、`rtcwin_floor_host_controller_tests`、moderated 双端截图 | 推送 |
 | M4 | 房间设备、热插拔回退、屏幕/窗口源、系统音端点 | 已完成并提交 | `e433396`、`DevicePanel`、设备/共享源切换、fallback 短链路 | 推送 |
 | M5 | resume、退避重连、ICE refresh/restart | 已完成并提交 | `ac39c4f`、`ReconnectController`、resume 双端截图、ICE 刷新日志 | 推送 |
-| M6 | 完整 RTCStats、状态面板、诊断包 | 代码完成待用户确认 | `DiagnosticsExporter`、RTCStats 字段、status-live 截图 | 用户阶段验收、提交 |
+| M6 | 完整 RTCStats、状态面板、诊断包 | 已完成并提交 | `a236462`、`DiagnosticsExporter`、RTCStats 字段、status-live 截图 | 推送 |
 
 ### 0.4 当前计划偏差
 
 必须明确记录以下偏差：
 
 1. `plan/production-plan.md` 是长期 S0-S8 计划；当前执行基线以本文
-   `ac39c4f` 和 `plan/gap-driven-development-plan.md` 的 M1-M7 为准。
+   `a236462` 和 `plan/gap-driven-development-plan.md` 的 M1-M7 为准。
 2. `talk-protocol.md` 定义了 resume、ICE restart、P2P/SFU 先建后断、视频 m-line 等完整约束；当前 M5 已接入 resume、ICE refresh/restart，M7 的 WSS/TLS 和凭证安全暂停至转生产阶段。
 3. 第三人加入“先建 SFU、确认可用、再关 P2P”已在短链路验证，后续仍需覆盖网络异常和重复切换。
 4. 服务端计划包含 `p2p.state`、P2P 失败回退、10 秒超时和 candidate 缓存等约束，当前客户端只完成基础转发，没有完整恢复策略。
@@ -192,7 +192,7 @@ M6 已完成技术范围：
 M1-M6 已确认并纳入本次提交。
 
 - M3/M4/M5 提交：`737ac65`、`e433396`、`ac39c4f`。
-- M6：诊断、可观测性及文档更新随本次交付提交。
+- M6 提交：`a236462`。
 - 当前 CTest 集：11 个测试，Release/Debug 均 11/11。
 - M6 证据：见 §18.17。
 
@@ -2042,7 +2042,8 @@ build/windows-x64/m5-ice2-20261031-103831/after-restart.png
 
 ### 18.17 M6 诊断与可观测性（2026-10-31）
 
-M6 已完成并通过用户确认，随本次交付提交。
+M6 已完成并通过用户确认，提交为
+`a236462 feat: complete M6 diagnostics and observability`。
 
 本轮实现：
 
@@ -2078,7 +2079,16 @@ build/windows-x64/m6-live-20261031-110633/status-live.png
 build/windows-x64/m6-final-20261031-110855/status.png
 ```
 
-待用户验收：
+Release 交付包：
+
+```text
+D:\google\webrtc-win-client\rtc-talk-win\dist\rtc-talk-win-20261031-122045.zip
+SHA256: CE8D0E1B36990EAF066FA43DCA034EC83EAB60C43D84E47699CF9E4BD8947F9C
+```
+
+包内 `VERSION.txt` 的提交号为 `a236462`，工作树状态为 `clean`。
+
+发布前仍需覆盖：
 
 - 双端有音视频流量时的 RTT/丢包/码率趋势。
 - 用户实际网络异常场景下的诊断包内容检查。

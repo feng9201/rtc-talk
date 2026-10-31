@@ -3,7 +3,7 @@
 > 状态：本文件是项目长期主计划（S0-S8/P0-P5）。当前执行状态、M1-M7 分阶段拆解、排期和验收以 `plan/gap-driven-development-plan.md` 为唯一执行分册，不另建平行计划。
 > 当前进度：S1-S4.2 已完成；M1-M6 已完成并提交；M7（S7 的 WSS/凭证部分与 S8 发布部分）暂停，待转生产前处理。
 > 日期：2026-10-31
-> 当前代码基线：`rtc-talk-win@ac39c4f` + M6 交付提交
+> 当前代码基线：`rtc-talk-win@a236462`
 > 第一验收目标：完成 muxPlayer 接入，并用本机摄像头完成真实预览联调。
 > 约束：WebRTC 音频仍由 WebRTC AudioDeviceModule 处理；muxPlayer 只作为视频渲染基础设施。
 
