@@ -363,7 +363,8 @@ struct MediaSession::Impl {
     return true;
   }
 
-  bool CreateSfuPublishOffer(MediaSfuOffer* out, MediaError* error) {
+  bool CreateSfuPublishOffer(MediaSfuOffer* out, MediaError* error,
+                             bool ice_restart) {
     if (!EnsureSfuSend(error)) return false;
     if (!sfu_send->AddAudioTrack(audio_pipeline_.track(),
                             webrtc::RtpTransceiverDirection::kSendOnly,
@@ -385,7 +386,7 @@ struct MediaSession::Impl {
         return false;
       }
     }
-    if (!sfu_send->CreateAndSetLocal(true, error)) return false;
+    if (!sfu_send->CreateAndSetLocal(true, error, ice_restart)) return false;
     sfu_send->SetAudioSenderActive(false);
     camera_mid.clear();
     if (config.camera_publish_enabled &&
@@ -520,6 +521,23 @@ struct MediaSession::Impl {
     return true;
   }
 
+  bool SetIceServers(const std::vector<IceServer>& ice_servers,
+                     MediaError* error) {
+    rtc_config.servers.clear();
+    for (const auto& item : ice_servers) {
+      webrtc::PeerConnectionInterface::IceServer server;
+      server.urls = item.urls;
+      server.username = item.username;
+      server.password = item.password;
+      rtc_config.servers.push_back(std::move(server));
+    }
+    bool ok = true;
+    if (sfu_send) ok = sfu_send->SetConfiguration(rtc_config, error) && ok;
+    if (sfu_recv) ok = sfu_recv->SetConfiguration(rtc_config, error) && ok;
+    if (p2p) ok = p2p->SetConfiguration(rtc_config, error) && ok;
+    return ok;
+  }
+
   void CloseP2p() {
     p2p_video_enabled = false;
     if (!p2p) return;
@@ -637,8 +655,9 @@ bool MediaSession::Initialize(const MediaConfig& config, Event event,
 void MediaSession::Shutdown() { impl_->Shutdown(); }
 
 bool MediaSession::CreateSfuPublishOffer(MediaSfuOffer* offer,
-                                              MediaError* error) {
-  return impl_->CreateSfuPublishOffer(offer, error);
+                                          MediaError* error,
+                                          bool ice_restart) {
+  return impl_->CreateSfuPublishOffer(offer, error, ice_restart);
 }
 
 bool MediaSession::ApplySfuPublishAnswer(const std::string& sdp,
@@ -686,6 +705,15 @@ bool MediaSession::AddP2pCandidate(const std::string& candidate,
 }
 
 void MediaSession::CloseP2p() { impl_->CloseP2p(); }
+
+bool MediaSession::SetIceServers(const std::vector<IceServer>& ice_servers,
+                                 MediaError* error) {
+  if (!impl_->initialized) {
+    SetError(error, 1710, "音频媒体会话未初始化");
+    return false;
+  }
+  return impl_->SetIceServers(ice_servers, error);
+}
 
 bool MediaSession::SetMuted(bool muted, MediaError* error) {
   return impl_->SetMuted(muted, error);

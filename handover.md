@@ -1,11 +1,11 @@
 # rtc-talk-win 项目交接文档
 
-> 快照日期：2026-10-30
+> 快照日期：2026-10-31
 > 仓库：`D:\google\webrtc-win-client\rtc-talk-win`
 > 分支：`rtc-talk-win`
-> 代码基线：`737ac65 feat: complete M3 floor and host controls`
+> 代码基线：`e433396 feat: complete M4 device and screen source controls`
 >
-> 当前状态：M1/M2/M3 已完成并提交；M4 设备与屏幕源链路已实现并通过 Release/Debug 回归及真实双端短链路，等待用户阶段确认。M4 改动当前尚未提交。
+> 当前状态：M1/M2/M3/M4 已完成并提交；M5 resume、退避重连和 ICE 刷新已实现并通过 Release/Debug 回归及测试服短链路，等待用户阶段确认。M5 改动当前尚未提交。
 > 旧工程：`D:\google\webrtc-win-client\rtc-talk`，只读参考，禁止修改或提交。
 
 本文档面向后续接入业务、继续媒体开发、做代码评审或发布验收的工程师。它描述当前真实代码状态，不把计划中的能力写成已完成能力。
@@ -17,7 +17,7 @@
 
 | 类别 | 仓库 / 分支 / 提交 | 本工程中的用途 | 权限 |
 |---|---|---|---|
-| 当前生产工程 | `D:\google\webrtc-win-client\rtc-talk-win` / `rtc-talk-win` / `737ac65` + 未提交 M4 | 真正交付工程、当前开发分支；文档更新以本文件所在提交为准 | 可开发、可提交到 `rtc-talk-win` |
+| 当前生产工程 | `D:\google\webrtc-win-client\rtc-talk-win` / `rtc-talk-win` / `e433396` + 未提交 M5 | 真正交付工程、当前开发分支；文档更新以本文件所在提交为准 | 可开发、可提交到 `rtc-talk-win` |
 | 服务端权威参考 | `D:\google\webrtc-win-client\rtc-talk` / `origin/main` / `8e6ff57` | 服务端行为、协议口径、S4 差异和联调依据 | 只读 |
 | 旧 Windows 客户端功能参考 | `origin/feat/windows-client` / `df22708` | `client-win` demo、既有音视频功能和联调逻辑参考 | 只读 |
 | 旧 Windows 生产实现参考 | `origin/codex/feat/windows-production-client` / `bbb3891` | P5 UI、生产模块、历史改造和验收记录参考 | 只读 |
@@ -88,8 +88,9 @@
 | P5 | 第一里程碑稳定性与提交验收 | 已完成阶段验收 | Release/Debug 构建、既有联调 | 长稳定性测试按用户明确要求执行 |
 | M1 | 视频场景、camera/screen 双路、共享主画面 + PIP | 已完成并推送 | `fff99ad`、`f2cc1a5`、`rtcwin_video_scene_tests`、SFU/P2P 截图 | 仅待用户按阶段流程确认，无技术缺口 |
 | M2 | Surface Pool、帧健康、5 秒无帧回收、9 路压力 | 已完成并提交 | `rtcwin_frame_health_tests`、`rtcwin_video_surface_pool_tests`、`rtcwin_video_grid_stress_tests`、断流截图 | 无 |
-| M3 | Floor/PTT、主持人操作、实时音量 | 已完成并本地提交，待推送 | `737ac65`、`rtcwin_floor_host_controller_tests`、moderated 双端截图 | 用户阶段验收/推送 |
-| M4 | 房间设备、热插拔回退、屏幕/窗口源、系统音端点 | 代码完成待用户确认 | `DevicePanel`、设备/共享源切换、fallback 短链路 | 用户阶段验收、提交 |
+| M3 | Floor/PTT、主持人操作、实时音量 | 已完成并提交 | `737ac65`、`rtcwin_floor_host_controller_tests`、moderated 双端截图 | 推送 |
+| M4 | 房间设备、热插拔回退、屏幕/窗口源、系统音端点 | 已完成并提交 | `e433396`、`DevicePanel`、设备/共享源切换、fallback 短链路 | 推送 |
+| M5 | resume、退避重连、ICE refresh/restart | 代码完成待用户确认 | `ReconnectController`、resume 双端截图、ICE 刷新日志 | 用户阶段验收、提交 |
 
 ### 0.4 当前计划偏差
 
@@ -176,21 +177,22 @@ M1、M2、M3 已通过技术门禁：
 - 9 路 720p 帧注入 29 ms；100 次显示/布局切换 Surface 数不增长。
 - Release/Debug 构建通过，CTest 10/10 通过。
 
-M4 已实现但仍待用户按阶段流程确认：
+M5 已实现但仍待用户按阶段流程确认：
 
-- 会议中麦克风/播放/摄像头切换、设备周期刷新和丢失回退。
-- 多屏/窗口共享源选择、非默认系统音 loopback 端点。
-- resume、ICE refresh/restart 和 P2P 失败回退。
+- 断线后 1/2/4/8/15 秒退避 reconnect，60 秒 resume 窗口。
+- `session.hello.resume`、resumed 房间快照和成员状态恢复。
+- `session.refreshIce`、TURN 凭证更新和 send 侧 SFU ICE restart 重发布。
+- P2P 失败由服务端 `room.mediaMode.sfu` 切换链路接管。
 - 完整 RTCStats、状态面板、诊断包导出。
 - WSS/TLS、Token 安全持久化和正式安装发布。
 
 ### 1.3 当前工作树状态
 
-M3 代码已提交，M4 代码在当前工作树中，尚未提交。
+M3/M4 代码已提交，M5 代码在当前工作树中，尚未提交。
 
-- M3 代码提交：`737ac65`。
-- 当前 CTest 集：10 个测试，Release/Debug 均 10/10。
-- M4 证据：见 §18.15。
+- M3/M4 提交：`737ac65`、`e433396`。
+- 当前 CTest 集：11 个测试，Release/Debug 均 11/11。
+- M5 证据：见 §18.16。
 
 ### 1.4 计划入口与当前下一步
 
@@ -206,12 +208,12 @@ M3 代码已提交，M4 代码在当前工作树中，尚未提交。
 | M1 视频场景和双路呈现 | S4.2 UI/双流呈现 | 已完成 |
 | M2 多路 Surface 和帧健康 | S4.2 剩余部分 | 已完成 |
 | M3 Floor、PTT 和主持人 | S5 | 已完成，本地提交待推送 |
-| M4 房间设备与屏幕源 | S6 | 代码完成，待用户确认 |
-| M5 重连、resume 和 ICE 恢复 | S7 | 未开始 |
+| M4 房间设备与屏幕源 | S6 | 已完成并提交 |
+| M5 重连、resume 和 ICE 恢复 | S7 | 代码完成，待用户确认 |
 | M6 诊断和可观测性 | S6/S7 | 未开始 |
 | M7 安全和发布 | S7/S8 | 未开始 |
 
-当前下一步：用户验收 M4；确认后提交 M4，再进入 M5 重连/resume/ICE 恢复。M5-M7 的详细范围、
+当前下一步：用户验收 M5；确认后提交 M5，再进入 M6 诊断和可观测性。M6-M7 的详细范围、
 接口、验收和估算不得在交接文档中另写一套。
 
 ---
@@ -1886,7 +1888,7 @@ build/windows-x64/m2-stale-smoke-20261030-165010/b-after-stale.png
 build/windows-x64/m2-paused-smoke-20261030-165144/b-after-pause.png
 ```
 
-M2 已完成。M3/M4 的实现与验证见 §18.14、§18.15。
+M2 已完成。M3/M4/M5 的实现与验证见 §18.14、§18.15、§18.16。
 
 ### 18.14 M3 Floor、PTT 与主持人（2026-10-30）
 
@@ -1982,3 +1984,55 @@ build/windows-x64/m4-screen-state-20261030-222631/host.png
 - 物理拔出摄像头/麦克风的整机热插拔测试未执行；已通过无效设备 ID 和
   周期刷新模拟回退路径。
 - 摄像头长时间占用、驱动崩溃和设备争用仍需要用户硬件环境验收。
+
+### 18.16 M5 重连、resume 与 ICE 恢复（2026-10-31）
+
+M5 当前代码尚未提交，等待用户确认。
+
+本轮实现：
+
+- Engine 新增 `ReconnectController`，重连间隔为 1/2/4/8/15 秒，最大
+  resume 窗口 60 秒；超过窗口后回到预入会并提示“会话恢复超时”。
+- `SessionStateMachine` 新增 `Reconnecting` 阶段和 `MarkResumed`；旧 generation
+  在重连期间仍有效，媒体回调不会因信令重连被误丢弃。
+- WebSocket 非致命断开不再立即清空媒体，而是进入退避重连。
+- 重连 hello 携带 `resume.session_id`；`resumed=true` 时恢复房间快照、
+  成员、角色、发言权和媒体状态，不重复 `room.join`。
+- `resumed=false` 时重新执行 `room.join`；媒体会话按服务端返回重新初始化。
+- `session.kicked`、replaced、401/403/404 和关闭码 4001/4003 仍按 fatal
+  处理，不自动重连。
+- 新增 `session.refreshIce`，刷新 TURN 凭证并更新现有 PeerConnection 的
+  `RTCConfiguration`。
+- 新增 `sfu.restartIce`；send 侧在服务端应答后生成 `iceRestart=true` 的
+  offer 并重新 `sfu.publish`，recv 侧由服务端重新下发 `sfu.offer`。
+- C ABI 增加 `session.reconnecting/resumed/iceRefreshed` UI 事件；连接中
+  控件按现有 `CanUseRoomControls` 状态禁用。
+- 联调入口：`--auto-reconnect-ms`、`--auto-refresh-ice-ms`、
+  `--auto-restart-ice-pc send|recv`。
+
+验证：
+
+- Release/Debug CTest 均为 11/11。
+- 单端强制断线后发出 `session.reconnecting`，1 秒后 resume 成功。
+- resume 后房间 ID、主持人角色和成员列表保持正确。
+- 双端联调中主持人 resume，成员端没有收到 `peerLeft`。
+- TURN 凭证刷新成功并返回新 username/credential TTL。
+- send 侧 ICE restart 后出现第二次 `media.publishing` 和
+  `media.published`。
+
+M5 证据：
+
+```text
+build/windows-x64/m5-resume-20261031-103448/after-resume.png
+build/windows-x64/m5-resume2-20261031-103540/after-resume.png
+build/windows-x64/m5-resume-dual-20261031-103920/host.png
+build/windows-x64/m5-resume-dual-20261031-103920/member.png
+build/windows-x64/m5-ice-20261031-103642/after-ice.png
+build/windows-x64/m5-ice2-20261031-103831/after-restart.png
+```
+
+待用户验收：
+
+- 真实断网 10 秒、恢复网络后的完整音视频恢复。
+- TURN relay 路径强制验证。
+- 断网超过 60 秒后的预入会错误提示。

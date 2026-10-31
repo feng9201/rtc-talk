@@ -48,6 +48,9 @@ class CAbiEngineClient final : public application::EngineClient {
   void SelectPlayoutDevice(const std::string& device_id) override;
   void SelectSystemAudioDevice(const std::string& device_id) override;
   void SelectScreenSource(const std::string& source_id, bool window) override;
+  void ForceReconnect() override;
+  void RefreshIce() override;
+  void RestartIce(const std::string& pc) override;
   void StartCameraPreview(int device_index) override;
   void StopCameraPreview() override;
 
@@ -61,7 +64,7 @@ class CAbiEngineClient final : public application::EngineClient {
   void HandleEvent(const QString& method, const QJsonObject& event);
   void SubmitConnectAndJoin(const domain::PrejoinOptions& options,
                             const QString& token);
-  void ApplyJoinData(const QJsonObject& data);
+  void ApplyJoinData(const QJsonObject& data, bool preserve_media = false);
   void ApplyRoomNotification(const QString& method, const QJsonObject& data);
   void DrainLatestLocalFrames();
   void DrainLatestRemoteFrames();

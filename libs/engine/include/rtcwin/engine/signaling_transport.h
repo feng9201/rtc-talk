@@ -36,6 +36,7 @@ class SignalingTransport final {
                RequestCallback callback);
   void Notify(const std::string& method, const signaling::Json& data);
   void Send(const signaling::Json& message);
+  void Abort(int code, const std::string& message);
   void Dispose();
   void Stop(BeforeStop before_stop = {});
 

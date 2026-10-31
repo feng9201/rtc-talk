@@ -41,6 +41,13 @@ int main() {
   Expect(state.MarkJoined(first, SessionMediaMode::P2p, false),
          "joined transition failed");
   Expect(state.SetMediaEnabled(first, true), "media enable failed");
+  Expect(state.MarkReconnecting(first), "reconnecting transition failed");
+  Expect(!state.media_ready(), "media stayed ready while reconnecting");
+  Expect(state.MarkSignalingReady(first), "resume signaling transition failed");
+  Expect(state.MarkResumed(first), "resume transition failed");
+  Expect(state.media_ready(), "media did not return after resume");
+  Expect(state.snapshot().phase == SessionPhase::Joined,
+         "resume did not restore joined phase");
 
   EngineSessionSnapshot snapshot = state.snapshot();
   Expect(snapshot.phase == SessionPhase::Joined, "phase is not joined");

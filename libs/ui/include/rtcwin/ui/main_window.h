@@ -41,6 +41,9 @@ class MainWindow final : public FramelessWindow {
   void SelectSystemAudioDevice(const QString& device_id);
   void SelectCamera(int device_index);
   void SelectScreenSource(const QString& source_id, bool window);
+  void ForceReconnect();
+  void RefreshIce();
+  void RestartIce(const QString& pc);
   void ShowRoomPreview();
   void ShowRoomPreviewTab(domain::PanelTab tab);
   void EnableCameraPreview();

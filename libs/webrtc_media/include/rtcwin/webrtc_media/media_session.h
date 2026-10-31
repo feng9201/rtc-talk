@@ -138,7 +138,8 @@ class MediaSession final {
                   RemoteVideoCallback remote_video, MediaError* error);
   void Shutdown();
 
-  bool CreateSfuPublishOffer(MediaSfuOffer* offer, MediaError* error);
+  bool CreateSfuPublishOffer(MediaSfuOffer* offer, MediaError* error,
+                             bool ice_restart = false);
   bool ApplySfuPublishAnswer(const std::string& sdp, MediaError* error);
   bool CreateSfuSubscribeAnswer(const std::string& remote_offer,
                                 const std::vector<RemoteTrackInfo>& consumers,
@@ -153,6 +154,8 @@ class MediaSession final {
   bool AddP2pCandidate(const std::string& candidate, const std::string& mid,
                        int mline_index, MediaError* error);
   void CloseP2p();
+  bool SetIceServers(const std::vector<IceServer>& ice_servers,
+                     MediaError* error);
 
   bool SetMuted(bool muted, MediaError* error);
   bool SetDeafened(bool deafened, MediaError* error);

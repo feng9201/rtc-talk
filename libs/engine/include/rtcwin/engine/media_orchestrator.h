@@ -61,6 +61,7 @@ class MediaOrchestrator final {
   void HandleSelectPlayoutDevice(const EngineCommand& command);
   void HandleSelectSystemAudioDevice(const EngineCommand& command);
   void HandleSelectScreenSource(const EngineCommand& command);
+  void RestartSfuSend(std::uint64_t generation);
   void HandleStats(const EngineCommand& command);
 
   void HandleMediaModeRequest(const std::string& request_id,

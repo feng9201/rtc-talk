@@ -85,6 +85,24 @@ set_target_properties(rtcwin_floor_host_controller_tests PROPERTIES
 add_test(NAME rtcwin_floor_host_controller_tests
   COMMAND rtcwin_floor_host_controller_tests)
 
+add_executable(rtcwin_reconnect_controller_tests
+  reconnect_controller_test.cpp
+  ../libs/engine/src/reconnect_controller.cpp
+)
+target_include_directories(rtcwin_reconnect_controller_tests PRIVATE
+  ../libs/engine/include
+)
+target_compile_options(rtcwin_reconnect_controller_tests PRIVATE
+  $<$<CXX_COMPILER_ID:MSVC>:/utf-8 /EHsc /GR /W3>
+)
+set_target_properties(rtcwin_reconnect_controller_tests PROPERTIES
+  CXX_STANDARD 17
+  CXX_STANDARD_REQUIRED ON
+  MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
+)
+add_test(NAME rtcwin_reconnect_controller_tests
+  COMMAND rtcwin_reconnect_controller_tests)
+
 add_executable(rtcwin_video_surface_pool_tests video_surface_pool_test.cpp)
 target_link_libraries(rtcwin_video_surface_pool_tests PRIVATE
   rtcwin_ui

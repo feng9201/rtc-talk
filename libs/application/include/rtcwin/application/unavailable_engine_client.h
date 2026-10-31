@@ -36,6 +36,9 @@ class UnavailableEngineClient final : public EngineClient {
   void SelectPlayoutDevice(const std::string& device_id) override;
   void SelectSystemAudioDevice(const std::string& device_id) override;
   void SelectScreenSource(const std::string& source_id, bool window) override;
+  void ForceReconnect() override;
+  void RefreshIce() override;
+  void RestartIce(const std::string& pc) override;
   void StartCameraPreview(int device_index) override;
   void StopCameraPreview() override;
 };

@@ -177,6 +177,18 @@ int main(int argc, char** argv) {
       QStringLiteral("auto-select-screen-source-window"),
       QStringLiteral("联调：共享源类型为窗口")));
   parser.addOption(QCommandLineOption(
+      QStringLiteral("auto-reconnect-ms"),
+      QStringLiteral("联调：入房后模拟网络切换并触发 resume"),
+      QStringLiteral("ms")));
+  parser.addOption(QCommandLineOption(
+      QStringLiteral("auto-refresh-ice-ms"),
+      QStringLiteral("联调：入房后刷新 TURN/ICE 凭证"),
+      QStringLiteral("ms")));
+  parser.addOption(QCommandLineOption(
+      QStringLiteral("auto-restart-ice-pc"),
+      QStringLiteral("联调：刷新凭证后重启的 PC：send|recv"),
+      QStringLiteral("pc")));
+  parser.addOption(QCommandLineOption(
       QStringLiteral("auto-leave-ms"), QStringLiteral("入房后自动离房间隔"),
       QStringLiteral("ms")));
   parser.process(app);
@@ -433,6 +445,30 @@ int main(int argc, char** argv) {
                                                          screen_window);
                              }
                            });
+      }
+    }
+    if (parser.isSet(QStringLiteral("auto-reconnect-ms"))) {
+      bool reconnect_ok = false;
+      const int reconnect_ms =
+          parser.value(QStringLiteral("auto-reconnect-ms"))
+              .toInt(&reconnect_ok);
+      if (reconnect_ok && reconnect_ms >= 0) {
+        QTimer::singleShot(reconnect_ms, &window,
+                           &rtcwin::ui::MainWindow::ForceReconnect);
+      }
+    }
+    if (parser.isSet(QStringLiteral("auto-refresh-ice-ms"))) {
+      bool refresh_ok = false;
+      const int refresh_ms =
+          parser.value(QStringLiteral("auto-refresh-ice-ms"))
+              .toInt(&refresh_ok);
+      if (refresh_ok && refresh_ms >= 0) {
+        const QString pc =
+            parser.value(QStringLiteral("auto-restart-ice-pc"));
+        QTimer::singleShot(refresh_ms, &window, [&window, pc] {
+          window.RefreshIce();
+          if (!pc.isEmpty()) window.RestartIce(pc);
+        });
       }
     }
     if (parser.isSet(QStringLiteral("auto-leave-ms"))) {

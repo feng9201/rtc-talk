@@ -303,14 +303,35 @@ void CAbiEngineClient::ConnectAndJoin(
           });
 }
 
-void CAbiEngineClient::ApplyJoinData(const QJsonObject& data) {
+void CAbiEngineClient::ApplyJoinData(const QJsonObject& data,
+                                     bool preserve_media) {
   snapshot_.connection = domain::ConnectionPhase::Ready;
   snapshot_.join = domain::JoinPhase::Joined;
-  snapshot_.media_enabled =
-      data.value(QStringLiteral("media_enabled")).toBool(false);
-  snapshot_.media_mode =
-      data.value(QStringLiteral("media_mode")).toString().toStdString();
-  const QJsonObject room = data.value(QStringLiteral("room")).toObject();
+  if (!preserve_media) {
+    snapshot_.media_enabled =
+        data.value(QStringLiteral("media_enabled")).toBool(false);
+  }
+  if (!preserve_media) {
+    snapshot_.media_mode =
+        data.value(QStringLiteral("media_mode")).toString().toStdString();
+  }
+  QJsonObject room = data.value(QStringLiteral("room")).toObject();
+  QJsonArray peers = data.value(QStringLiteral("peers")).toArray();
+  QJsonObject floor = data.value(QStringLiteral("floor")).toObject();
+  // session.hello(resumed=true) returns the room snapshot as:
+  // { room: { room: {room_id,role,policy}, peers, floor, media_mode } }.
+  // session.connectAndJoin returns the same fields one level higher.
+  if (room.contains(QStringLiteral("room")) &&
+      room.value(QStringLiteral("room")).isObject()) {
+    const QJsonObject snapshot = room;
+    room = snapshot.value(QStringLiteral("room")).toObject();
+    if (snapshot.contains(QStringLiteral("peers"))) {
+      peers = snapshot.value(QStringLiteral("peers")).toArray();
+    }
+    if (snapshot.contains(QStringLiteral("floor"))) {
+      floor = snapshot.value(QStringLiteral("floor")).toObject();
+    }
+  }
   if (!room.value(QStringLiteral("room_id")).toString().isEmpty()) {
     snapshot_.room_id =
         room.value(QStringLiteral("room_id")).toString().toStdString();
@@ -323,7 +344,6 @@ void CAbiEngineClient::ApplyJoinData(const QJsonObject& data) {
   if (snapshot_.talk_mode != domain::TalkMode::Free) {
     snapshot_.mic_muted = true;
   }
-  const QJsonObject floor = data.value(QStringLiteral("floor")).toObject();
   snapshot_.floor.holder_uid =
       floor.value(QStringLiteral("holder")).toString().toStdString();
   snapshot_.floor.queue.clear();
@@ -353,8 +373,7 @@ void CAbiEngineClient::ApplyJoinData(const QJsonObject& data) {
       floor.value(QStringLiteral("self")).toBool(
           snapshot_.floor.holder_uid == snapshot_.self_uid);
   snapshot_.peers.clear();
-  for (const QJsonValue& value :
-       data.value(QStringLiteral("peers")).toArray()) {
+  for (const QJsonValue& value : peers) {
     const domain::PeerState peer = ParsePeer(value.toObject());
     if (!peer.uid.empty() && peer.uid != snapshot_.self_uid) {
       UpsertPeer(&snapshot_.peers, peer);
@@ -562,6 +581,16 @@ void CAbiEngineClient::ApplyRoomNotification(const QString& method,
     emit Left();
     return;
   } else if (method == QStringLiteral("session.closed")) {
+    if (data.value(QStringLiteral("reason")).toString() ==
+        QStringLiteral("resume_expired")) {
+      domain::AppError error;
+      error.domain = domain::ErrorDomain::Session;
+      error.code = 408;
+      error.operation = "session.resume";
+      error.message = "会话恢复超时，请重新入房";
+      error.retryable = true;
+      emit ErrorOccurred(error);
+    }
     if (snapshot_.join == domain::JoinPhase::Joined) {
       snapshot_ = {};
       emit SnapshotChanged(snapshot_);
@@ -746,6 +775,17 @@ void CAbiEngineClient::SelectScreenSource(const std::string& source_id,
                       QString::fromStdString(source_id)},
                      {QStringLiteral("window"), window}});
 }
+void CAbiEngineClient::ForceReconnect() {
+  Submit(QStringLiteral("session.forceReconnect"));
+}
+void CAbiEngineClient::RefreshIce() {
+  Submit(QStringLiteral("session.refreshIce"));
+}
+void CAbiEngineClient::RestartIce(const std::string& pc) {
+  Submit(QStringLiteral("sfu.restartIce"),
+         QJsonObject{{QStringLiteral("pc"),
+                      QString::fromStdString(pc)}});
+}
 void CAbiEngineClient::StartCameraPreview(int device_index) {
   Submit(QStringLiteral("camera.preview.start"),
          QJsonObject{{QStringLiteral("device_index"), device_index}});
@@ -921,6 +961,22 @@ void CAbiEngineClient::HandleEvent(const QString& method,
       emit ErrorOccurred(error);
     } else if (method == QStringLiteral("session.ready")) {
       emit Notice(QStringLiteral("信令连接已就绪"), QStringLiteral("ok"));
+    } else if (method == QStringLiteral("session.reconnecting")) {
+      const QJsonObject data =
+          event.value(QStringLiteral("data")).toObject();
+      snapshot_.connection = domain::ConnectionPhase::Reconnecting;
+      emit Notice(
+          QStringLiteral("信令断开，%1 秒后重连（第 %2 次）")
+              .arg(data.value(QStringLiteral("delay_seconds")).toInt())
+              .arg(data.value(QStringLiteral("attempt")).toInt()),
+          QStringLiteral("warn"));
+      emit SnapshotChanged(snapshot_);
+    } else if (method == QStringLiteral("session.resumed") ||
+               method == QStringLiteral("session.rejoined")) {
+      ApplyJoinData(event.value(QStringLiteral("data")).toObject(), true);
+      emit Notice(QStringLiteral("会话已恢复"), QStringLiteral("ok"));
+    } else if (method == QStringLiteral("session.iceRefreshed")) {
+      emit Notice(QStringLiteral("TURN 凭证已刷新"), QStringLiteral("ok"));
     } else if (method == QStringLiteral("diagnostics.log_path")) {
       const QString path = event.value(QStringLiteral("data"))
                                .toObject()

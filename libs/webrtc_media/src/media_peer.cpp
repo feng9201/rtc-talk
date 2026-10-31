@@ -86,6 +86,18 @@ bool MediaPeer::Create(
   return ok;
 }
 
+bool MediaPeer::SetConfiguration(
+    const webrtc::PeerConnectionInterface::RTCConfiguration& config,
+    MediaError* error) {
+  const bool ok = RunOnSignaling([this, &config] {
+    if (!pc_) return false;
+    const webrtc::RTCError result = pc_->SetConfiguration(config);
+    return result.ok();
+  });
+  if (!ok) SetError(error, 1716, "更新 PeerConnection ICE 配置失败");
+  return ok;
+}
+
 void MediaPeer::Close() {
   if (signaling_ == nullptr) return;
   RunOnSignaling([this] {
@@ -175,8 +187,10 @@ bool MediaPeer::AddVideoTrack(
   return ok;
 }
 
-bool MediaPeer::CreateAndSetLocal(bool offer, MediaError* error) {
-  return CreateAndSetLocalDescription(signaling_, pc_, offer, error);
+bool MediaPeer::CreateAndSetLocal(bool offer, MediaError* error,
+                                  bool ice_restart) {
+  return CreateAndSetLocalDescription(signaling_, pc_, offer, error,
+                                     ice_restart);
 }
 
 bool MediaPeer::SetRemote(webrtc::SdpType type, const std::string& sdp,

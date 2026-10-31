@@ -46,6 +46,9 @@ class SessionController final {
   void KickMember(const EngineCommand& command);
   void SetPolicy(const EngineCommand& command);
   void SubscribeLevels(const EngineCommand& command);
+  void RefreshIce(const EngineCommand& command);
+  void RestartIce(const EngineCommand& command);
+  void ForceReconnect(const EngineCommand& command);
   void CancelHeartbeat();
 
  private:

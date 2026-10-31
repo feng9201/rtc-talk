@@ -14,7 +14,7 @@ namespace rtcwin::webrtc_media {
 bool CreateAndSetLocalDescription(
     webrtc::Thread* signaling,
     webrtc::scoped_refptr<webrtc::PeerConnectionInterface> pc, bool offer,
-    MediaError* error);
+    MediaError* error, bool ice_restart = false);
 
 bool SetRemoteDescription(
     webrtc::Thread* signaling,

@@ -14,6 +14,7 @@ enum class SessionPhase {
   SignalingReady,
   JoiningRoom,
   Joined,
+  Reconnecting,
   Leaving,
   Failed,
 };
@@ -42,6 +43,8 @@ class SessionStateMachine final {
   bool MarkJoiningRoom(std::uint64_t generation);
   bool MarkJoined(std::uint64_t generation, SessionMediaMode mode,
                   bool media_enabled);
+  bool MarkReconnecting(std::uint64_t generation);
+  bool MarkResumed(std::uint64_t generation);
   bool SetMediaEnabled(std::uint64_t generation, bool enabled);
   bool SetMediaMode(std::uint64_t generation, SessionMediaMode mode);
   bool MarkLeaving(std::uint64_t generation);

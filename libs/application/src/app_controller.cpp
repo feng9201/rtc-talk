@@ -341,6 +341,18 @@ void AppController::SelectScreenSource(const std::string& source_id,
   engine_->SelectScreenSource(source_id, window);
   emit SnapshotChanged(snapshot_);
 }
+void AppController::ForceReconnect() {
+  if (!domain::CanUseRoomControls(snapshot_)) return;
+  engine_->ForceReconnect();
+}
+void AppController::RefreshIce() {
+  if (!domain::CanUseRoomControls(snapshot_)) return;
+  engine_->RefreshIce();
+}
+void AppController::RestartIce(const std::string& pc) {
+  if (!domain::CanUseRoomControls(snapshot_)) return;
+  engine_->RestartIce(pc);
+}
 void AppController::StartCameraPreview(int device_index) {
   engine_->StartCameraPreview(device_index);
 }

@@ -41,6 +41,9 @@ class EngineClient : public QObject {
   virtual void SelectSystemAudioDevice(const std::string& device_id) = 0;
   virtual void SelectScreenSource(const std::string& source_id,
                                   bool window) = 0;
+  virtual void ForceReconnect() = 0;
+  virtual void RefreshIce() = 0;
+  virtual void RestartIce(const std::string& pc) = 0;
   virtual void StartCameraPreview(int device_index) = 0;
   virtual void StopCameraPreview() = 0;
 

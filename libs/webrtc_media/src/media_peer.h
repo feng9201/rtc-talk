@@ -37,6 +37,9 @@ class MediaPeer final : public webrtc::PeerConnectionObserver {
   bool Create(webrtc::PeerConnectionFactoryInterface* factory,
               const webrtc::PeerConnectionInterface::RTCConfiguration& config,
               MediaError* error);
+  bool SetConfiguration(
+      const webrtc::PeerConnectionInterface::RTCConfiguration& config,
+      MediaError* error);
   void Close();
 
   bool AddAudioTrack(webrtc::scoped_refptr<webrtc::AudioTrackInterface> track,
@@ -46,7 +49,8 @@ class MediaPeer final : public webrtc::PeerConnectionObserver {
                      webrtc::RtpTransceiverDirection direction,
                      const std::string& stream_id, MediaError* error);
 
-  bool CreateAndSetLocal(bool offer, MediaError* error);
+  bool CreateAndSetLocal(bool offer, MediaError* error,
+                         bool ice_restart = false);
   bool SetRemote(webrtc::SdpType type, const std::string& sdp,
                  MediaError* error);
   bool AddIceCandidate(const std::string& candidate, const std::string& mid,

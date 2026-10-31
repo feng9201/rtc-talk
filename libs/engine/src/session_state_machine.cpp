@@ -37,7 +37,8 @@ bool SessionStateMachine::IsGeneration(std::uint64_t generation) const {
 bool SessionStateMachine::MarkSignalingReady(std::uint64_t generation) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (generation != state_.generation ||
-      state_.phase != SessionPhase::Connecting) {
+      (state_.phase != SessionPhase::Connecting &&
+       state_.phase != SessionPhase::Reconnecting)) {
     return false;
   }
   state_.phase = SessionPhase::SignalingReady;
@@ -66,6 +67,30 @@ bool SessionStateMachine::MarkJoined(std::uint64_t generation,
   state_.phase = SessionPhase::Joined;
   state_.media_mode = mode;
   state_.media_enabled = media_enabled;
+  return true;
+}
+
+bool SessionStateMachine::MarkReconnecting(std::uint64_t generation) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (generation != state_.generation) return false;
+  if (state_.phase != SessionPhase::Connecting &&
+      state_.phase != SessionPhase::SignalingReady &&
+      state_.phase != SessionPhase::JoiningRoom &&
+      state_.phase != SessionPhase::Joined) {
+    return false;
+  }
+  state_.phase = SessionPhase::Reconnecting;
+  return true;
+}
+
+bool SessionStateMachine::MarkResumed(std::uint64_t generation) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (generation != state_.generation ||
+      (state_.phase != SessionPhase::Reconnecting &&
+       state_.phase != SessionPhase::SignalingReady)) {
+    return false;
+  }
+  state_.phase = SessionPhase::Joined;
   return true;
 }
 

@@ -99,7 +99,7 @@ bool WaitForSetDescription(const std::shared_ptr<SetDescriptionState>& state) {
 bool CreateAndSetLocalDescription(
     webrtc::Thread* signaling,
     webrtc::scoped_refptr<webrtc::PeerConnectionInterface> pc, bool offer,
-    MediaError* error) {
+    MediaError* error, bool ice_restart) {
   if (!signaling || !pc) {
     SetError(error, 1705, "PeerConnection 尚未创建");
     return false;
@@ -107,15 +107,17 @@ bool CreateAndSetLocalDescription(
   auto create_state = std::make_shared<CreateDescriptionState>();
   auto observer =
       webrtc::make_ref_counted<CreateDescriptionObserver>(create_state);
-  const bool requested = signaling->BlockingCall([pc, offer, &observer] {
+  const bool requested = signaling->BlockingCall(
+      [pc, offer, ice_restart, &observer] {
     webrtc::PeerConnectionInterface::RTCOfferAnswerOptions options;
+    options.ice_restart = ice_restart;
     if (offer) {
       pc->CreateOffer(observer.get(), options);
     } else {
       pc->CreateAnswer(observer.get(), options);
     }
     return true;
-  });
+      });
   if (!requested) {
     SetError(error, 1705, "PeerConnection 尚未创建");
     return false;

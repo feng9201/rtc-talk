@@ -48,6 +48,9 @@ class AppController final : public QObject {
   void SelectPlayoutDevice(const std::string& device_id);
   void SelectSystemAudioDevice(const std::string& device_id);
   void SelectScreenSource(const std::string& source_id, bool window);
+  void ForceReconnect();
+  void RefreshIce();
+  void RestartIce(const std::string& pc);
   void StartCameraPreview(int device_index);
   void StopCameraPreview();
 

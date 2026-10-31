@@ -59,8 +59,19 @@ struct MediaOrchestrator::Impl {
   }
 
   void SetIceServers(std::vector<webrtc_media::IceServer> ice_servers) {
-    std::lock_guard<std::mutex> lock(config_mutex);
-    config.ice_servers = std::move(ice_servers);
+    {
+      std::lock_guard<std::mutex> lock(config_mutex);
+      config.ice_servers = ice_servers;
+    }
+    if (ice_servers.empty()) return;
+    context.post_to_worker([this, ice_servers = std::move(ice_servers)] {
+      if (!media_session) return;
+      webrtc_media::MediaError error;
+      if (!media_session->SetIceServers(ice_servers, &error)) {
+        LOG_WARN("update ICE servers failed code={} message={}", error.code,
+                 error.message);
+      }
+    });
   }
 
   bool audio_requested() const {
@@ -693,6 +704,18 @@ struct MediaOrchestrator::Impl {
                                 data);
   }
 
+  void RestartSfuSend(std::uint64_t generation) {
+    context.post_to_worker([this, generation] {
+      if (!context.session.IsCurrent(generation) ||
+          context.session.media_mode() != SessionMediaMode::Sfu ||
+          !media_session) {
+        return;
+      }
+      LOG_INFO("restart SFU send ICE generation={}", generation);
+      PublishSfu(generation, true);
+    });
+  }
+
   void HandleStats(const EngineCommand& command) {
     if (!media_session) {
       context.events.EmitResponse(command.id, command.method, false, 409,
@@ -1211,7 +1234,7 @@ struct MediaOrchestrator::Impl {
     context.options.on_remote_frame(context.options.userdata, &view);
   }
 
-  void PublishSfu(std::uint64_t generation) {
+  void PublishSfu(std::uint64_t generation, bool ice_restart = false) {
     if (!context.session.IsCurrent(generation)) return;
     if (!media_session) {
       EmitMediaError(1730, "音频媒体未就绪", "SFU 发布被跳过");
@@ -1219,7 +1242,7 @@ struct MediaOrchestrator::Impl {
     }
     webrtc_media::MediaSfuOffer offer;
     webrtc_media::MediaError error;
-    if (!media_session->CreateSfuPublishOffer(&offer, &error)) {
+    if (!media_session->CreateSfuPublishOffer(&offer, &error, ice_restart)) {
       LOG_ERR("sfu offer failed code={} error={}", error.code,
               error.message);
       if (!pending_sfu_request_id.empty()) {
@@ -1250,9 +1273,9 @@ struct MediaOrchestrator::Impl {
     }
     Json request = {{"sdp", offer.sdp}, {"tracks", tracks}};
     LOG_INFO("sfu publish offer source={} audio_mid={} camera_mid={} "
-             "screen_mid={} sdp_bytes={}",
+             "screen_mid={} sdp_bytes={} ice_restart={}",
              offer.source, offer.audio_mid, offer.camera_mid,
-             offer.screen_mid, offer.sdp.size());
+             offer.screen_mid, offer.sdp.size(), ice_restart);
     context.signaling.Request(
         "sfu.publish", request, [this, generation](Json result) {
           if (!context.session.IsCurrent(generation)) return;
@@ -1670,6 +1693,10 @@ void MediaOrchestrator::HandleSelectSystemAudioDevice(
 void MediaOrchestrator::HandleSelectScreenSource(
     const EngineCommand& command) {
   impl_->HandleSelectScreenSource(command);
+}
+
+void MediaOrchestrator::RestartSfuSend(std::uint64_t generation) {
+  impl_->RestartSfuSend(generation);
 }
 
 void MediaOrchestrator::HandleStats(const EngineCommand& command) {

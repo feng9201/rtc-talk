@@ -224,6 +224,18 @@ void EngineCore::RegisterCommandHandlers() {
                            [this](const EngineCommand& command) {
                              session_controller_.SubscribeLevels(command);
                            });
+  command_router_.Register("session.refreshIce",
+                           [this](const EngineCommand& command) {
+                             session_controller_.RefreshIce(command);
+                           });
+  command_router_.Register("sfu.restartIce",
+                           [this](const EngineCommand& command) {
+                             session_controller_.RestartIce(command);
+                           });
+  command_router_.Register("session.forceReconnect",
+                           [this](const EngineCommand& command) {
+                             session_controller_.ForceReconnect(command);
+                           });
   command_router_.Register("session.disconnect",
                            [this](const EngineCommand& command) {
                              session_controller_.Disconnect(command);

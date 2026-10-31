@@ -289,3 +289,31 @@ Validated M4 evidence:
   device refresh.
 - A disabled screen producer is explicitly paused after initial SFU publish, so
   receivers no longer show a false `共享中` state.
+
+## S7 M5 resume and ICE recovery smoke
+
+Automation flags:
+
+```text
+--auto-reconnect-ms 4000
+--auto-refresh-ice-ms 3000
+--auto-restart-ice-pc send
+```
+
+`auto-reconnect-ms` intentionally aborts the active signaling transport. The
+Engine then applies the reconnect backoff, sends `session.hello` with
+`resume.session_id`, and restores the room snapshot without resetting media on a
+successful resume.
+
+`auto-refresh-ice-ms` refreshes TURN credentials. With
+`--auto-restart-ice-pc send`, the client requests `sfu.restartIce` and then
+re-generates/re-publishes the SFU send offer with ICE restart enabled.
+
+Validated evidence:
+
+- Single-client resume completed after one-second backoff.
+- Two-client resume preserved the member list and produced no peerLeft.
+- Room ID and host role were preserved after resume.
+- ICE refresh returned new TURN credentials.
+- SFU send restart produced a second `media.publishing` / `media.published`
+  sequence.

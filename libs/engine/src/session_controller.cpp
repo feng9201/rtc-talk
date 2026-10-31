@@ -1,6 +1,7 @@
 #include "rtcwin/engine/session_controller.h"
 
 #include "engine_log.h"
+#include "rtcwin/engine/reconnect_controller.h"
 #include "rtcwin/signaling/protocol.h"
 
 #include <algorithm>
@@ -55,7 +56,8 @@ std::vector<webrtc_media::IceServer> ParseIceServers(const Json& value) {
 struct SessionController::Impl {
   explicit Impl(Context context)
       : context(std::move(context)),
-        heartbeat_timer(context.signaling.context()) {}
+        heartbeat_timer(context.signaling.context()),
+        reconnect_timer(context.signaling.context()) {}
 
   void ConnectAndJoin(const EngineCommand& command) {
     if (!command.data.is_object()) {
@@ -125,6 +127,9 @@ struct SessionController::Impl {
       room = room_id;
       display_name = display;
       talk = talk_mode;
+      session_id_.clear();
+      has_joined_ = false;
+      reconnect_controller_.Reset();
     }
     const std::uint64_t generation = context.session.BeginConnect(command.id);
     context.media.Configure(media_config, uid);
@@ -145,6 +150,9 @@ struct SessionController::Impl {
       });
     };
 
+    connection_attempt_ = [this, generation, url, token, uid, room_id, display,
+                           media_mode, talk_mode, audio_requested,
+                           fail_session] {
     signaling::SignalingClient::Handlers handlers;
     handlers.on_open = [this, generation, uid, room_id, display, media_mode,
                         talk_mode, audio_requested, fail_session] {
@@ -162,23 +170,57 @@ struct SessionController::Impl {
              {{"codecs",
                Json::array({{{"name", "h264"}, {"hw", false}}})}}},
             {"sfu_sdp", "unified-plan"}}}};
+      if (!session_id_.empty() &&
+          context.session.snapshot().phase == SessionPhase::Reconnecting) {
+        hello["resume"] = Json{{"session_id", session_id_}};
+      }
       context.signaling.Request(
           "session.hello", hello,
           [this, generation, uid, room_id, display, media_mode, talk_mode,
            audio_requested, fail_session](Json result) {
             if (!context.session.IsCurrent(generation)) return;
             if (!result.value("ok", false)) {
-              fail_session(ResponseCode(result), ResponseMessage(result));
+              if (context.session.snapshot().phase ==
+                  SessionPhase::Reconnecting) {
+                ScheduleReconnect(generation);
+              } else {
+                fail_session(ResponseCode(result), ResponseMessage(result));
+              }
               return;
             }
             const Json hello_data = result.value("data", Json::object());
+            session_id_ = hello_data.value("session_id", session_id_);
             LOG_INFO(
-                "session hello ok session={} ice_servers={} heartbeat={}",
+                "session hello ok session={} resumed={} ice_servers={} heartbeat={}",
                 hello_data.value("session_id", std::string()),
+                hello_data.value("resumed", false),
                 hello_data.value("ice_servers", Json::array()).size(),
                 hello_data.value("heartbeat_interval", 15));
             context.media.SetIceServers(ParseIceServers(
                 hello_data.value("ice_servers", Json::array())));
+            const bool resumed = hello_data.value("resumed", false);
+            if (resumed) {
+              reconnect_controller_.Reset();
+              if (!context.session.MarkSignalingReady(generation) ||
+                  !context.session.MarkResumed(generation)) {
+                return;
+              }
+              ScheduleHeartbeat(
+                  hello_data.value("heartbeat_interval", 15), generation);
+              Notify("session.resumed", hello_data);
+              context.signaling.Request(
+                  "room.subscribeLevels", Json{{"enabled", true}},
+                  [this, generation](Json level_result) {
+                    if (!context.session.IsCurrent(generation)) return;
+                    if (!level_result.value("ok", false)) {
+                      LOG_WARN("room.subscribeLevels failed code={} message={}",
+                               ResponseCode(level_result),
+                               ResponseMessage(level_result));
+                    }
+                  });
+              return;
+            }
+            reconnect_controller_.Reset();
             if (!context.session.MarkSignalingReady(generation)) return;
             ScheduleHeartbeat(
                 hello_data.value("heartbeat_interval", 15), generation);
@@ -222,6 +264,7 @@ struct SessionController::Impl {
                                                   false)) {
                     return;
                   }
+                  has_joined_ = true;
                   const std::uint64_t id =
                       context.session.TakeJoinCommand(generation);
                   context.post_to_worker(
@@ -266,21 +309,27 @@ struct SessionController::Impl {
     handlers.on_closed = [this, generation](
                              const signaling::SignalingClient::CloseInfo& info) {
       if (!context.session.IsCurrent(generation)) return;
-      const std::uint64_t id = context.session.TakeJoinCommand(generation);
-      context.session.MarkFailed(generation);
-      if (id != 0) {
-        EmitResponse(id, "session.connectAndJoin", false,
-                     info.status != 0 ? info.status : 480, "信令连接关闭");
+      if (context.session.snapshot().phase == SessionPhase::Leaving) return;
+      if (info.fatal) {
+        const std::uint64_t id = context.session.TakeJoinCommand(generation);
+        context.session.MarkFailed(generation);
+        heartbeat_timer.cancel();
+        reconnect_timer.cancel();
+        context.post_to_worker([this, generation] {
+          if (context.session.IsGeneration(generation)) context.media.Reset();
+        });
+        if (id != 0) {
+          EmitResponse(id, "session.connectAndJoin", false,
+                       info.status != 0 ? info.status : 480, "信令连接关闭");
+        }
+        Notify("session.closed",
+               Json{{"handshake_failed", info.handshake_failed},
+                    {"fatal", true},
+                    {"status", info.status},
+                    {"code", info.code}});
+        return;
       }
-      heartbeat_timer.cancel();
-      context.post_to_worker([this, generation] {
-        if (context.session.IsGeneration(generation)) context.media.Reset();
-      });
-      Notify("session.closed",
-             Json{{"handshake_failed", info.handshake_failed},
-                  {"fatal", info.fatal},
-                  {"status", info.status},
-                  {"code", info.code}});
+      ScheduleReconnect(generation);
     };
 
     handlers.on_error = [this, generation](int code, std::string message) {
@@ -291,9 +340,58 @@ struct SessionController::Impl {
 
     context.signaling.Connect(
         url, token, std::move(handlers),
-        [fail_session](int code, std::string message) {
-          fail_session(code, std::move(message));
+        [this, generation, fail_session](int code, std::string message) {
+          if (!context.session.IsCurrent(generation)) return;
+          if (code == 400) {
+            fail_session(code, std::move(message));
+          } else {
+            ScheduleReconnect(generation);
+          }
         });
+    };
+    connection_attempt_();
+  }
+
+  void ScheduleReconnect(std::uint64_t generation) {
+    if (!context.session.IsCurrent(generation)) return;
+    const auto now = ReconnectController::Clock::now();
+    if (!reconnect_controller_.active()) {
+      reconnect_controller_.Begin(now, 60);
+    }
+    const auto decision = reconnect_controller_.Next(now);
+    if (decision.expired || !decision.retry) {
+      const std::uint64_t id = context.session.TakeJoinCommand(generation);
+      context.session.MarkFailed(generation);
+      heartbeat_timer.cancel();
+      reconnect_timer.cancel();
+      context.post_to_worker([this, generation] {
+        if (context.session.IsGeneration(generation)) context.media.Reset();
+      });
+      Notify("session.closed",
+             Json{{"reason", "resume_expired"},
+                  {"fatal", true},
+                  {"message", "会话恢复超时，请重新入房"}});
+      if (id != 0) {
+        EmitResponse(id, "session.connectAndJoin", false, 408,
+                     "会话恢复超时");
+      }
+      return;
+    }
+    context.session.MarkReconnecting(generation);
+    heartbeat_timer.cancel();
+    Notify("session.reconnecting",
+           Json{{"attempt", decision.attempt},
+                {"delay_seconds", decision.delay_seconds},
+                {"room_id", room}});
+    reconnect_timer.expires_after(
+        std::chrono::seconds(decision.delay_seconds));
+    reconnect_timer.async_wait([this, generation](const asio::error_code& error) {
+      if (error || !context.session.IsCurrent(generation) ||
+          context.session.snapshot().phase != SessionPhase::Reconnecting) {
+        return;
+      }
+      if (connection_attempt_) connection_attempt_();
+    });
   }
 
   void Leave(const EngineCommand& command) {
@@ -303,11 +401,30 @@ struct SessionController::Impl {
       std::lock_guard<std::mutex> lock(mutex);
       current_room = room;
     }
+    if (session.phase == SessionPhase::Reconnecting) {
+      context.signaling.Post([this] {
+        reconnect_timer.cancel();
+        reconnect_controller_.Reset();
+      });
+      context.session.MarkDisconnected();
+      context.post_to_worker([this, command] {
+        context.media.Reset();
+        EmitResponse(command.id, "room.leave", true, 0, {},
+                     Json::object());
+        Notify("session.closed", Json{{"reason", "local_leave"}});
+      });
+      return;
+    }
     if (session.phase != SessionPhase::Joined || current_room.empty()) {
+      context.signaling.Post([this] {
+        reconnect_timer.cancel();
+        reconnect_controller_.Reset();
+      });
       EmitResponse(command.id, command.method, true, 0, {},
                    Json::object());
       return;
     }
+    context.signaling.Post([this] { reconnect_timer.cancel(); });
     const std::uint64_t generation = session.generation;
     context.signaling.Request(
         "room.leave", {{"room_id", current_room}},
@@ -338,6 +455,8 @@ struct SessionController::Impl {
     }
     context.signaling.Post([this] {
       heartbeat_timer.cancel();
+      reconnect_timer.cancel();
+      reconnect_controller_.Reset();
       context.signaling.Dispose();
     });
     context.post_to_worker([this, command] {
@@ -399,7 +518,82 @@ struct SessionController::Impl {
     RequestControl(command, "room.subscribeLevels", command.data);
   }
 
-  void CancelHeartbeat() { heartbeat_timer.cancel(); }
+  void RefreshIce(const EngineCommand& command) {
+    const auto session = context.session.snapshot();
+    if (session.phase != SessionPhase::Joined &&
+        session.phase != SessionPhase::SignalingReady) {
+      EmitResponse(command.id, command.method, false, 409,
+                   "会话尚未就绪");
+      return;
+    }
+    const std::uint64_t generation = session.generation;
+    context.signaling.Request(
+        "session.refreshIce", Json::object(),
+        [this, id = command.id, generation](Json result) {
+          if (!context.session.IsCurrent(generation)) return;
+          if (!result.value("ok", false)) {
+            EmitResponse(id, "session.refreshIce", false,
+                         ResponseCode(result), ResponseMessage(result));
+            return;
+          }
+          const Json data = result.value("data", Json::object());
+          context.media.SetIceServers(ParseIceServers(
+              data.value("ice_servers", Json::array())));
+          Notify("session.iceRefreshed", data);
+          EmitResponse(id, "session.refreshIce", true, 0, {}, data);
+        });
+  }
+
+  void RestartIce(const EngineCommand& command) {
+    const auto session = context.session.snapshot();
+    if (session.phase != SessionPhase::Joined) {
+      EmitResponse(command.id, command.method, false, 409,
+                   "尚未加入房间");
+      return;
+    }
+    const std::string pc =
+        command.data.value("pc", std::string("send"));
+    const std::uint64_t generation = session.generation;
+    context.signaling.Request(
+        "sfu.restartIce", command.data,
+        [this, id = command.id, generation, pc](Json result) {
+          if (!context.session.IsCurrent(generation)) return;
+          if (!result.value("ok", false)) {
+            EmitResponse(id, "sfu.restartIce", false,
+                         ResponseCode(result), ResponseMessage(result));
+            return;
+          }
+          if (pc == "send") {
+            context.media.RestartSfuSend(generation);
+          }
+          EmitResponse(id, "sfu.restartIce", true, 0, {},
+                       result.value("data", Json::object()));
+        });
+  }
+
+  void ForceReconnect(const EngineCommand& command) {
+    const auto session = context.session.snapshot();
+    if (session.phase != SessionPhase::Joined &&
+        session.phase != SessionPhase::SignalingReady) {
+      EmitResponse(command.id, command.method, false, 409,
+                   "会话尚未就绪");
+      return;
+    }
+    const std::uint64_t generation = session.generation;
+    context.signaling.Post([this, generation] {
+      if (!context.session.IsCurrent(generation)) return;
+      context.signaling.Abort(1006, "network change");
+      ScheduleReconnect(generation);
+    });
+    EmitResponse(command.id, command.method, true, 0, {},
+                 Json{{"scheduled", true}});
+  }
+
+  void CancelHeartbeat() {
+    heartbeat_timer.cancel();
+    reconnect_timer.cancel();
+    reconnect_controller_.Reset();
+  }
 
  private:
   void FinalizeJoin(std::uint64_t command_id, const Json& data,
@@ -492,8 +686,13 @@ struct SessionController::Impl {
   std::string room;
   std::string display_name;
   std::string talk;
+  std::string session_id_;
+  bool has_joined_ = false;
+  ReconnectController reconnect_controller_;
   int heartbeat_seconds = 15;
   asio::steady_timer heartbeat_timer;
+  asio::steady_timer reconnect_timer;
+  std::function<void()> connection_attempt_;
 };
 
 SessionController::SessionController(Context context)
@@ -539,6 +738,18 @@ void SessionController::SetPolicy(const EngineCommand& command) {
 
 void SessionController::SubscribeLevels(const EngineCommand& command) {
   impl_->SubscribeLevels(command);
+}
+
+void SessionController::RefreshIce(const EngineCommand& command) {
+  impl_->RefreshIce(command);
+}
+
+void SessionController::RestartIce(const EngineCommand& command) {
+  impl_->RestartIce(command);
+}
+
+void SessionController::ForceReconnect(const EngineCommand& command) {
+  impl_->ForceReconnect(command);
 }
 
 void SessionController::CancelHeartbeat() { impl_->CancelHeartbeat(); }

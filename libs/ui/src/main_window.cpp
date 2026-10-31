@@ -327,6 +327,12 @@ void MainWindow::SelectScreenSource(const QString& source_id, bool window) {
   controller_->SelectScreenSource(source_id.toStdString(), window);
 }
 
+void MainWindow::ForceReconnect() { controller_->ForceReconnect(); }
+void MainWindow::RefreshIce() { controller_->RefreshIce(); }
+void MainWindow::RestartIce(const QString& pc) {
+  controller_->RestartIce(pc.toStdString());
+}
+
 void MainWindow::EnableCameraPreview() {
   auto_preview_ = true;
   if (prejoin_page_->SelectedCameraIndex() >= 0) {

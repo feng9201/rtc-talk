@@ -66,6 +66,12 @@ void SignalingTransport::Send(const Json& message) {
   });
 }
 
+void SignalingTransport::Abort(int code, const std::string& message) {
+  Post([this, code, message] {
+    if (client_) client_->Abort(code, message);
+  });
+}
+
 void SignalingTransport::Dispose() {
   Post([this] {
     if (client_) client_->Dispose();
