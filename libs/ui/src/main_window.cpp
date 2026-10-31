@@ -67,6 +67,7 @@ MainWindow::MainWindow(QWidget* parent) : FramelessWindow(parent) {
   prejoin_page_->SetOptions(controller_->settings().Load());
   controller_->RefreshCameras();
   controller_->RefreshAudioDevices();
+  controller_->RefreshDesktopSources();
   ShowPrejoinPage();
 }
 
@@ -160,6 +161,30 @@ void MainWindow::ConnectSignals() {
           });
   connect(room_page_, &RoomPage::MuteAllRequested, this,
           [this] { controller_->MuteAll(); });
+  connect(room_page_, &RoomPage::RefreshDeviceInventoryRequested, this,
+          [this] {
+            controller_->RefreshCameras();
+            controller_->RefreshAudioDevices();
+            controller_->RefreshDesktopSources();
+          });
+  connect(room_page_, &RoomPage::RecordingDeviceSelected, this,
+          [this](const QString& id) {
+            controller_->SelectRecordingDevice(id.toStdString());
+          });
+  connect(room_page_, &RoomPage::PlayoutDeviceSelected, this,
+          [this](const QString& id) {
+            controller_->SelectPlayoutDevice(id.toStdString());
+          });
+  connect(room_page_, &RoomPage::SystemAudioDeviceSelected, this,
+          [this](const QString& id) {
+            controller_->SelectSystemAudioDevice(id.toStdString());
+          });
+  connect(room_page_, &RoomPage::CameraSelected, controller_.get(),
+          &application::AppController::SelectCamera);
+  connect(room_page_, &RoomPage::DesktopSourceSelected, this,
+          [this](const QString& id, bool window) {
+            controller_->SelectScreenSource(id.toStdString(), window);
+          });
   connect(room_page_, &RoomPage::MemberSelected, this,
           [this](const QString& uid) {
             controller_->SelectPeer(uid.toStdString());
@@ -172,7 +197,17 @@ void MainWindow::ConnectSignals() {
           &PrejoinPage::SetCameraDevices);
   connect(controller_.get(),
           &application::AppController::AudioDevicesChanged, prejoin_page_,
-          &PrejoinPage::SetAudioDevices);  connect(controller_.get(),
+          &PrejoinPage::SetAudioDevices);
+  connect(controller_.get(),
+          &application::AppController::AudioDevicesChanged, room_page_,
+          &RoomPage::SetAudioDevices);
+  connect(controller_.get(),
+          &application::AppController::CameraDevicesChanged, room_page_,
+          &RoomPage::SetCameraDevices);
+  connect(controller_.get(),
+          &application::AppController::DesktopSourcesChanged, room_page_,
+          &RoomPage::SetDesktopSources);
+  connect(controller_.get(),
           &application::AppController::CameraPreviewChanged, prejoin_page_,
           &PrejoinPage::SetPreviewActive);
   connect(controller_.get(),
@@ -272,6 +307,26 @@ void MainWindow::UpdateRoomPolicy(
   controller_->UpdateRoomPolicy(patch);
 }
 
+void MainWindow::SelectRecordingDevice(const QString& device_id) {
+  controller_->SelectRecordingDevice(device_id.toStdString());
+}
+
+void MainWindow::SelectPlayoutDevice(const QString& device_id) {
+  controller_->SelectPlayoutDevice(device_id.toStdString());
+}
+
+void MainWindow::SelectSystemAudioDevice(const QString& device_id) {
+  controller_->SelectSystemAudioDevice(device_id.toStdString());
+}
+
+void MainWindow::SelectCamera(int device_index) {
+  controller_->SelectCamera(device_index);
+}
+
+void MainWindow::SelectScreenSource(const QString& source_id, bool window) {
+  controller_->SelectScreenSource(source_id.toStdString(), window);
+}
+
 void MainWindow::EnableCameraPreview() {
   auto_preview_ = true;
   if (prejoin_page_->SelectedCameraIndex() >= 0) {
@@ -299,6 +354,11 @@ void MainWindow::ShowRoomPreview() {
   room_page_->SetState(PreviewState());
   stack_->setCurrentWidget(room_page_);
   window_controls_->raise();
+}
+
+void MainWindow::ShowRoomPreviewTab(domain::PanelTab tab) {
+  ShowRoomPreview();
+  room_page_->SelectSideTab(tab);
 }
 
 void MainWindow::ShowPrejoinPage() {

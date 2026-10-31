@@ -50,6 +50,27 @@ void UnavailableEngineClient::SubscribeLevels(bool enabled) {
 }
 void UnavailableEngineClient::RefreshCameras() {}
 void UnavailableEngineClient::RefreshAudioDevices() {}
+void UnavailableEngineClient::RefreshDesktopSources() {}
+void UnavailableEngineClient::SelectCamera(int device_index) {
+  Q_UNUSED(device_index);
+}
+void UnavailableEngineClient::SelectRecordingDevice(
+    const std::string& device_id) {
+  Q_UNUSED(device_id);
+}
+void UnavailableEngineClient::SelectPlayoutDevice(
+    const std::string& device_id) {
+  Q_UNUSED(device_id);
+}
+void UnavailableEngineClient::SelectSystemAudioDevice(
+    const std::string& device_id) {
+  Q_UNUSED(device_id);
+}
+void UnavailableEngineClient::SelectScreenSource(
+    const std::string& source_id, bool window) {
+  Q_UNUSED(source_id);
+  Q_UNUSED(window);
+}
 void UnavailableEngineClient::StartCameraPreview(int device_index) { Q_UNUSED(device_index); }
 void UnavailableEngineClient::StopCameraPreview() {}
 

@@ -49,6 +49,7 @@ class MediaOrchestrator final {
   void Reset();
 
   void HandleCameraDevices(const EngineCommand& command);
+  void HandleCameraSelect(const EngineCommand& command);
   void HandleCameraPreviewStart(const EngineCommand& command);
   void HandleCameraPreviewStop(const EngineCommand& command);
   void HandleSetMute(const EngineCommand& command);
@@ -56,6 +57,10 @@ class MediaOrchestrator final {
   void HandleToggleScreenShare(const EngineCommand& command);
   void HandleSetVolume(const EngineCommand& command);
   void HandleSetDeafened(const EngineCommand& command);
+  void HandleSelectRecordingDevice(const EngineCommand& command);
+  void HandleSelectPlayoutDevice(const EngineCommand& command);
+  void HandleSelectSystemAudioDevice(const EngineCommand& command);
+  void HandleSelectScreenSource(const EngineCommand& command);
   void HandleStats(const EngineCommand& command);
 
   void HandleMediaModeRequest(const std::string& request_id,

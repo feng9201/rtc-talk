@@ -26,6 +26,8 @@ class LoopbackAudioCapture final {
   LoopbackAudioCapture& operator=(const LoopbackAudioCapture&) = delete;
 
   bool Init(std::string* error);
+  bool Init(const std::string& device_id, std::string* error);
+  bool SetDevice(const std::string& device_id, std::string* error);
   bool Start(webrtc::AudioTransport* transport, std::string* error);
   void Stop();
   void Terminate();
@@ -60,6 +62,7 @@ class LoopbackAudioCapture final {
   std::atomic<int> rms_{0};
   std::atomic<long> last_error_{0};
   std::vector<std::int16_t> pending_;
+  bool follow_default_ = true;
 };
 
 }  // namespace rtcwin::webrtc_media

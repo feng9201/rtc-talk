@@ -6,8 +6,11 @@
 namespace rtcwin::webrtc_media {
 
 SwitchableAudioDevice::SwitchableAudioDevice(
-    webrtc::scoped_refptr<webrtc::AudioDeviceModule> mic, bool system_audio)
-    : mic_(std::move(mic)), system_audio_(system_audio) {}
+    webrtc::scoped_refptr<webrtc::AudioDeviceModule> mic, bool system_audio,
+    std::string loopback_device_id)
+    : mic_(std::move(mic)),
+      system_audio_(system_audio),
+      loopback_device_id_(std::move(loopback_device_id)) {}
 
 SwitchableAudioDevice::~SwitchableAudioDevice() { Terminate(); }
 
@@ -30,8 +33,29 @@ int32_t SwitchableAudioDevice::Init() {
 bool SwitchableAudioDevice::EnsureLoopback() {
   if (loopback_.initialized()) return true;
   std::string error;
-  if (!loopback_.Init(&error)) {
+  if (loopback_device_id_.empty()) {
+    if (!loopback_.Init(&error)) {
+      last_error_ = error;
+      return false;
+    }
+  } else if (!loopback_.Init(loopback_device_id_, &error)) {
     last_error_ = error;
+    return false;
+  }
+  return true;
+}
+
+bool SwitchableAudioDevice::SetLoopbackDevice(const std::string& device_id,
+                                              std::string* error) {
+  if (!system_audio_) {
+    if (error) *error = "当前不是系统音采集模式";
+    return false;
+  }
+  const std::string previous = loopback_device_id_;
+  loopback_device_id_ = device_id;
+  if (!loopback_.SetDevice(device_id, error)) {
+    loopback_device_id_ = previous;
+    last_error_ = error != nullptr ? *error : "切换系统音端点失败";
     return false;
   }
   return true;

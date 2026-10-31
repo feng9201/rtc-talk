@@ -44,6 +44,9 @@ class AudioPipeline final {
   bool SetMuted(bool muted, MediaError* error);
   bool SetDeafened(bool deafened);
   bool SetVolume(double volume, MediaError* error);
+  bool SetRecordingDevice(const std::string& device_id, MediaError* error);
+  bool SetPlayoutDevice(const std::string& device_id, MediaError* error);
+  bool SetSystemAudioDevice(const std::string& device_id, MediaError* error);
 
   webrtc::scoped_refptr<webrtc::AudioTrackInterface> track() const {
     return audio_track_;

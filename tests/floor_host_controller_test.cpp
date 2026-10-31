@@ -44,6 +44,12 @@ class FakeEngineClient final : public rtcwin::application::EngineClient {
   void SelectPeer(const std::string&) override {}
   void RefreshCameras() override {}
   void RefreshAudioDevices() override {}
+  void RefreshDesktopSources() override {}
+  void SelectCamera(int) override {}
+  void SelectRecordingDevice(const std::string&) override {}
+  void SelectPlayoutDevice(const std::string&) override {}
+  void SelectSystemAudioDevice(const std::string&) override {}
+  void SelectScreenSource(const std::string&, bool) override {}
   void StartCameraPreview(int) override {}
   void StopCameraPreview() override {}
 

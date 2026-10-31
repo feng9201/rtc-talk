@@ -73,6 +73,28 @@ bool VideoPipeline::SetScreenEnabled(bool enabled, MediaError* error) {
   return true;
 }
 
+bool VideoPipeline::SetScreenSource(const std::string& source_id, bool window,
+                                    MediaError* error) {
+  if (!screen_source_) {
+    SetError(error, 1734, "屏幕共享源未初始化");
+    return false;
+  }
+  const bool was_enabled = screen_enabled_.load(std::memory_order_relaxed);
+  if (was_enabled) screen_source_->Stop();
+  screen_source_->SetSource(source_id, window);
+  if (was_enabled) {
+    std::string start_error;
+    if (!screen_source_->Start(&start_error)) {
+      screen_enabled_.store(false, std::memory_order_relaxed);
+      SetError(error, 1735,
+               start_error.empty() ? "切换屏幕共享源失败" : start_error);
+      return false;
+    }
+  }
+  screen_enabled_.store(was_enabled, std::memory_order_relaxed);
+  return true;
+}
+
 bool VideoPipeline::PushFrame(const VideoFrameData& frame, MediaError* error) {
   if (!camera_source_) {
     SetError(error, 1732, "摄像头视频源未初始化");

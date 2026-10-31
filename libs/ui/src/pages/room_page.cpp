@@ -3,6 +3,7 @@
 #include "rtcwin/ui/theme/theme.h"
 #include "rtcwin/ui/video/video_grid.h"
 #include "rtcwin/ui/widgets/control_button.h"
+#include "rtcwin/ui/widgets/device_panel.h"
 #include "rtcwin/ui/widgets/member_row.h"
 #include "rtcwin/ui/widgets/pill.h"
 #include "rtcwin/ui/widgets/segmented_control.h"
@@ -68,6 +69,7 @@ RoomPage::RoomPage(QWidget* parent) : QWidget(parent) {
   connect(timer, &QTimer::timeout, this, [this] {
     UpdateHeader();
     if (tabs_->CurrentId() == QStringLiteral("members")) UpdateMemberPanel();
+    if (tabs_->CurrentId() == QStringLiteral("status")) UpdateStatusPanel();
   });
   timer->start();
   UpdateHeader();
@@ -280,6 +282,12 @@ void RoomPage::SetState(const domain::SessionSnapshot& state) {
   UpdateHeader();
   UpdateControls();
   RefreshMembers();
+  UpdateStatusPanel();
+  if (device_panel_ != nullptr) {
+    device_panel_->SetSelection(state_.devices);
+    device_panel_->SetSystemAudioEnabled(
+        state_.audio_source == domain::AudioSource::System);
+  }
 }
 
 void RoomPage::SetVideoFrame(const domain::VideoFrame& frame) {
@@ -292,8 +300,58 @@ void RoomPage::SetPreviewMode(bool preview) {
   UpdateControls();
 }
 
+void RoomPage::SelectSideTab(domain::PanelTab tab) {
+  if (tabs_ == nullptr) return;
+  switch (tab) {
+    case domain::PanelTab::Members:
+      tabs_->SetCurrentId(QStringLiteral("members"));
+      break;
+    case domain::PanelTab::Devices:
+      tabs_->SetCurrentId(QStringLiteral("devices"));
+      break;
+    case domain::PanelTab::Status:
+      tabs_->SetCurrentId(QStringLiteral("status"));
+      break;
+  }
+  RebuildSidePanel();
+}
+
 void RoomPage::SetControlHint(const QString& text) {
   if (control_hint_ != nullptr) control_hint_->setText(text);
+}
+
+void RoomPage::SetCameraDevices(
+    const QVector<rtcwin::domain::CameraDevice>& devices) {
+  camera_devices_ = devices;
+  if (device_panel_ != nullptr) {
+    device_panel_->SetDevices(recording_devices_, playout_devices_,
+                              camera_devices_, desktop_sources_);
+    device_panel_->SetSelection(state_.devices);
+    device_panel_->SetSystemAudioEnabled(
+        state_.audio_source == domain::AudioSource::System);
+  }
+}
+
+void RoomPage::SetAudioDevices(
+    const QVector<rtcwin::domain::AudioDevice>& recording,
+    const QVector<rtcwin::domain::AudioDevice>& playout) {
+  recording_devices_ = recording;
+  playout_devices_ = playout;
+  if (device_panel_ != nullptr) {
+    device_panel_->SetDevices(recording_devices_, playout_devices_,
+                              camera_devices_, desktop_sources_);
+    device_panel_->SetSelection(state_.devices);
+  }
+}
+
+void RoomPage::SetDesktopSources(
+    const QVector<rtcwin::domain::DesktopSource>& sources) {
+  desktop_sources_ = sources;
+  if (device_panel_ != nullptr) {
+    device_panel_->SetDevices(recording_devices_, playout_devices_,
+                              camera_devices_, desktop_sources_);
+    device_panel_->SetSelection(state_.devices);
+  }
 }
 
 void RoomPage::SetBusy(bool busy) {
@@ -445,8 +503,77 @@ void RoomPage::RebuildSidePanel() {
   member_floor_ = nullptr;
   mute_all_ = nullptr;
   member_rows_layout_ = nullptr;
+  device_panel_ = nullptr;
+  status_values_.clear();
 
   const QString tab = tabs_->CurrentId();
+  if (tab == QStringLiteral("devices")) {
+    side_layout_->addWidget(theme::Label(QStringLiteral("设备与画面源"),
+                                         QStringLiteral("PanelHead"),
+                                         side_body_));
+    device_panel_ = new DevicePanel(side_body_);
+    side_layout_->addWidget(device_panel_);
+    device_panel_->SetDevices(recording_devices_, playout_devices_,
+                              camera_devices_, desktop_sources_);
+    device_panel_->SetSelection(state_.devices);
+    connect(device_panel_, &DevicePanel::RefreshRequested, this,
+            &RoomPage::RefreshDeviceInventoryRequested);
+    connect(device_panel_, &DevicePanel::RecordingDeviceSelected, this,
+            &RoomPage::RecordingDeviceSelected);
+    connect(device_panel_, &DevicePanel::PlayoutDeviceSelected, this,
+            &RoomPage::PlayoutDeviceSelected);
+    connect(device_panel_, &DevicePanel::SystemAudioDeviceSelected, this,
+            &RoomPage::SystemAudioDeviceSelected);
+    connect(device_panel_, &DevicePanel::CameraSelected, this,
+            &RoomPage::CameraSelected);
+    connect(device_panel_, &DevicePanel::DesktopSourceSelected, this,
+            &RoomPage::DesktopSourceSelected);
+    side_layout_->addStretch(1);
+    return;
+  }
+  if (tab == QStringLiteral("status")) {
+    side_layout_->addWidget(theme::Label(QStringLiteral("连接与媒体"),
+                                         QStringLiteral("PanelHead"),
+                                         side_body_));
+    auto* card = theme::Card(side_body_, QStringLiteral("SubtleCard"));
+    auto* card_layout = new QVBoxLayout(card);
+    card_layout->setContentsMargins(16, 16, 16, 16);
+    card_layout->setSpacing(8);
+    const auto add_row = [this, card, card_layout](const QString& name,
+                                                   const QString& value) {
+      auto* row = new QHBoxLayout;
+      row->addWidget(theme::Label(name, QStringLiteral("Muted"), card), 1);
+      auto* text = theme::Label(value, QStringLiteral("Value"), card);
+      text->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+      row->addWidget(text);
+      card_layout->addLayout(row);
+      status_values_.insert(name, text);
+    };
+    add_row(QStringLiteral("连接"),
+            ConnectionLabel(state_.connection));
+    add_row(QStringLiteral("媒体模式"),
+            state_.media_mode.empty() ? QStringLiteral("—")
+                                      : Text(state_.media_mode).toUpper());
+    add_row(QStringLiteral("麦克风"),
+            state_.mic_muted ? QStringLiteral("闭麦")
+                             : QStringLiteral("开麦"));
+    add_row(QStringLiteral("摄像头"),
+            state_.camera_on ? QStringLiteral("开启")
+                             : QStringLiteral("关闭"));
+    add_row(QStringLiteral("屏幕共享"),
+            state_.sharing ? QStringLiteral("进行中")
+                           : QStringLiteral("关闭"));
+    add_row(QStringLiteral("发言权"),
+            state_.floor.self_has_floor
+                ? QStringLiteral("本人")
+                : state_.floor.holder_uid.empty()
+                      ? QStringLiteral("未授予")
+                      : Text(state_.floor.holder_uid));
+    UpdateStatusPanel();
+    side_layout_->addWidget(card);
+    side_layout_->addStretch(1);
+    return;
+  }
   if (tab != QStringLiteral("members")) {
     side_layout_->addWidget(theme::Label(
         tab == QStringLiteral("devices") ? QStringLiteral("设备面板")
@@ -553,6 +680,29 @@ void RoomPage::UpdateMemberPanel() {
                      Text(state_.selected_uid) == Text(peer.uid));
     }
   }
+}
+
+void RoomPage::UpdateStatusPanel() {
+  if (status_values_.isEmpty()) return;
+  const auto set = [this](const QString& key, const QString& value) {
+    if (auto* label = status_values_.value(key)) label->setText(value);
+  };
+  set(QStringLiteral("连接"), ConnectionLabel(state_.connection));
+  set(QStringLiteral("媒体模式"),
+      state_.media_mode.empty() ? QStringLiteral("—")
+                                : Text(state_.media_mode).toUpper());
+  set(QStringLiteral("麦克风"),
+      state_.mic_muted ? QStringLiteral("闭麦") : QStringLiteral("开麦"));
+  set(QStringLiteral("摄像头"),
+      state_.camera_on ? QStringLiteral("开启") : QStringLiteral("关闭"));
+  set(QStringLiteral("屏幕共享"),
+      state_.sharing ? QStringLiteral("进行中") : QStringLiteral("关闭"));
+  set(QStringLiteral("发言权"),
+      state_.floor.self_has_floor
+          ? QStringLiteral("本人")
+          : state_.floor.holder_uid.empty()
+                ? QStringLiteral("未授予")
+                : Text(state_.floor.holder_uid));
 }
 
 int RoomPage::QueuePosition() const {

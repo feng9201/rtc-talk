@@ -103,6 +103,19 @@ struct SessionController::Impl {
         request.value("recording_device", std::string());
     media_config.playout_device =
         request.value("playout_device", std::string());
+    const std::string camera_device =
+        request.value("camera_device", std::string());
+    if (!camera_device.empty()) {
+      try {
+        media_config.camera_device_index = std::stoi(camera_device);
+      } catch (const std::exception&) {
+        EmitResponse(command.id, command.method, false, 400,
+                     "摄像头设备编号无效");
+        return;
+      }
+    }
+    media_config.system_audio_device =
+        request.value("system_audio_device", std::string());
     media_config.volume = std::clamp(request.value("volume", 60), 0, 100);
     media_config.muted = true;
     const bool audio_requested = media_config.audio_backend != "none";

@@ -705,6 +705,21 @@ bool MediaSession::SetVolume(double volume, MediaError* error) {
   return true;
 }
 
+bool MediaSession::SetRecordingDevice(const std::string& device_id,
+                                      MediaError* error) {
+  return impl_->audio_pipeline_.SetRecordingDevice(device_id, error);
+}
+
+bool MediaSession::SetPlayoutDevice(const std::string& device_id,
+                                    MediaError* error) {
+  return impl_->audio_pipeline_.SetPlayoutDevice(device_id, error);
+}
+
+bool MediaSession::SetSystemAudioDevice(const std::string& device_id,
+                                        MediaError* error) {
+  return impl_->audio_pipeline_.SetSystemAudioDevice(device_id, error);
+}
+
 bool MediaSession::SetSfuPaused(bool paused, MediaError* error) {
   if (!impl_->initialized) {
     SetError(error, 1729, "音频媒体会话未初始化");
@@ -722,6 +737,11 @@ bool MediaSession::SetCameraEnabled(bool enabled, MediaError* error) {
 
 bool MediaSession::SetScreenEnabled(bool enabled, MediaError* error) {
   return impl_->SetScreenEnabled(enabled, error);
+}
+
+bool MediaSession::SetScreenSource(const std::string& source_id, bool window,
+                                   MediaError* error) {
+  return impl_->video_pipeline_.SetScreenSource(source_id, window, error);
 }
 
 bool MediaSession::PushCameraFrame(const VideoFrameData& frame,

@@ -1,5 +1,6 @@
 add_library(rtcwin_webrtc_media STATIC
   include/rtcwin/webrtc_media/audio_device_service.h
+  include/rtcwin/webrtc_media/desktop_capture_service.h
   include/rtcwin/webrtc_media/loopback_audio_capture.h
   include/rtcwin/webrtc_media/media_session.h
   include/rtcwin/webrtc_media/switchable_audio_device.h

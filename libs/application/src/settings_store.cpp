@@ -96,6 +96,10 @@ domain::PrejoinOptions SettingsStore::Load() const {
       settings.value(QStringLiteral("audio/playout_device"))
           .toString()
           .toStdString();
+  result.system_audio_device =
+      settings.value(QStringLiteral("audio/system_audio_device"))
+          .toString()
+          .toStdString();
   result.camera_device =
       settings.value(QStringLiteral("video/camera_device"))
           .toString()
@@ -130,6 +134,8 @@ void SettingsStore::Save(const domain::PrejoinOptions& options) const {
                     QString::fromStdString(options.recording_device));
   settings.setValue(QStringLiteral("audio/playout_device"),
                     QString::fromStdString(options.playout_device));
+  settings.setValue(QStringLiteral("audio/system_audio_device"),
+                    QString::fromStdString(options.system_audio_device));
   settings.setValue(QStringLiteral("video/camera_device"),
                     QString::fromStdString(options.camera_device));
   settings.remove(QStringLiteral("connection/token"));

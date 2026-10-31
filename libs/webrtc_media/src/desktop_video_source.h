@@ -31,6 +31,9 @@ class DesktopVideoSource : public webrtc::AdaptedVideoTrackSource {
   DesktopVideoSource& operator=(const DesktopVideoSource&) = delete;
 
   bool Start(std::string* error);
+  bool Start(const std::string& source_id, bool window,
+             std::string* error);
+  void SetSource(const std::string& source_id, bool window);
   void Stop();
   bool running() const { return running_.load(std::memory_order_relaxed); }
   std::uint64_t frames() const {
@@ -64,6 +67,8 @@ class DesktopVideoSource : public webrtc::AdaptedVideoTrackSource {
   std::atomic<bool> running_{false};
   std::atomic<std::uint64_t> frames_{0};
   std::vector<std::uint8_t> scaled_bgra_;
+  std::string source_id_;
+  bool source_window_ = false;
 };
 
 }  // namespace rtcwin::webrtc_media

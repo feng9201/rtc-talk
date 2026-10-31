@@ -1,11 +1,14 @@
 #include "desktop_video_source.h"
 
+#include "rtcwin/webrtc_media/desktop_capture_service.h"
+
 #include <windows.h>
 
 #include <objbase.h>
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <utility>
 
 #include "api/video/i420_buffer.h"
@@ -53,7 +56,14 @@ DesktopVideoSource::~DesktopVideoSource() {
 }
 
 bool DesktopVideoSource::Start(std::string* error) {
+  return Start(source_id_, source_window_, error);
+}
+
+bool DesktopVideoSource::Start(const std::string& source_id, bool window,
+                               std::string* error) {
   if (running_.load(std::memory_order_relaxed)) return true;
+  source_id_ = source_id;
+  source_window_ = window;
   const HRESULT hr = ::CoInitializeEx(nullptr, COINIT_MULTITHREADED);
   if (FAILED(hr) && hr != RPC_E_CHANGED_MODE && hr != S_FALSE) {
     if (error) *error = "桌面采集 COM 初始化失败";
@@ -65,18 +75,41 @@ bool DesktopVideoSource::Start(std::string* error) {
   options.set_prefer_cursor_embedded(true);
   options.set_detect_updated_region(false);
 
-  auto capturer = webrtc::DesktopCapturer::CreateScreenCapturer(options);
+  auto capturer =
+      window ? webrtc::DesktopCapturer::CreateWindowCapturer(options)
+             : webrtc::DesktopCapturer::CreateScreenCapturer(options);
   if (!capturer) {
-    if (error) *error = "桌面采集器创建失败";
+    if (error) *error = window ? "窗口采集器创建失败"
+                               : "桌面采集器创建失败";
     return false;
   }
   webrtc::DesktopCapturer::SourceList sources;
   if (!capturer->GetSourceList(&sources) || sources.empty()) {
-    if (error) *error = "未找到可共享的屏幕";
+    if (error) *error = window ? "未找到可共享的窗口"
+                               : "未找到可共享的屏幕";
     return false;
   }
-  if (!capturer->SelectSource(sources.front().id)) {
-    if (error) *error = "选择屏幕失败";
+  auto selected = sources.begin();
+  if (!source_id.empty()) {
+    char* end = nullptr;
+    const long long wanted = std::strtoll(source_id.c_str(), &end, 10);
+    if (end == source_id.c_str() || *end != '\0') {
+      if (error) *error = "共享源编号无效";
+      return false;
+    }
+    selected = std::find_if(
+        sources.begin(), sources.end(),
+        [wanted](const webrtc::DesktopCapturer::Source& source) {
+          return static_cast<long long>(source.id) == wanted;
+        });
+    if (selected == sources.end()) {
+      if (error) *error = window ? "窗口共享源不存在"
+                                 : "屏幕共享源不存在";
+      return false;
+    }
+  }
+  if (!capturer->SelectSource(selected->id)) {
+    if (error) *error = window ? "选择窗口失败" : "选择屏幕失败";
     return false;
   }
   capturer->SetMaxFrameRate(static_cast<std::uint32_t>(fps_));
@@ -91,8 +124,14 @@ bool DesktopVideoSource::Start(std::string* error) {
   thread_ = std::thread(&DesktopVideoSource::CaptureLoop, this);
   RTC_LOG(LS_INFO) << "screen capture started fps=" << fps_
                    << " max=" << max_width_ << "x" << max_height_
-                   << " screen=" << sources.front().title;
+                   << " source=" << selected->title
+                   << " type=" << (window ? "window" : "screen");
   return true;
+}
+
+void DesktopVideoSource::SetSource(const std::string& source_id, bool window) {
+  source_id_ = source_id;
+  source_window_ = window;
 }
 
 void DesktopVideoSource::Stop() {
@@ -216,6 +255,48 @@ void DesktopVideoSource::Deliver(const webrtc::DesktopFrame& frame) {
           .build();
   frames_.fetch_add(1, std::memory_order_relaxed);
   OnFrame(video);
+}
+
+}  // namespace rtcwin::webrtc_media
+
+namespace rtcwin::webrtc_media {
+
+bool EnumerateDesktopSources(std::vector<DesktopSourceInfo>* sources,
+                             std::string* error) {
+  if (sources == nullptr) {
+    if (error) *error = "共享源输出为空";
+    return false;
+  }
+  sources->clear();
+  auto options = webrtc::DesktopCaptureOptions::CreateDefault();
+  options.set_allow_directx_capturer(true);
+  options.set_prefer_cursor_embedded(true);
+  options.set_detect_updated_region(false);
+
+  const auto append = [sources](webrtc::DesktopCapturer* capturer,
+                                DesktopSourceType type) {
+    if (capturer == nullptr) return;
+    webrtc::DesktopCapturer::SourceList list;
+    if (!capturer->GetSourceList(&list)) return;
+    for (const auto& source : list) {
+      sources->push_back(
+          {static_cast<std::int64_t>(source.id), source.title, type});
+    }
+  };
+
+  auto screens = webrtc::DesktopCapturer::CreateScreenCapturer(options);
+  if (!screens) {
+    if (error) *error = "桌面采集器创建失败";
+    return false;
+  }
+  append(screens.get(), DesktopSourceType::Screen);
+  auto windows = webrtc::DesktopCapturer::CreateWindowCapturer(options);
+  append(windows.get(), DesktopSourceType::Window);
+  if (sources->empty()) {
+    if (error) *error = "未找到可共享的屏幕或窗口";
+    return false;
+  }
+  return true;
 }
 
 }  // namespace rtcwin::webrtc_media

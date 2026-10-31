@@ -251,3 +251,41 @@ video_grid_stress_test: PASS
 
 Real断流验证：暂停发送端进程后，接收端在 5 秒后清空共享画面并释放对应
 Surface，但没有伪造 peerLeft 或 producer paused 事件。
+
+## S6 M4 device and screen-source smoke
+
+The room `设备` page now supports microphone, playout, system-audio loopback,
+camera, and screen/window source selection. Device lists are refreshed every
+five seconds while joined; if a selected device disappears, the application
+falls back to the first available device.
+
+Useful automation flags:
+
+```text
+--auto-select-delay-ms 4000
+--auto-select-recording-id <endpoint-id>
+--auto-select-playout-id <endpoint-id>
+--auto-select-system-audio-id <render-endpoint-id>
+--auto-select-camera-index 0
+--auto-select-screen-source-id <desktop-source-id>
+--auto-select-screen-source-window
+```
+
+Desktop sources can be inspected from the event trace after the UI starts:
+
+```text
+desktop.sources -> sources[{id,title,type}]
+```
+
+Validated M4 evidence:
+
+- WASAPI microphone, playout, and camera switched during a joined room without
+  reconnecting.
+- Screen sharing switched from the default screen to a selected window while
+  capture continued.
+- System audio switched from the default endpoint to a selected loopback
+  endpoint.
+- An invalid selected microphone was automatically replaced after the periodic
+  device refresh.
+- A disabled screen producer is explicitly paused after initial SFU publish, so
+  receivers no longer show a false `共享中` state.

@@ -277,7 +277,7 @@ bool AudioPipeline::InitializeDevices(
         }
         if (layer == webrtc::AudioDeviceModule::kWindowsCoreAudio) {
           switchable_ = webrtc::make_ref_counted<SwitchableAudioDevice>(
-              core_adm, system_audio);
+              core_adm, system_audio, config.system_audio_device);
           adm_ = switchable_;
         } else {
           adm_ = core_adm;
@@ -316,6 +316,87 @@ bool AudioPipeline::EnsurePlayout(std::string* detail) {
   });
   if (!ok && detail) *detail = "启动音频播放失败";
   return ok;
+}
+
+bool AudioPipeline::SetRecordingDevice(const std::string& device_id,
+                                       MediaError* error) {
+  if (!initialized_ || !adm_ || !worker_) {
+    SetError(error, 1720, "音频媒体会话未初始化");
+    return false;
+  }
+  if (switchable_ && switchable_->system_audio()) {
+    std::string device_error;
+    if (!switchable_->SetLoopbackDevice(device_id, &device_error)) {
+      SetError(error, 1705, device_error);
+      return false;
+    }
+    recording_name_.assign(device_id.empty() ? "system-default-render"
+                                             : "system-selected-render");
+    return true;
+  }
+
+  std::string device_error;
+  const bool was_recording = adm_->Recording();
+  const bool ok = worker_->BlockingCall([this, &device_id, &device_error,
+                                         was_recording] {
+    // Windows Core Audio may still hold the capture endpoint when recording
+    // is paused; always stop before changing the device.
+    adm_->StopRecording();
+    if (!SelectDevice(adm_.get(), true, device_id, &recording_name_,
+                      &device_error)) {
+      return false;
+    }
+    if (was_recording &&
+        (adm_->InitRecording() != 0 || adm_->StartRecording() != 0)) {
+      device_error = "重启麦克风采集失败";
+      return false;
+    }
+    return true;
+  });
+  if (!ok) SetError(error, 1705, device_error);
+  return ok;
+}
+
+bool AudioPipeline::SetPlayoutDevice(const std::string& device_id,
+                                     MediaError* error) {
+  if (!initialized_ || !adm_ || !worker_) {
+    SetError(error, 1720, "音频媒体会话未初始化");
+    return false;
+  }
+  std::string device_error;
+  const bool was_playing = adm_->Playing();
+  const bool ok = worker_->BlockingCall([this, &device_id, &device_error,
+                                         was_playing] {
+    adm_->StopPlayout();
+    if (!SelectDevice(adm_.get(), false, device_id, &playout_name_,
+                      &device_error)) {
+      return false;
+    }
+    if (was_playing &&
+        (adm_->InitPlayout() != 0 || adm_->StartPlayout() != 0)) {
+      device_error = "重启播放设备失败";
+      return false;
+    }
+    return true;
+  });
+  if (!ok) SetError(error, 1705, device_error);
+  return ok;
+}
+
+bool AudioPipeline::SetSystemAudioDevice(const std::string& device_id,
+                                         MediaError* error) {
+  if (!switchable_ || !switchable_->system_audio()) {
+    SetError(error, 1729, "当前不是系统音采集模式");
+    return false;
+  }
+  std::string device_error;
+  if (!switchable_->SetLoopbackDevice(device_id, &device_error)) {
+    SetError(error, 1705, device_error);
+    return false;
+  }
+  recording_name_.assign(device_id.empty() ? "system-default-render"
+                                           : "system-selected-render");
+  return true;
 }
 
 bool AudioPipeline::SetMuted(bool muted, MediaError* error) {

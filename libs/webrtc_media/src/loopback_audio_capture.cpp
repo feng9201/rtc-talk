@@ -22,6 +22,21 @@ constexpr int kSamplesPerFrame = 480;
 constexpr std::size_t kMaxPendingSamples = kTargetSampleRate / 10;
 constexpr int kDeviceCheckIterations = 400;
 
+bool Utf8ToWide(const std::string& value, std::wstring* out) {
+  if (out == nullptr) return false;
+  if (value.empty()) {
+    out->clear();
+    return true;
+  }
+  const int size = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(),
+                                       static_cast<int>(value.size()), nullptr, 0);
+  if (size <= 0) return false;
+  out->resize(static_cast<std::size_t>(size));
+  return MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(),
+                             static_cast<int>(value.size()), out->data(), size) ==
+         size;
+}
+
 }  // namespace
 
 struct LoopbackAudioCapture::Impl {
@@ -66,11 +81,50 @@ LoopbackAudioCapture::~LoopbackAudioCapture() { Terminate(); }
 bool LoopbackAudioCapture::Init(std::string* error) {
   if (initialized_) return true;
   if (!impl_) impl_ = std::make_unique<Impl>();
+  follow_default_ = true;
+  impl_->device_id.clear();
   if (!Open(error)) {
     Close();
     return false;
   }
   initialized_ = true;
+  return true;
+}
+
+bool LoopbackAudioCapture::Init(const std::string& device_id,
+                                std::string* error) {
+  if (initialized_) return true;
+  if (!impl_) impl_ = std::make_unique<Impl>();
+  follow_default_ = device_id.empty();
+  if (!Utf8ToWide(device_id, &impl_->device_id)) {
+    if (error) *error = "系统音采集端点编号无效";
+    return false;
+  }
+  if (!Open(error)) {
+    Close();
+    return false;
+  }
+  initialized_ = true;
+  return true;
+}
+
+bool LoopbackAudioCapture::SetDevice(const std::string& device_id,
+                                     std::string* error) {
+  if (!impl_) impl_ = std::make_unique<Impl>();
+  const bool was_running = running_.load();
+  Stop();
+  initialized_ = false;
+  follow_default_ = device_id.empty();
+  if (!Utf8ToWide(device_id, &impl_->device_id)) {
+    if (error) *error = "系统音采集端点编号无效";
+    return false;
+  }
+  Close();
+  if (!Open(error)) return false;
+  initialized_ = true;
+  if (was_running) {
+    return Start(transport_.load(), error);
+  }
   return true;
 }
 
@@ -131,9 +185,15 @@ bool LoopbackAudioCapture::Open(std::string* error) {
   if (FAILED(hr)) return fail("系统音采集无法创建设备枚举器", hr);
 
   Microsoft::WRL::ComPtr<IMMDevice> device;
-  hr = enumerator->GetDefaultAudioEndpoint(eRender, eConsole,
-                                           device.GetAddressOf());
-  if (FAILED(hr)) return fail("没有可用的默认播放设备", hr);
+  if (impl_->device_id.empty()) {
+    hr = enumerator->GetDefaultAudioEndpoint(eRender, eConsole,
+                                             device.GetAddressOf());
+    if (FAILED(hr)) return fail("没有可用的默认播放设备", hr);
+  } else {
+    hr = enumerator->GetDevice(impl_->device_id.c_str(),
+                               device.GetAddressOf());
+    if (FAILED(hr)) return fail("指定的系统音播放端点不存在", hr);
+  }
 
   LPWSTR device_id = nullptr;
   if (SUCCEEDED(device->GetId(&device_id)) && device_id != nullptr) {
@@ -234,7 +294,8 @@ void LoopbackAudioCapture::Run() {
     if (++check >= kDeviceCheckIterations) {
       check = 0;
       std::wstring current;
-      if (DefaultRenderDeviceId(&current) && !current.empty() &&
+      if (follow_default_ && DefaultRenderDeviceId(&current) &&
+          !current.empty() &&
           current != impl_->device_id && !Reopen()) {
         impl_->device_id.clear();
       }

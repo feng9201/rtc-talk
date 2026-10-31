@@ -32,6 +32,11 @@ int main(int argc, char** argv) {
   parser.addOption(QCommandLineOption(
       QStringLiteral("room-preview"), QStringLiteral("显示房间页预览")));
   parser.addOption(QCommandLineOption(
+      QStringLiteral("room-preview-tab"),
+      QStringLiteral("房间预览侧栏：members|devices|status"),
+      QStringLiteral("tab"),
+      QStringLiteral("members")));
+  parser.addOption(QCommandLineOption(
       QStringLiteral("size"), QStringLiteral("窗口尺寸"),
       QStringLiteral("size"), QStringLiteral("1440x900")));
   parser.addOption(QCommandLineOption(
@@ -144,6 +149,34 @@ int main(int argc, char** argv) {
       QStringLiteral("入房后自动停止屏幕共享的时间"),
       QStringLiteral("ms")));
   parser.addOption(QCommandLineOption(
+      QStringLiteral("auto-select-delay-ms"),
+      QStringLiteral("入房后执行设备切换的延迟"),
+      QStringLiteral("ms"),
+      QStringLiteral("3500")));
+  parser.addOption(QCommandLineOption(
+      QStringLiteral("auto-select-recording-id"),
+      QStringLiteral("联调：切换到指定麦克风端点"),
+      QStringLiteral("id")));
+  parser.addOption(QCommandLineOption(
+      QStringLiteral("auto-select-playout-id"),
+      QStringLiteral("联调：切换到指定播放端点"),
+      QStringLiteral("id")));
+  parser.addOption(QCommandLineOption(
+      QStringLiteral("auto-select-system-audio-id"),
+      QStringLiteral("联调：切换到指定系统音 loopback 端点"),
+      QStringLiteral("id")));
+  parser.addOption(QCommandLineOption(
+      QStringLiteral("auto-select-camera-index"),
+      QStringLiteral("联调：切换到指定摄像头索引"),
+      QStringLiteral("index")));
+  parser.addOption(QCommandLineOption(
+      QStringLiteral("auto-select-screen-source-id"),
+      QStringLiteral("联调：切换到指定屏幕/窗口共享源"),
+      QStringLiteral("id")));
+  parser.addOption(QCommandLineOption(
+      QStringLiteral("auto-select-screen-source-window"),
+      QStringLiteral("联调：共享源类型为窗口")));
+  parser.addOption(QCommandLineOption(
       QStringLiteral("auto-leave-ms"), QStringLiteral("入房后自动离房间隔"),
       QStringLiteral("ms")));
   parser.process(app);
@@ -164,8 +197,16 @@ int main(int argc, char** argv) {
   window.show();
 
   if (parser.isSet(QStringLiteral("room-preview"))) {
-    QTimer::singleShot(0, &window,
-                       &rtcwin::ui::MainWindow::ShowRoomPreview);
+    const QString tab = parser.value(QStringLiteral("room-preview-tab"));
+    const rtcwin::domain::PanelTab panel_tab =
+        tab == QStringLiteral("devices")
+            ? rtcwin::domain::PanelTab::Devices
+            : tab == QStringLiteral("status")
+                  ? rtcwin::domain::PanelTab::Status
+                  : rtcwin::domain::PanelTab::Members;
+    QTimer::singleShot(0, &window, [&window, panel_tab] {
+      window.ShowRoomPreviewTab(panel_tab);
+    });
   } else if (parser.isSet(QStringLiteral("auto-preview"))) {
     window.EnableCameraPreview();
   }
@@ -349,6 +390,49 @@ int main(int argc, char** argv) {
       if (screen_ok && screen_ms >= 0) {
         QTimer::singleShot(screen_ms, &window,
                            &rtcwin::ui::MainWindow::ToggleScreenShare);
+      }
+    }
+    if (parser.isSet(QStringLiteral("auto-select-delay-ms"))) {
+      bool select_ok = false;
+      const int select_ms =
+          parser.value(QStringLiteral("auto-select-delay-ms"))
+              .toInt(&select_ok);
+      if (select_ok && select_ms >= 0) {
+        const QString recording =
+            parser.value(QStringLiteral("auto-select-recording-id"));
+        const QString playout =
+            parser.value(QStringLiteral("auto-select-playout-id"));
+        const QString system_audio =
+            parser.value(QStringLiteral("auto-select-system-audio-id"));
+        int camera = -1;
+        if (parser.isSet(QStringLiteral("auto-select-camera-index"))) {
+          camera =
+              parser.value(QStringLiteral("auto-select-camera-index")).toInt();
+        }
+        const QString screen_source =
+            parser.value(QStringLiteral("auto-select-screen-source-id"));
+        const bool screen_window = parser.isSet(
+            QStringLiteral("auto-select-screen-source-window"));
+        QTimer::singleShot(select_ms, &window,
+                           [&window, recording, playout, system_audio,
+                            camera, screen_source, screen_window] {
+                             if (!recording.isEmpty()) {
+                               window.SelectRecordingDevice(recording);
+                             }
+                             if (!playout.isEmpty()) {
+                               window.SelectPlayoutDevice(playout);
+                             }
+                             if (!system_audio.isEmpty()) {
+                               window.SelectSystemAudioDevice(system_audio);
+                             }
+                             if (camera >= 0) {
+                               window.SelectCamera(camera);
+                             }
+                             if (!screen_source.isEmpty()) {
+                               window.SelectScreenSource(screen_source,
+                                                         screen_window);
+                             }
+                           });
       }
     }
     if (parser.isSet(QStringLiteral("auto-leave-ms"))) {

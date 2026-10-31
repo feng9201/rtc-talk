@@ -131,6 +131,21 @@ struct AudioDevice {
   bool available = true;
 };
 
+struct DesktopSource {
+  std::string id;
+  std::string title;
+  bool window = false;
+};
+
+struct DeviceSelection {
+  std::string recording_device;
+  std::string playout_device;
+  std::string system_audio_device;
+  std::string camera_device;
+  std::string screen_source;
+  bool screen_source_window = false;
+};
+
 struct PrejoinOptions {
   std::string signaling_url;
   std::string user_id;
@@ -144,6 +159,7 @@ struct PrejoinOptions {
   int volume = 60;
   std::string recording_device;
   std::string playout_device;
+  std::string system_audio_device;
   std::string camera_device;
 };
 
@@ -222,6 +238,7 @@ struct SessionSnapshot {
   RoomRole self_role = RoomRole::Member;
   std::string media_mode;
   std::string selected_uid;
+  AudioSource audio_source = AudioSource::Microphone;
   TalkMode talk_mode = TalkMode::Free;
   RoomPolicy policy;
   FloorState floor;
@@ -233,6 +250,7 @@ struct SessionSnapshot {
   bool deafened = false;
   bool media_enabled = false;
   double self_audio_level = 0.0;
+  DeviceSelection devices;
   std::optional<AppError> last_error;
 };
 

@@ -30,6 +30,8 @@ class VideoPipeline final {
   void Shutdown();
   bool SetEnabled(bool enabled, MediaError* error);
   bool SetScreenEnabled(bool enabled, MediaError* error);
+  bool SetScreenSource(const std::string& source_id, bool window,
+                       MediaError* error);
   bool PushFrame(const VideoFrameData& frame, MediaError* error);
   void SetScreenFrameCallback(
       std::function<void(const VideoFrameData&)> callback);

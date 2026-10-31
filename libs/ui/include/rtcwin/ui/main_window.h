@@ -36,7 +36,13 @@ class MainWindow final : public FramelessWindow {
   void GrantFloor(const QString& uid, bool allow);
   void KickMember(const QString& uid);
   void UpdateRoomPolicy(const domain::RoomPolicyPatch& patch);
+  void SelectRecordingDevice(const QString& device_id);
+  void SelectPlayoutDevice(const QString& device_id);
+  void SelectSystemAudioDevice(const QString& device_id);
+  void SelectCamera(int device_index);
+  void SelectScreenSource(const QString& source_id, bool window);
   void ShowRoomPreview();
+  void ShowRoomPreviewTab(domain::PanelTab tab);
   void EnableCameraPreview();
 
  protected:

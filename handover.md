@@ -3,9 +3,9 @@
 > 快照日期：2026-10-30
 > 仓库：`D:\google\webrtc-win-client\rtc-talk-win`
 > 分支：`rtc-talk-win`
-> 代码基线：`cd60889 feat: complete M2 surface pool and frame health`
+> 代码基线：`737ac65 feat: complete M3 floor and host controls`
 >
-> 当前状态：M1 双路/PIP 和 M2 Surface Pool/帧健康已完成；Release/Debug 构建和 CTest 9/9 通过；9 路 720p、5 秒断流回收、producer paused 均已验证。下一阶段为 M3 Floor/PTT/主持人。
+> 当前状态：M1/M2/M3 已完成并提交；M4 设备与屏幕源链路已实现并通过 Release/Debug 回归及真实双端短链路，等待用户阶段确认。M4 改动当前尚未提交。
 > 旧工程：`D:\google\webrtc-win-client\rtc-talk`，只读参考，禁止修改或提交。
 
 本文档面向后续接入业务、继续媒体开发、做代码评审或发布验收的工程师。它描述当前真实代码状态，不把计划中的能力写成已完成能力。
@@ -17,7 +17,7 @@
 
 | 类别 | 仓库 / 分支 / 提交 | 本工程中的用途 | 权限 |
 |---|---|---|---|
-| 当前生产工程 | `D:\google\webrtc-win-client\rtc-talk-win` / `rtc-talk-win` / `cd60889` | 真正交付工程、当前开发分支；文档更新以本文件所在提交为准 | 可开发、可提交到 `rtc-talk-win` |
+| 当前生产工程 | `D:\google\webrtc-win-client\rtc-talk-win` / `rtc-talk-win` / `737ac65` + 未提交 M4 | 真正交付工程、当前开发分支；文档更新以本文件所在提交为准 | 可开发、可提交到 `rtc-talk-win` |
 | 服务端权威参考 | `D:\google\webrtc-win-client\rtc-talk` / `origin/main` / `8e6ff57` | 服务端行为、协议口径、S4 差异和联调依据 | 只读 |
 | 旧 Windows 客户端功能参考 | `origin/feat/windows-client` / `df22708` | `client-win` demo、既有音视频功能和联调逻辑参考 | 只读 |
 | 旧 Windows 生产实现参考 | `origin/codex/feat/windows-production-client` / `bbb3891` | P5 UI、生产模块、历史改造和验收记录参考 | 只读 |
@@ -87,7 +87,9 @@
 | P4 | UI 本地预览联调 | 已完成并推送 | P5 预入会页、真实摄像头截图 | 视觉改动必须继续对照 P5 |
 | P5 | 第一里程碑稳定性与提交验收 | 已完成阶段验收 | Release/Debug 构建、既有联调 | 长稳定性测试按用户明确要求执行 |
 | M1 | 视频场景、camera/screen 双路、共享主画面 + PIP | 已完成并推送 | `fff99ad`、`f2cc1a5`、`rtcwin_video_scene_tests`、SFU/P2P 截图 | 仅待用户按阶段流程确认，无技术缺口 |
-| M2 | Surface Pool、帧健康、5 秒无帧回收、9 路压力 | 代码完成待用户确认 | `rtcwin_frame_health_tests`、`rtcwin_video_surface_pool_tests`、`rtcwin_video_grid_stress_tests`、断流截图 | 无技术缺口，等待阶段确认 |
+| M2 | Surface Pool、帧健康、5 秒无帧回收、9 路压力 | 已完成并提交 | `rtcwin_frame_health_tests`、`rtcwin_video_surface_pool_tests`、`rtcwin_video_grid_stress_tests`、断流截图 | 无 |
+| M3 | Floor/PTT、主持人操作、实时音量 | 已完成并本地提交，待推送 | `737ac65`、`rtcwin_floor_host_controller_tests`、moderated 双端截图 | 用户阶段验收/推送 |
+| M4 | 房间设备、热插拔回退、屏幕/窗口源、系统音端点 | 代码完成待用户确认 | `DevicePanel`、设备/共享源切换、fallback 短链路 | 用户阶段验收、提交 |
 
 ### 0.4 当前计划偏差
 
@@ -165,32 +167,30 @@
 
 ### 1.2 当前阶段确认与剩余验收
 
-M1、M2 已通过技术门禁：
+M1、M2、M3 已通过技术门禁：
 
 - M1：camera/screen 使用 `uid + source` 独立 Tile，SFU/P2P 双路、
   Shared PIP、停止 camera/screen 已完成。
 - M2：`VideoSurfacePool`、`FrameHealthMonitor`、9 路 Surface 上限、
   5 秒无帧回收、producer paused 和 peerLeft 清理已完成。
 - 9 路 720p 帧注入 29 ms；100 次显示/布局切换 Surface 数不增长。
-- Release/Debug 构建通过，CTest 9/9 通过。
+- Release/Debug 构建通过，CTest 10/10 通过。
 
-M1、M2 目前等待用户按阶段流程确认。仍未验收的生产能力：
+M4 已实现但仍待用户按阶段流程确认：
 
-- Floor/PTT、主持人授权、全员静音、踢人和策略更新。
-- 会议中设备切换、热插拔、多屏/窗口共享和系统音端点选择。
+- 会议中麦克风/播放/摄像头切换、设备周期刷新和丢失回退。
+- 多屏/窗口共享源选择、非默认系统音 loopback 端点。
 - resume、ICE refresh/restart 和 P2P 失败回退。
 - 完整 RTCStats、状态面板、诊断包导出。
 - WSS/TLS、Token 安全持久化和正式安装发布。
 
 ### 1.3 当前工作树状态
 
-M2 代码已提交，交接文档和最终包随本次阶段提交同步。
+M3 代码已提交，M4 代码在当前工作树中，尚未提交。
 
-- M1 代码提交：`f2cc1a5`。
-- M1 场景模型提交：`fff99ad`。
-- 当前 CTest 集：9 个测试，Release/Debug 均 9/9。
-- 当前便携包：`dist/rtc-talk-win-20261030-203346.zip`。
-- M2 证据：见 §18.13。
+- M3 代码提交：`737ac65`。
+- 当前 CTest 集：10 个测试，Release/Debug 均 10/10。
+- M4 证据：见 §18.15。
 
 ### 1.4 计划入口与当前下一步
 
@@ -203,15 +203,15 @@ M2 代码已提交，交接文档和最终包随本次阶段提交同步。
 
 | 执行阶段 | 主计划映射 | 状态 |
 |---|---|---|
-| M1 视频场景和双路呈现 | S4.2 UI/双流呈现 | 已完成，待用户确认 |
-| M2 多路 Surface 和帧健康 | S4.2 剩余部分 | 已完成，待用户确认 |
-| M3 Floor、PTT 和主持人 | S5 | 下一阶段 |
-| M4 房间设备与屏幕源 | S6 | 未开始 |
+| M1 视频场景和双路呈现 | S4.2 UI/双流呈现 | 已完成 |
+| M2 多路 Surface 和帧健康 | S4.2 剩余部分 | 已完成 |
+| M3 Floor、PTT 和主持人 | S5 | 已完成，本地提交待推送 |
+| M4 房间设备与屏幕源 | S6 | 代码完成，待用户确认 |
 | M5 重连、resume 和 ICE 恢复 | S7 | 未开始 |
 | M6 诊断和可观测性 | S6/S7 | 未开始 |
 | M7 安全和发布 | S7/S8 | 未开始 |
 
-当前下一步只有一项：用户确认 M2 后，按执行分册开始 M3。M3-M7 的详细范围、
+当前下一步：用户验收 M4；确认后提交 M4，再进入 M5 重连/resume/ICE 恢复。M5-M7 的详细范围、
 接口、验收和估算不得在交接文档中另写一套。
 
 ---
@@ -1886,4 +1886,99 @@ build/windows-x64/m2-stale-smoke-20261030-165010/b-after-stale.png
 build/windows-x64/m2-paused-smoke-20261030-165144/b-after-pause.png
 ```
 
-M2 目前等待用户阶段确认。M3 Floor/PTT/主持人尚未开始。
+M2 已完成。M3/M4 的实现与验证见 §18.14、§18.15。
+
+### 18.14 M3 Floor、PTT 与主持人（2026-10-30）
+
+提交：`737ac65 feat: complete M3 floor and host controls`
+
+本轮实现：
+
+- application 层新增 `FloorController`，统一 free/PTT/moderated 模式的本地
+  申请、释放、排队取消和状态同步。
+- application 层新增 `HostController`，统一 host.grant / muteAll / kick /
+  setPolicy 命令。
+- Engine 注册 `floor.request/release`、`host.grant/muteAll/kick/setPolicy`
+  和 `room.subscribeLevels`。
+- C ABI 补齐 `floor.state/revoked/local`、成员实时音量、踢出会话和策略响应。
+- SFU 发布后同步 camera/screen producer 的真实暂停状态，修复未共享屏幕却
+  在对端显示“共享中”的遗留问题。
+- 房间页支持发言权持有人、倒计时、队列位置、PTT 按住说话和 moderated
+  点击申请/取消。
+- 主持人支持成员右键授权/收回/踢人、全员静音和完整房间策略弹窗。
+- 成员音量条改为服务端 `room.audioLevels` 数据驱动；本轮同时修复了
+  `MemberLevel` objectName 缺失导致 QSS 不生效的问题。
+
+联调证据：
+
+```text
+build/windows-x64/m3-live-20261030-214639/host.png
+build/windows-x64/m3-live-20261030-214639/member.png
+build/windows-x64/m3-host-20261030-214717/host.png
+build/windows-x64/m3-host-20261030-214717/member.png
+build/windows-x64/m3-kick-20261030-214756/host.png
+build/windows-x64/m3-kick-20261030-214756/member.png
+build/windows-x64/m3-policy-20261030-214816/member.png
+```
+
+已验证：
+
+- moderated 成员申请返回 `queue_pos`，主持人授权后 `floor.state` 持有者切换。
+- 被授权端 `media.stats.muted` 同步从 true 变为 false。
+- 全员静音清空 floor 并通知所有成员 `media.muted{forced:true}`。
+- 踢人后目标收到 `session.kicked`，主持人端成员数恢复为 1。
+- free→PTT 策略广播后成员端切换为“按住说话”。
+
+### 18.15 M4 房间设备与屏幕源（2026-10-30）
+
+M4 当前代码尚未提交，等待用户确认。
+
+本轮实现：
+
+- 新增 `DevicePanel`：麦克风、播放、系统音端点、摄像头、屏幕/窗口源和
+  重新扫描入口。
+- 房间设备页和状态页替换原占位内容；状态页实时显示连接、媒体模式、
+  麦克风、摄像头、屏幕共享和发言权。
+- 入房配置携带 camera device，修复预入会选择摄像头但媒体引擎未使用的问题。
+- 新增 `camera.select`，支持会议中重启当前摄像头而不离房。
+- 新增 `media.selectRecordingDevice` / `media.selectPlayoutDevice`，
+  WASAPI 切换前停止录制/播放并在成功后恢复运行。
+- 新增 `media.selectSystemAudioDevice`，`LoopbackAudioCapture` 支持指定
+  Core Audio render endpoint，不再只能使用默认播放设备。
+- 新增 `desktop.sources` 与 `media.selectScreenSource`，支持屏幕和窗口枚举，
+  共享过程中可热切换共享源。
+- AppController 每 5 秒刷新摄像头、音频和共享源；设备选择失效时自动回退到
+  第一个可用设备。
+- 摄像头运行中断线/占用时录制线程上报错误，Engine 尝试切换到下一摄像头；
+  无可用摄像头时停止本地发布并通知 UI。
+
+M4 验证：
+
+- Release 构建和 CTest 10/10 通过。
+- Debug 构建和 CTest 10/10 通过。
+- 会议中真实 WASAPI 切换麦克风、播放端点和摄像头成功，房间未重建。
+- 摄像头切换后 `camera_capture_frames` 继续增长，`video_packets_sent` 保持增长。
+- 共享过程中切换到指定窗口源成功，`media.screenSource` 应答 ok 且
+  `screen_capture_frames` 继续增长。
+- 系统音模式切换到非默认 loopback 端点成功，状态显示
+  `system-selected-render`。
+- 用不存在设备 ID 模拟丢失后，周期刷新自动回退到有效麦克风。
+- 未共享屏幕时远端 producer 最终为 `paused:true`，房间 UI 不再误显示共享中。
+
+M4 证据：
+
+```text
+build/windows-x64/m4-switch2-20261030-222555/after-switch.png
+build/windows-x64/m4-screen-20261030-222616/screen-window.png
+build/windows-x64/m4-system-audio-20261030-222656/system-audio.png
+build/windows-x64/m4-fallback-20261030-222815/fallback.png
+build/windows-x64/m4-ui-devices2-20261030-222800/devices.png
+build/windows-x64/m4-ui-status-20261030-223054/status.png
+build/windows-x64/m4-screen-state-20261030-222631/host.png
+```
+
+未执行项：
+
+- 物理拔出摄像头/麦克风的整机热插拔测试未执行；已通过无效设备 ID 和
+  周期刷新模拟回退路径。
+- 摄像头长时间占用、驱动崩溃和设备争用仍需要用户硬件环境验收。

@@ -589,6 +589,10 @@ void CAbiEngineClient::SubmitConnectAndJoin(
                  QString::fromStdString(options.recording_device));
   payload.insert(QStringLiteral("playout_device"),
                  QString::fromStdString(options.playout_device));
+  payload.insert(QStringLiteral("system_audio_device"),
+                 QString::fromStdString(options.system_audio_device));
+  payload.insert(QStringLiteral("camera_device"),
+                 QString::fromStdString(options.camera_device));
   QString audio_backend = QStringLiteral("wasapi");
   if (options.audio_backend == domain::AudioBackend::Fake) {
     audio_backend = QStringLiteral("fake");
@@ -709,6 +713,38 @@ void CAbiEngineClient::RefreshCameras() {
 }
 void CAbiEngineClient::RefreshAudioDevices() {
   Submit(QStringLiteral("audio.devices"));
+}
+void CAbiEngineClient::RefreshDesktopSources() {
+  Submit(QStringLiteral("desktop.sources"));
+}
+void CAbiEngineClient::SelectCamera(int device_index) {
+  Submit(QStringLiteral("camera.select"),
+         QJsonObject{{QStringLiteral("device_index"), device_index}});
+}
+void CAbiEngineClient::SelectRecordingDevice(
+    const std::string& device_id) {
+  Submit(QStringLiteral("media.selectRecordingDevice"),
+         QJsonObject{{QStringLiteral("device_id"),
+                      QString::fromStdString(device_id)}});
+}
+void CAbiEngineClient::SelectPlayoutDevice(
+    const std::string& device_id) {
+  Submit(QStringLiteral("media.selectPlayoutDevice"),
+         QJsonObject{{QStringLiteral("device_id"),
+                      QString::fromStdString(device_id)}});
+}
+void CAbiEngineClient::SelectSystemAudioDevice(
+    const std::string& device_id) {
+  Submit(QStringLiteral("media.selectSystemAudioDevice"),
+         QJsonObject{{QStringLiteral("device_id"),
+                      QString::fromStdString(device_id)}});
+}
+void CAbiEngineClient::SelectScreenSource(const std::string& source_id,
+                                          bool window) {
+  Submit(QStringLiteral("media.selectScreenSource"),
+         QJsonObject{{QStringLiteral("source_id"),
+                      QString::fromStdString(source_id)},
+                     {QStringLiteral("window"), window}});
 }
 void CAbiEngineClient::StartCameraPreview(int device_index) {
   Submit(QStringLiteral("camera.preview.start"),
@@ -1048,6 +1084,22 @@ void CAbiEngineClient::HandleEvent(const QString& method,
       emit AudioDevicesChanged(
           parse_devices(data.value(QStringLiteral("recording")).toArray()),
           parse_devices(data.value(QStringLiteral("playout")).toArray()));
+    } else if (method == QStringLiteral("desktop.sources")) {
+      QVector<domain::DesktopSource> sources;
+      for (const QJsonValue& value :
+           data.value(QStringLiteral("sources")).toArray()) {
+        const QJsonObject object = value.toObject();
+        domain::DesktopSource source;
+        source.id =
+            object.value(QStringLiteral("id")).toString().toStdString();
+        source.title =
+            object.value(QStringLiteral("title")).toString().toStdString();
+        source.window =
+            object.value(QStringLiteral("type")).toString() ==
+            QStringLiteral("window");
+        if (!source.id.empty()) sources.push_back(source);
+      }
+      emit DesktopSourcesChanged(sources);
     } else if (method == QStringLiteral("camera.preview.start")) {
       emit CameraPreviewChanged(
           true, data.value(QStringLiteral("device")).toString(),

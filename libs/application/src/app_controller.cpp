@@ -1,7 +1,9 @@
 #include "rtcwin/application/app_controller.h"
 
+#include <QTimer>
 #include <QUrl>
 
+#include <algorithm>
 #include <utility>
 
 namespace rtcwin::application {
@@ -11,12 +13,21 @@ AppController::AppController(std::unique_ptr<EngineClient> engine,
     : QObject(parent), engine_(std::move(engine)) {
   floor_controller_ = std::make_unique<FloorController>(engine_.get());
   host_controller_ = std::make_unique<HostController>(engine_.get());
+  device_refresh_timer_ = new QTimer(this);
+  device_refresh_timer_->setInterval(5000);
+  connect(device_refresh_timer_, &QTimer::timeout, this, [this] {
+    if (!domain::CanUseRoomControls(snapshot_)) return;
+    engine_->RefreshCameras();
+    engine_->RefreshAudioDevices();
+    engine_->RefreshDesktopSources();
+  });
   connect(engine_.get(), &EngineClient::SnapshotChanged, this,
           &AppController::ApplySnapshot);
   connect(engine_.get(), &EngineClient::Joined, this, [this] {
     busy_ = false;
     snapshot_.connection = domain::ConnectionPhase::Ready;
     snapshot_.join = domain::JoinPhase::Joined;
+    device_refresh_timer_->start();
     floor_controller_->Sync(snapshot_);
     emit SnapshotChanged(snapshot_);
     emit BusyChanged(false, QStringLiteral("已进入房间"));
@@ -25,6 +36,7 @@ AppController::AppController(std::unique_ptr<EngineClient> engine,
   connect(engine_.get(), &EngineClient::Left, this, [this] {
     busy_ = false;
     snapshot_ = {};
+    device_refresh_timer_->stop();
     floor_controller_->Sync(snapshot_);
     emit SnapshotChanged(snapshot_);
     emit BusyChanged(false, QStringLiteral("已离开房间"));
@@ -33,9 +45,11 @@ AppController::AppController(std::unique_ptr<EngineClient> engine,
   connect(engine_.get(), &EngineClient::Notice, this,
           &AppController::Notice);
   connect(engine_.get(), &EngineClient::CameraDevicesChanged, this,
-          &AppController::CameraDevicesChanged);
+          &AppController::ApplyCameraDevices);
   connect(engine_.get(), &EngineClient::AudioDevicesChanged, this,
-          &AppController::AudioDevicesChanged);
+          &AppController::ApplyAudioDevices);
+  connect(engine_.get(), &EngineClient::DesktopSourcesChanged, this,
+          &AppController::ApplyDesktopSources);
   connect(engine_.get(), &EngineClient::CameraPreviewChanged, this,
           &AppController::CameraPreviewChanged);
   connect(engine_.get(), &EngineClient::LocalFrameReceived, this,
@@ -45,6 +59,11 @@ AppController::AppController(std::unique_ptr<EngineClient> engine,
   connect(engine_.get(), &EngineClient::ErrorOccurred, this,
           [this](const domain::AppError& error) {
             busy_ = false;
+        if (error.operation.find("select") != std::string::npos) {
+          engine_->RefreshCameras();
+          engine_->RefreshAudioDevices();
+          engine_->RefreshDesktopSources();
+        }
             emit BusyChanged(false, QString());
             emit ErrorOccurred(QString::fromStdString(error.message),
                                QString::fromStdString(error.detail));
@@ -66,9 +85,14 @@ void AppController::BeginJoin(const domain::PrejoinOptions& options) {
   snapshot_.room_id = options.room_id;
   snapshot_.self_uid = options.user_id;
   snapshot_.self_display_name = options.user_id;
+  snapshot_.audio_source = options.audio_source;
   snapshot_.self_role = domain::RoomRole::Host;
   snapshot_.talk_mode = options.talk_mode;
   snapshot_.policy.talk_mode = options.talk_mode;
+  snapshot_.devices.recording_device = options.recording_device;
+  snapshot_.devices.playout_device = options.playout_device;
+  snapshot_.devices.system_audio_device = options.system_audio_device;
+  snapshot_.devices.camera_device = options.camera_device;
   floor_controller_->Sync(snapshot_);
   busy_ = true;
   emit SnapshotChanged(snapshot_);
@@ -200,8 +224,123 @@ void AppController::ApplySnapshot(const domain::SessionSnapshot& snapshot) {
   emit SnapshotChanged(snapshot_);
 }
 
+void AppController::ApplyCameraDevices(
+    const QVector<rtcwin::domain::CameraDevice>& devices) {
+  if (domain::CanUseRoomControls(snapshot_) && !devices.empty()) {
+    const std::string selected = snapshot_.devices.camera_device;
+    const bool found =
+        std::any_of(devices.begin(), devices.end(),
+                    [&selected](const domain::CameraDevice& device) {
+                      return device.id == selected;
+                    });
+    if (selected.empty() || !found) {
+      const std::string next = devices.front().id;
+      bool valid = false;
+      const int index = QString::fromStdString(next).toInt(&valid);
+      if (valid && index >= 0) {
+        snapshot_.devices.camera_device = next;
+        engine_->SelectCamera(index);
+        emit SnapshotChanged(snapshot_);
+      }
+    }
+  }
+  emit CameraDevicesChanged(devices);
+}
+
+void AppController::ApplyAudioDevices(
+    const QVector<rtcwin::domain::AudioDevice>& recording,
+    const QVector<rtcwin::domain::AudioDevice>& playout) {
+  if (domain::CanUseRoomControls(snapshot_)) {
+    const auto missing = [](const QVector<domain::AudioDevice>& devices,
+                            const std::string& selected) {
+      return !selected.empty() &&
+             std::none_of(devices.begin(), devices.end(),
+                          [&selected](const domain::AudioDevice& device) {
+                            return device.id == selected;
+                          });
+    };
+    if (!recording.empty() &&
+        missing(recording, snapshot_.devices.recording_device)) {
+      snapshot_.devices.recording_device = recording.front().id;
+      engine_->SelectRecordingDevice(recording.front().id);
+      emit SnapshotChanged(snapshot_);
+    }
+    if (!playout.empty() &&
+        missing(playout, snapshot_.devices.playout_device)) {
+      snapshot_.devices.playout_device = playout.front().id;
+      engine_->SelectPlayoutDevice(playout.front().id);
+      emit SnapshotChanged(snapshot_);
+    }
+    if (!playout.empty() &&
+        missing(playout, snapshot_.devices.system_audio_device)) {
+      snapshot_.devices.system_audio_device = playout.front().id;
+      if (snapshot_.audio_source == domain::AudioSource::System) {
+        engine_->SelectSystemAudioDevice(playout.front().id);
+      }
+      emit SnapshotChanged(snapshot_);
+    }
+  }
+  emit AudioDevicesChanged(recording, playout);
+}
+
+void AppController::ApplyDesktopSources(
+    const QVector<rtcwin::domain::DesktopSource>& sources) {
+  if (domain::CanUseRoomControls(snapshot_) && !sources.empty() &&
+      !snapshot_.devices.screen_source.empty()) {
+    const bool found =
+        std::any_of(sources.begin(), sources.end(),
+                    [this](const domain::DesktopSource& source) {
+                      return source.id == snapshot_.devices.screen_source &&
+                             source.window ==
+                                 snapshot_.devices.screen_source_window;
+                    });
+    if (!found) {
+      snapshot_.devices.screen_source = sources.front().id;
+      snapshot_.devices.screen_source_window = sources.front().window;
+      engine_->SelectScreenSource(sources.front().id, sources.front().window);
+      emit SnapshotChanged(snapshot_);
+    }
+  }
+  emit DesktopSourcesChanged(sources);
+}
+
 void AppController::RefreshCameras() { engine_->RefreshCameras(); }
 void AppController::RefreshAudioDevices() { engine_->RefreshAudioDevices(); }
+void AppController::RefreshDesktopSources() {
+  engine_->RefreshDesktopSources();
+}
+void AppController::SelectCamera(int device_index) {
+  if (!domain::CanUseRoomControls(snapshot_)) return;
+  snapshot_.devices.camera_device = std::to_string(device_index);
+  engine_->SelectCamera(device_index);
+  emit SnapshotChanged(snapshot_);
+}
+void AppController::SelectRecordingDevice(const std::string& device_id) {
+  if (!domain::CanUseRoomControls(snapshot_)) return;
+  snapshot_.devices.recording_device = device_id;
+  engine_->SelectRecordingDevice(device_id);
+  emit SnapshotChanged(snapshot_);
+}
+void AppController::SelectPlayoutDevice(const std::string& device_id) {
+  if (!domain::CanUseRoomControls(snapshot_)) return;
+  snapshot_.devices.playout_device = device_id;
+  engine_->SelectPlayoutDevice(device_id);
+  emit SnapshotChanged(snapshot_);
+}
+void AppController::SelectSystemAudioDevice(const std::string& device_id) {
+  if (!domain::CanUseRoomControls(snapshot_)) return;
+  snapshot_.devices.system_audio_device = device_id;
+  engine_->SelectSystemAudioDevice(device_id);
+  emit SnapshotChanged(snapshot_);
+}
+void AppController::SelectScreenSource(const std::string& source_id,
+                                       bool window) {
+  if (!domain::CanUseRoomControls(snapshot_)) return;
+  snapshot_.devices.screen_source = source_id;
+  snapshot_.devices.screen_source_window = window;
+  engine_->SelectScreenSource(source_id, window);
+  emit SnapshotChanged(snapshot_);
+}
 void AppController::StartCameraPreview(int device_index) {
   engine_->StartCameraPreview(device_index);
 }

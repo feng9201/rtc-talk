@@ -25,6 +25,8 @@ struct MediaConfig {
   std::string audio_source = "mic";
   std::string recording_device;
   std::string playout_device;
+  std::string system_audio_device;
+  int camera_device_index = -1;
   int volume = 60;
   bool muted = true;
   bool camera_publish_enabled = true;
@@ -155,9 +157,14 @@ class MediaSession final {
   bool SetMuted(bool muted, MediaError* error);
   bool SetDeafened(bool deafened, MediaError* error);
   bool SetVolume(double volume, MediaError* error);
+  bool SetRecordingDevice(const std::string& device_id, MediaError* error);
+  bool SetPlayoutDevice(const std::string& device_id, MediaError* error);
+  bool SetSystemAudioDevice(const std::string& device_id, MediaError* error);
   bool SetSfuPaused(bool paused, MediaError* error);
   bool SetCameraEnabled(bool enabled, MediaError* error);
   bool SetScreenEnabled(bool enabled, MediaError* error);
+  bool SetScreenSource(const std::string& source_id, bool window,
+                       MediaError* error);
   bool PushCameraFrame(const VideoFrameData& frame, MediaError* error);
   void SetLocalScreenFrameCallback(
       std::function<void(const VideoFrameData&)> callback);

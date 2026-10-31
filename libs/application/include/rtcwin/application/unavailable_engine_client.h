@@ -30,6 +30,12 @@ class UnavailableEngineClient final : public EngineClient {
   void SelectPeer(const std::string& uid) override;
   void RefreshCameras() override;
   void RefreshAudioDevices() override;
+  void RefreshDesktopSources() override;
+  void SelectCamera(int device_index) override;
+  void SelectRecordingDevice(const std::string& device_id) override;
+  void SelectPlayoutDevice(const std::string& device_id) override;
+  void SelectSystemAudioDevice(const std::string& device_id) override;
+  void SelectScreenSource(const std::string& source_id, bool window) override;
   void StartCameraPreview(int device_index) override;
   void StopCameraPreview() override;
 };

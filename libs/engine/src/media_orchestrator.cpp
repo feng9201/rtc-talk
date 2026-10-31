@@ -90,6 +90,7 @@ struct MediaOrchestrator::Impl {
       std::lock_guard<std::mutex> lock(config_mutex);
       media_config = config;
     }
+    camera_device_index = media_config.camera_device_index;
     const Json room = join_data.value("room", Json::object());
     const Json policy = room.value("policy", Json::object());
     const Json video = policy.value("video", Json::object());
@@ -200,6 +201,47 @@ struct MediaOrchestrator::Impl {
     }
     context.events.EmitResponse(command.id, command.method, true, 0, {},
                                 Json{{"cameras", std::move(cameras)}});
+  }
+
+  void HandleCameraSelect(const EngineCommand& command) {
+    const int next_index =
+        command.data.value("device_index", -1);
+    if (next_index < 0) {
+      context.events.EmitResponse(command.id, command.method, false, 400,
+                                  "摄像头设备编号无效");
+      return;
+    }
+    if (camera_toggle_pending) {
+      context.events.EmitResponse(command.id, command.method, false, 409,
+                                  "摄像头命令正在处理中");
+      return;
+    }
+    const int previous_index = camera_device_index;
+    const bool restart =
+        camera_preview_active || camera_publishing.load();
+    camera.Stop();
+    camera_device_index = next_index;
+    std::string error;
+    if (restart && !EnsureCameraCapture(&error)) {
+      camera_device_index = previous_index;
+      std::string restore_error;
+      EnsureCameraCapture(&restore_error);
+      context.events.EmitResponse(
+          command.id, command.method, false, 1501,
+          error.empty() ? "切换摄像头失败" : error);
+      return;
+    }
+    Json data = {{"device_index", camera_device_index},
+                 {"device", camera.device_name()},
+                 {"width", camera.width()},
+                 {"height", camera.height()},
+                 {"fps", camera.fps()},
+                 {"restarted", restart}};
+    context.events.EmitResponse(command.id, command.method, true, 0, {},
+                                data);
+    if (restart && camera_preview_active) {
+      context.events.EmitNotification("camera.preview", data);
+    }
   }
 
   void HandleCameraPreviewStart(const EngineCommand& command) {
@@ -556,6 +598,99 @@ struct MediaOrchestrator::Impl {
     Json data = {{"deafened", value}};
     context.events.EmitNotification("media.deafened", data);
     context.events.EmitResponse(command.id, command.method, true, 0, {}, data);
+  }
+
+  void HandleSelectRecordingDevice(const EngineCommand& command) {
+    if (!media_session) {
+      context.events.EmitResponse(command.id, command.method, false, 409,
+                                  "音频媒体未就绪");
+      return;
+    }
+    const std::string device_id =
+        command.data.value("device_id", std::string());
+    webrtc_media::MediaError error;
+    if (!media_session->SetRecordingDevice(device_id, &error)) {
+      context.events.EmitResponse(command.id, command.method, false,
+                                  error.code, error.message);
+      return;
+    }
+    {
+      std::lock_guard<std::mutex> lock(config_mutex);
+      config.recording_device = device_id;
+    }
+    Json data = {{"device_id", device_id}};
+    context.events.EmitNotification("media.recordingDevice", data);
+    context.events.EmitResponse(command.id, command.method, true, 0, {},
+                                data);
+  }
+
+  void HandleSelectPlayoutDevice(const EngineCommand& command) {
+    if (!media_session) {
+      context.events.EmitResponse(command.id, command.method, false, 409,
+                                  "音频媒体未就绪");
+      return;
+    }
+    const std::string device_id =
+        command.data.value("device_id", std::string());
+    webrtc_media::MediaError error;
+    if (!media_session->SetPlayoutDevice(device_id, &error)) {
+      context.events.EmitResponse(command.id, command.method, false,
+                                  error.code, error.message);
+      return;
+    }
+    {
+      std::lock_guard<std::mutex> lock(config_mutex);
+      config.playout_device = device_id;
+    }
+    Json data = {{"device_id", device_id}};
+    context.events.EmitNotification("media.playoutDevice", data);
+    context.events.EmitResponse(command.id, command.method, true, 0, {},
+                                data);
+  }
+
+  void HandleSelectSystemAudioDevice(const EngineCommand& command) {
+    if (!media_session) {
+      context.events.EmitResponse(command.id, command.method, false, 409,
+                                  "音频媒体未就绪");
+      return;
+    }
+    const std::string device_id =
+        command.data.value("device_id", std::string());
+    webrtc_media::MediaError error;
+    if (!media_session->SetSystemAudioDevice(device_id, &error)) {
+      context.events.EmitResponse(command.id, command.method, false,
+                                  error.code, error.message);
+      return;
+    }
+    {
+      std::lock_guard<std::mutex> lock(config_mutex);
+      config.system_audio_device = device_id;
+    }
+    Json data = {{"device_id", device_id}};
+    context.events.EmitNotification("media.systemAudioDevice", data);
+    context.events.EmitResponse(command.id, command.method, true, 0, {},
+                                data);
+  }
+
+  void HandleSelectScreenSource(const EngineCommand& command) {
+    if (!media_session) {
+      context.events.EmitResponse(command.id, command.method, false, 409,
+                                  "媒体未就绪");
+      return;
+    }
+    const std::string source_id =
+        command.data.value("source_id", std::string());
+    const bool window = command.data.value("window", false);
+    webrtc_media::MediaError error;
+    if (!media_session->SetScreenSource(source_id, window, &error)) {
+      context.events.EmitResponse(command.id, command.method, false,
+                                  error.code, error.message);
+      return;
+    }
+    Json data = {{"source_id", source_id}, {"window", window}};
+    context.events.EmitNotification("media.screenSource", data);
+    context.events.EmitResponse(command.id, command.method, true, 0, {},
+                                data);
   }
 
   void HandleStats(const EngineCommand& command) {
@@ -918,6 +1053,66 @@ struct MediaOrchestrator::Impl {
         [this](const std::string& message) {
           context.events.EmitNotification(
               "camera.preview.error", Json{{"message", message}});
+          context.post_to_worker([this, message] {
+            if (!camera_preview_active && !camera_publishing.load()) return;
+            const auto disable_server_camera = [this] {
+              const auto session = context.session.snapshot();
+              if (session.phase != SessionPhase::Joined) return;
+              context.signaling.Request(
+                  "media.setMute",
+                  Json{{"source", "camera"}, {"muted", true}},
+                  [](Json) {});
+            };
+            const auto devices = camera_win::CameraService::Enumerate();
+            if (devices.empty()) {
+              camera_preview_active = false;
+              camera_publishing.store(false);
+              disable_server_camera();
+              if (media_session) {
+                webrtc_media::MediaError error;
+                media_session->SetCameraEnabled(false, &error);
+              }
+              context.events.EmitNotification(
+                  "video.state",
+                  Json{{"source", "camera"},
+                       {"sharing", false},
+                       {"camera", false},
+                       {"forced", true},
+                       {"reason", message}});
+              return;
+            }
+            int next = devices.front().index;
+            for (const auto& device : devices) {
+              if (device.index != camera_device_index) {
+                next = device.index;
+                break;
+              }
+            }
+            camera.Stop();
+            camera_device_index = next;
+            std::string recovery_error;
+            if (!EnsureCameraCapture(&recovery_error)) {
+              camera_preview_active = false;
+              camera_publishing.store(false);
+              disable_server_camera();
+              if (media_session) {
+                webrtc_media::MediaError error;
+                media_session->SetCameraEnabled(false, &error);
+              }
+              context.events.EmitNotification(
+                  "video.state",
+                  Json{{"source", "camera"},
+                       {"sharing", false},
+                       {"camera", false},
+                       {"forced", true},
+                       {"reason", recovery_error}});
+              return;
+            }
+            context.events.EmitNotification(
+                "camera.deviceRecovered",
+                Json{{"device_index", camera_device_index},
+                     {"device", camera.device_name()}});
+          });
         },
         error);
   }
@@ -1114,6 +1309,25 @@ struct MediaOrchestrator::Impl {
     if (!media_session->SetSfuPaused(sfu_paused, &error)) {
       EmitMediaError(error.code, "更新 SFU 暂停状态失败", error.message);
     }
+    // The first sfu.publish creates video producers before the room-level
+    // camera/screen intent is synchronized. Re-apply both source states so a
+    // disabled screen producer never appears as an active share to receivers.
+    const auto sync_video_source = [this, generation](
+                                       const char* source, bool enabled) {
+      context.signaling.Request(
+          "media.setMute",
+          Json{{"source", source}, {"muted", !enabled}},
+          [this, generation, source](Json result) {
+            if (!context.session.IsCurrent(generation)) return;
+            if (!result.value("ok", false)) {
+              LOG_WARN("synchronize {} source failed code={} message={}",
+                       source, ResponseCode(result), ResponseMessage(result));
+            }
+          });
+    };
+    sync_video_source("camera", camera_publishing.load());
+    sync_video_source("screen",
+                      media_session && media_session->status().screen_enabled);
     context.events.EmitNotification(
         "media.published", Json{{"ok", true}, {"mode", "sfu"}});
     if (!pending_sfu_request_id.empty()) {
@@ -1403,6 +1617,10 @@ void MediaOrchestrator::HandleCameraDevices(const EngineCommand& command) {
   impl_->HandleCameraDevices(command);
 }
 
+void MediaOrchestrator::HandleCameraSelect(const EngineCommand& command) {
+  impl_->HandleCameraSelect(command);
+}
+
 void MediaOrchestrator::HandleCameraPreviewStart(
     const EngineCommand& command) {
   impl_->HandleCameraPreviewStart(command);
@@ -1432,6 +1650,26 @@ void MediaOrchestrator::HandleSetVolume(const EngineCommand& command) {
 
 void MediaOrchestrator::HandleSetDeafened(const EngineCommand& command) {
   impl_->HandleSetDeafened(command);
+}
+
+void MediaOrchestrator::HandleSelectRecordingDevice(
+    const EngineCommand& command) {
+  impl_->HandleSelectRecordingDevice(command);
+}
+
+void MediaOrchestrator::HandleSelectPlayoutDevice(
+    const EngineCommand& command) {
+  impl_->HandleSelectPlayoutDevice(command);
+}
+
+void MediaOrchestrator::HandleSelectSystemAudioDevice(
+    const EngineCommand& command) {
+  impl_->HandleSelectSystemAudioDevice(command);
+}
+
+void MediaOrchestrator::HandleSelectScreenSource(
+    const EngineCommand& command) {
+  impl_->HandleSelectScreenSource(command);
 }
 
 void MediaOrchestrator::HandleStats(const EngineCommand& command) {

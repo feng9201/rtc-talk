@@ -17,7 +17,8 @@ class SwitchableAudioDevice
           webrtc::AudioDeviceModule> {
  public:
   SwitchableAudioDevice(webrtc::scoped_refptr<webrtc::AudioDeviceModule> mic,
-                        bool system_audio);
+                        bool system_audio,
+                        std::string loopback_device_id = {});
   ~SwitchableAudioDevice() override;
 
   int32_t RegisterAudioCallback(webrtc::AudioTransport* transport) override;
@@ -87,6 +88,7 @@ class SwitchableAudioDevice
   int32_t EnableBuiltInNS(bool enable) override;
 
   bool system_audio() const { return system_audio_; }
+  bool SetLoopbackDevice(const std::string& device_id, std::string* error);
   const std::string& last_error() const { return last_error_; }
 
  private:
@@ -97,6 +99,7 @@ class SwitchableAudioDevice
   std::atomic<webrtc::AudioTransport*> transport_{nullptr};
   std::atomic<bool> initialized_{false};
   bool system_audio_ = false;
+  std::string loopback_device_id_;
   bool recording_requested_ = false;
   bool mic_inited_ = false;
   std::string last_error_;

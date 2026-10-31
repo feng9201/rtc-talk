@@ -34,6 +34,13 @@ class EngineClient : public QObject {
   virtual void SelectPeer(const std::string& uid) = 0;
   virtual void RefreshCameras() = 0;
   virtual void RefreshAudioDevices() = 0;
+  virtual void RefreshDesktopSources() = 0;
+  virtual void SelectCamera(int device_index) = 0;
+  virtual void SelectRecordingDevice(const std::string& device_id) = 0;
+  virtual void SelectPlayoutDevice(const std::string& device_id) = 0;
+  virtual void SelectSystemAudioDevice(const std::string& device_id) = 0;
+  virtual void SelectScreenSource(const std::string& source_id,
+                                  bool window) = 0;
   virtual void StartCameraPreview(int device_index) = 0;
   virtual void StopCameraPreview() = 0;
 
@@ -48,6 +55,8 @@ class EngineClient : public QObject {
   void AudioDevicesChanged(
       const QVector<rtcwin::domain::AudioDevice>& recording,
       const QVector<rtcwin::domain::AudioDevice>& playout);
+  void DesktopSourcesChanged(
+      const QVector<rtcwin::domain::DesktopSource>& sources);
   void CameraPreviewChanged(bool active, const QString& device, int width,
                             int height, int fps);
   void LocalFrameReceived(const rtcwin::domain::VideoFrame& frame);

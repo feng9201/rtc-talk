@@ -10,6 +10,8 @@
 
 #include <memory>
 
+class QTimer;
+
 namespace rtcwin::application {
 
 class AppController final : public QObject {
@@ -40,6 +42,12 @@ class AppController final : public QObject {
   void SelectPeer(const std::string& uid);
   void RefreshCameras();
   void RefreshAudioDevices();
+  void RefreshDesktopSources();
+  void SelectCamera(int device_index);
+  void SelectRecordingDevice(const std::string& device_id);
+  void SelectPlayoutDevice(const std::string& device_id);
+  void SelectSystemAudioDevice(const std::string& device_id);
+  void SelectScreenSource(const std::string& source_id, bool window);
   void StartCameraPreview(int device_index);
   void StopCameraPreview();
 
@@ -55,6 +63,8 @@ class AppController final : public QObject {
   void AudioDevicesChanged(
       const QVector<rtcwin::domain::AudioDevice>& recording,
       const QVector<rtcwin::domain::AudioDevice>& playout);
+  void DesktopSourcesChanged(
+      const QVector<rtcwin::domain::DesktopSource>& sources);
   void CameraPreviewChanged(bool active, const QString& device, int width,
                             int height, int fps);
   void LocalFrameReceived(const rtcwin::domain::VideoFrame& frame);
@@ -64,10 +74,18 @@ class AppController final : public QObject {
   std::optional<domain::AppError> Validate(
       const domain::PrejoinOptions& options) const;
   void ApplySnapshot(const domain::SessionSnapshot& snapshot);
+  void ApplyCameraDevices(
+      const QVector<rtcwin::domain::CameraDevice>& devices);
+  void ApplyAudioDevices(
+      const QVector<rtcwin::domain::AudioDevice>& recording,
+      const QVector<rtcwin::domain::AudioDevice>& playout);
+  void ApplyDesktopSources(
+      const QVector<rtcwin::domain::DesktopSource>& sources);
 
   std::unique_ptr<EngineClient> engine_;
   std::unique_ptr<FloorController> floor_controller_;
   std::unique_ptr<HostController> host_controller_;
+  QTimer* device_refresh_timer_ = nullptr;
   SettingsStore settings_;
   domain::SessionSnapshot snapshot_;
   bool busy_ = false;

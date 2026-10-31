@@ -73,6 +73,7 @@ class PrejoinPage final : public QWidget {
   SegmentedControl* audio_source_ = nullptr;
   QComboBox* recording_device_ = nullptr;
   QComboBox* playout_device_ = nullptr;
+  QComboBox* system_audio_device_ = nullptr;
   QComboBox* camera_device_ = nullptr;
   QSlider* volume_ = nullptr;
   QLabel* volume_value_ = nullptr;
@@ -90,6 +91,7 @@ class PrejoinPage final : public QWidget {
   QString preferred_camera_id_;
   QString preferred_recording_id_;
   QString preferred_playout_id_;
+  QString preferred_system_audio_id_;
   bool preview_active_ = false;
   bool preview_pending_ = false;
   bool busy_ = false;

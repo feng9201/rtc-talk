@@ -2,6 +2,7 @@
 
 #include "engine_log.h"
 #include "rtcwin/webrtc_media/audio_device_service.h"
+#include "rtcwin/webrtc_media/desktop_capture_service.h"
 
 #include <utility>
 
@@ -111,6 +112,10 @@ void EngineCore::RegisterCommandHandlers() {
         media_.HandleCameraDevices(command);
       });
   command_router_.Register(
+      "camera.select", [this](const EngineCommand& command) {
+        media_.HandleCameraSelect(command);
+      });
+  command_router_.Register(
       "camera.preview.start", [this](const EngineCommand& command) {
         media_.HandleCameraPreviewStart(command);
       });
@@ -121,6 +126,27 @@ void EngineCore::RegisterCommandHandlers() {
   command_router_.Register(
       "audio.devices", [this](const EngineCommand& command) {
         HandleAudioDevices(command);
+      });
+  command_router_.Register(
+      "desktop.sources", [this](const EngineCommand& command) {
+        std::vector<webrtc_media::DesktopSourceInfo> sources;
+        std::string error;
+        if (!webrtc_media::EnumerateDesktopSources(&sources, &error)) {
+          EmitResponse(command.id, command.method, false, 1602,
+                       error.empty() ? "共享源枚举失败" : error);
+          return;
+        }
+        signaling::Json data = {{"sources", signaling::Json::array()}};
+        for (const auto& source : sources) {
+          data["sources"].push_back(
+              {{"id", std::to_string(source.id)},
+               {"title", source.title},
+               {"type", source.type ==
+                                webrtc_media::DesktopSourceType::Window
+                            ? "window"
+                            : "screen"}});
+        }
+        EmitResponse(command.id, command.method, true, 0, {}, data);
       });
   command_router_.Register(
       "session.connectAndJoin", [this](const EngineCommand& command) {
@@ -145,6 +171,22 @@ void EngineCore::RegisterCommandHandlers() {
   command_router_.Register("media.setDeafened",
                            [this](const EngineCommand& command) {
                              media_.HandleSetDeafened(command);
+                           });
+  command_router_.Register("media.selectRecordingDevice",
+                           [this](const EngineCommand& command) {
+                             media_.HandleSelectRecordingDevice(command);
+                           });
+  command_router_.Register("media.selectPlayoutDevice",
+                           [this](const EngineCommand& command) {
+                             media_.HandleSelectPlayoutDevice(command);
+                           });
+  command_router_.Register("media.selectSystemAudioDevice",
+                           [this](const EngineCommand& command) {
+                             media_.HandleSelectSystemAudioDevice(command);
+                           });
+  command_router_.Register("media.selectScreenSource",
+                           [this](const EngineCommand& command) {
+                             media_.HandleSelectScreenSource(command);
                            });
   command_router_.Register("media.stats",
                            [this](const EngineCommand& command) {

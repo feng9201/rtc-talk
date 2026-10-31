@@ -3,6 +3,7 @@
 #include "rtcwin/domain/types.h"
 
 #include <QHash>
+#include <QVector>
 #include <QWidget>
 
 class QLabel;
@@ -13,6 +14,7 @@ class QVBoxLayout;
 namespace rtcwin::ui {
 
 class ControlButton;
+class DevicePanel;
 class MemberRow;
 class Pill;
 class SegmentedControl;
@@ -27,8 +29,16 @@ class RoomPage final : public QWidget {
   void SetState(const domain::SessionSnapshot& state);
   void SetVideoFrame(const domain::VideoFrame& frame);
   void SetPreviewMode(bool preview);
+  void SelectSideTab(domain::PanelTab tab);
   void SetBusy(bool busy);
   void SetControlHint(const QString& text);
+  void SetCameraDevices(
+      const QVector<rtcwin::domain::CameraDevice>& devices);
+  void SetAudioDevices(
+      const QVector<rtcwin::domain::AudioDevice>& recording,
+      const QVector<rtcwin::domain::AudioDevice>& playout);
+  void SetDesktopSources(
+      const QVector<rtcwin::domain::DesktopSource>& sources);
   const domain::SessionSnapshot& state() const { return state_; }
 
  signals:
@@ -45,6 +55,12 @@ class RoomPage final : public QWidget {
   void GrantFloorRequested(const QString& uid, bool allow);
   void KickMemberRequested(const QString& uid);
   void MuteAllRequested();
+  void RefreshDeviceInventoryRequested();
+  void RecordingDeviceSelected(const QString& device_id);
+  void PlayoutDeviceSelected(const QString& device_id);
+  void SystemAudioDeviceSelected(const QString& device_id);
+  void CameraSelected(int device_index);
+  void DesktopSourceSelected(const QString& source_id, bool window);
 
  private:
   QWidget* BuildHeader();
@@ -56,6 +72,7 @@ class RoomPage final : public QWidget {
   void RebuildSidePanel();
   void RefreshMembers();
   void UpdateMemberPanel();
+  void UpdateStatusPanel();
   int QueuePosition() const;
   domain::PeerState SelfPeer() const;
 
@@ -91,8 +108,14 @@ class RoomPage final : public QWidget {
   QLabel* member_floor_ = nullptr;
   QPushButton* mute_all_ = nullptr;
   QVBoxLayout* member_rows_layout_ = nullptr;
+  DevicePanel* device_panel_ = nullptr;
+  QHash<QString, QLabel*> status_values_;
   QHash<QString, MemberRow*> member_rows_;
   QStringList member_order_;
+  QVector<domain::CameraDevice> camera_devices_;
+  QVector<domain::AudioDevice> recording_devices_;
+  QVector<domain::AudioDevice> playout_devices_;
+  QVector<domain::DesktopSource> desktop_sources_;
 };
 
 }  // namespace rtcwin::ui
