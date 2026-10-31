@@ -189,6 +189,14 @@ int main(int argc, char** argv) {
       QStringLiteral("联调：刷新凭证后重启的 PC：send|recv"),
       QStringLiteral("pc")));
   parser.addOption(QCommandLineOption(
+      QStringLiteral("auto-export-diagnostics-ms"),
+      QStringLiteral("联调：入房后导出脱敏诊断包"),
+      QStringLiteral("ms")));
+  parser.addOption(QCommandLineOption(
+      QStringLiteral("auto-room-tab"),
+      QStringLiteral("联调：入房后切换到 members|devices|status 侧栏"),
+      QStringLiteral("tab")));
+  parser.addOption(QCommandLineOption(
       QStringLiteral("auto-leave-ms"), QStringLiteral("入房后自动离房间隔"),
       QStringLiteral("ms")));
   parser.process(app);
@@ -470,6 +478,29 @@ int main(int argc, char** argv) {
           if (!pc.isEmpty()) window.RestartIce(pc);
         });
       }
+    }
+    if (parser.isSet(QStringLiteral("auto-export-diagnostics-ms"))) {
+      bool export_ok = false;
+      const int export_ms =
+          parser.value(QStringLiteral("auto-export-diagnostics-ms"))
+              .toInt(&export_ok);
+      if (export_ok && export_ms >= 0) {
+        QTimer::singleShot(export_ms, &window,
+                           &rtcwin::ui::MainWindow::ExportDiagnostics);
+      }
+    }
+    if (parser.isSet(QStringLiteral("auto-room-tab"))) {
+      const QString tab =
+          parser.value(QStringLiteral("auto-room-tab"));
+      const rtcwin::domain::PanelTab panel_tab =
+          tab == QStringLiteral("devices")
+              ? rtcwin::domain::PanelTab::Devices
+              : tab == QStringLiteral("status")
+                    ? rtcwin::domain::PanelTab::Status
+                    : rtcwin::domain::PanelTab::Members;
+      QTimer::singleShot(6000, &window, [&window, panel_tab] {
+        window.SelectRoomTab(panel_tab);
+      });
     }
     if (parser.isSet(QStringLiteral("auto-leave-ms"))) {
       bool leave_ok = false;

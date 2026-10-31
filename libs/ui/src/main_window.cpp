@@ -1,6 +1,7 @@
 #include "rtcwin/ui/main_window.h"
 
 #include "rtcwin/application/app_controller.h"
+#include "rtcwin/application/diagnostics_exporter.h"
 #include "rtcwin/client_gateway/c_abi_engine_client.h"
 #include "rtcwin/ui/pages/prejoin_page.h"
 #include "rtcwin/ui/pages/room_policy_dialog.h"
@@ -8,6 +9,8 @@
 #include "rtcwin/ui/widgets/window_controls.h"
 
 #include <QResizeEvent>
+#include <QDir>
+#include <QStandardPaths>
 #include <QStackedWidget>
 #include <QVBoxLayout>
 
@@ -55,6 +58,20 @@ domain::SessionSnapshot PreviewState() {
   state.peers.push_back(MakePeer("u5", "运维值班", domain::RoomRole::Member,
                                  false, true, 0.45));
   return state;
+}
+
+QString DefaultLogPath() {
+  const QByteArray override =
+      qgetenv("RTCWIN_LOG_PATH").trimmed();
+  if (!override.isEmpty()) return QString::fromUtf8(override);
+  const QByteArray local = qgetenv("LOCALAPPDATA").trimmed();
+  if (!local.isEmpty()) {
+    return QString::fromUtf8(local) +
+           QStringLiteral("/rtc-talk-win/logs/rtcwin.log");
+  }
+  return QStandardPaths::writableLocation(
+             QStandardPaths::AppLocalDataLocation) +
+         QStringLiteral("/rtc-talk-win/logs/rtcwin.log");
 }
 
 }  // namespace
@@ -185,6 +202,8 @@ void MainWindow::ConnectSignals() {
           [this](const QString& id, bool window) {
             controller_->SelectScreenSource(id.toStdString(), window);
           });
+  connect(room_page_, &RoomPage::DiagnosticsExportRequested, this,
+          &MainWindow::ExportDiagnostics);
   connect(room_page_, &RoomPage::MemberSelected, this,
           [this](const QString& uid) {
             controller_->SelectPeer(uid.toStdString());
@@ -331,6 +350,28 @@ void MainWindow::ForceReconnect() { controller_->ForceReconnect(); }
 void MainWindow::RefreshIce() { controller_->RefreshIce(); }
 void MainWindow::RestartIce(const QString& pc) {
   controller_->RestartIce(pc.toStdString());
+}
+
+void MainWindow::ExportDiagnostics() {
+  QString output;
+  QString error;
+  const QString documents =
+      QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+  const QString output_dir =
+      documents.isEmpty() ? QDir::homePath() : documents;
+  if (application::DiagnosticsExporter::Export(
+          controller_->snapshot(), DefaultLogPath(), output_dir, &output,
+          &error)) {
+    UpdateStatus(QStringLiteral("诊断包已导出：%1").arg(output),
+                 QStringLiteral("ok"));
+  } else {
+    UpdateStatus(QStringLiteral("诊断包导出失败：%1").arg(error),
+                 QStringLiteral("danger"));
+  }
+}
+
+void MainWindow::SelectRoomTab(domain::PanelTab tab) {
+  room_page_->SelectSideTab(tab);
 }
 
 void MainWindow::EnableCameraPreview() {

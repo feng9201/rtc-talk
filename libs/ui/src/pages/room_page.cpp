@@ -545,6 +545,10 @@ void RoomPage::RebuildSidePanel() {
       row->addWidget(theme::Label(name, QStringLiteral("Muted"), card), 1);
       auto* text = theme::Label(value, QStringLiteral("Value"), card);
       text->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+      if (name == QStringLiteral("候选对")) {
+        text->setWordWrap(true);
+        text->setMaximumWidth(190);
+      }
       row->addWidget(text);
       card_layout->addLayout(row);
       status_values_.insert(name, text);
@@ -569,6 +573,17 @@ void RoomPage::RebuildSidePanel() {
                 : state_.floor.holder_uid.empty()
                       ? QStringLiteral("未授予")
                       : Text(state_.floor.holder_uid));
+    add_row(QStringLiteral("RTT"), QStringLiteral("—"));
+    add_row(QStringLiteral("抖动"), QStringLiteral("—"));
+    add_row(QStringLiteral("丢包"), QStringLiteral("—"));
+    add_row(QStringLiteral("码率"), QStringLiteral("—"));
+    add_row(QStringLiteral("候选对"), QStringLiteral("—"));
+    auto* export_button = theme::Button(QStringLiteral("导出诊断包"),
+                                        QStringLiteral("default"), card);
+    card_layout->addSpacing(6);
+    card_layout->addWidget(export_button);
+    connect(export_button, &QPushButton::clicked, this,
+            &RoomPage::DiagnosticsExportRequested);
     UpdateStatusPanel();
     side_layout_->addWidget(card);
     side_layout_->addStretch(1);
@@ -703,6 +718,26 @@ void RoomPage::UpdateStatusPanel() {
           : state_.floor.holder_uid.empty()
                 ? QStringLiteral("未授予")
                 : Text(state_.floor.holder_uid));
+  const auto number = [](double value, const QString& suffix) {
+    return value < 0.0
+               ? QStringLiteral("—")
+               : QStringLiteral("%1%2").arg(value, 0, 'f', 1).arg(suffix);
+  };
+  set(QStringLiteral("RTT"),
+      number(state_.media_stats.rtt_ms, QStringLiteral(" ms")));
+  set(QStringLiteral("抖动"),
+      number(state_.media_stats.jitter_ms, QStringLiteral(" ms")));
+  set(QStringLiteral("丢包"),
+      number(state_.media_stats.loss_percent, QStringLiteral(" %")));
+  set(QStringLiteral("码率"),
+      state_.media_stats.available
+          ? QStringLiteral("%1 kbps")
+                .arg(state_.media_stats.bitrate_bps / 1000.0, 0, 'f', 0)
+          : QStringLiteral("—"));
+  set(QStringLiteral("候选对"),
+      state_.media_stats.candidate_pair.empty()
+          ? QStringLiteral("—")
+          : Text(state_.media_stats.candidate_pair));
 }
 
 int RoomPage::QueuePosition() const {

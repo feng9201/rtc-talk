@@ -3,9 +3,9 @@
 > 快照日期：2026-10-31
 > 仓库：`D:\google\webrtc-win-client\rtc-talk-win`
 > 分支：`rtc-talk-win`
-> 代码基线：`e433396 feat: complete M4 device and screen source controls`
+> 代码基线：`ac39c4f feat: complete M5 resume and ICE recovery` + M6 交付提交
 >
-> 当前状态：M1/M2/M3/M4 已完成并提交；M5 resume、退避重连和 ICE 刷新已实现并通过 Release/Debug 回归及测试服短链路，等待用户阶段确认。M5 改动当前尚未提交。
+> 当前状态：M1-M6 已完成并确认；M6 RTCStats 聚合、实时状态面板和脱敏诊断包随本次提交交付；M7 安全和发布暂停，待转生产前处理。
 > 旧工程：`D:\google\webrtc-win-client\rtc-talk`，只读参考，禁止修改或提交。
 
 本文档面向后续接入业务、继续媒体开发、做代码评审或发布验收的工程师。它描述当前真实代码状态，不把计划中的能力写成已完成能力。
@@ -17,7 +17,7 @@
 
 | 类别 | 仓库 / 分支 / 提交 | 本工程中的用途 | 权限 |
 |---|---|---|---|
-| 当前生产工程 | `D:\google\webrtc-win-client\rtc-talk-win` / `rtc-talk-win` / `e433396` + 未提交 M5 | 真正交付工程、当前开发分支；文档更新以本文件所在提交为准 | 可开发、可提交到 `rtc-talk-win` |
+| 当前生产工程 | `D:\google\webrtc-win-client\rtc-talk-win` / `rtc-talk-win` / `ac39c4f` + 未提交 M6 | 真正交付工程、当前开发分支；文档更新以本文件所在提交为准 | 可开发、可提交到 `rtc-talk-win` |
 | 服务端权威参考 | `D:\google\webrtc-win-client\rtc-talk` / `origin/main` / `8e6ff57` | 服务端行为、协议口径、S4 差异和联调依据 | 只读 |
 | 旧 Windows 客户端功能参考 | `origin/feat/windows-client` / `df22708` | `client-win` demo、既有音视频功能和联调逻辑参考 | 只读 |
 | 旧 Windows 生产实现参考 | `origin/codex/feat/windows-production-client` / `bbb3891` | P5 UI、生产模块、历史改造和验收记录参考 | 只读 |
@@ -76,10 +76,10 @@
 | S3.2 | 音频 PeerConnection、P2P/SFU、静音、音量、收听、系统音 | 核心完成并推送，待完整人工验收 | `5ab73fa`、`MediaSession`、WASAPI loopback | 收听/音量听音、设备异常、离房重进和恢复 |
 | S4.1 | 摄像头 SFU 发布、远端 I420、muxPlayer 房间渲染 | 代码完成，双端短链路通过 | `MediaSession`、MF H.264、`RemoteVideoSink`、`MuxVideoSurface` | 设备切换、离房重进、异常恢复 |
 | S4.2 | 屏幕共享、P2P 视频、多路视频池和压力 | 已完成并推送 | M1 双路/PIP、M2 Surface Pool/帧健康、9 路压力 | 长稳定性测试按用户要求另行安排 |
-| S5 | 成员、发言权、主持人、PTT/审核模式 | 部分完成 | 房间成员/策略/floor 快照已有；floor 请求仍为 501 | floor.request/release、revoked、keepalive、主持人操作 |
-| S6 | 设备、统计、日志和诊断 | 部分完成 | 摄像头/音频设备枚举、`media.stats` 基础字段 | RTCStats、设备热插拔、设置弹窗、脱敏日志、诊断面板 |
-| S7 | 重连、resume、ICE refresh、安全 | 未开始 | 当前关闭后重置媒体，无 resume | generation guard、WSS、resume、ICE restart、错误恢复 |
-| S8 | 安装包、签名、升级和发布验收 | 未开始 | 无 | 安装包、依赖清单、签名、升级和发布验收 |
+| S5 | 成员、发言权、主持人、PTT/审核模式 | 已完成并提交 | M3 `737ac65`、Floor/Host 控制器和双端联调证据 | 无 |
+| S6 | 设备、统计、日志和诊断 | 代码完成，待 M6 验收 | M4 `e433396`、M6 RTCStats、状态页和脱敏诊断包 | M6 用户验收 |
+| S7 | 重连、resume、ICE refresh、安全 | 功能部分完成；M7 暂停 | M5 `ac39c4f`；WSS/TLS 与凭证安全未开始 | 转生产前恢复 M7 |
+| S8 | 安装包、签名、升级和发布验收 | 暂停，转生产前处理 | 无 | 安装包、依赖清单、签名、升级和发布验收 |
 | P0 | 计划与依赖审计 | 已完成 | 本工程依赖边界和构建脚本 | 后续计划变更时维护 |
 | P1 | muxPlayer 可构建 | 已完成并推送 | `de3a7f1` | 无 |
 | P2 | muxPlayer 原始帧注入 | 已完成并推送 | `de3a7f1` | 远端帧接入在 S4 完成 |
@@ -90,15 +90,16 @@
 | M2 | Surface Pool、帧健康、5 秒无帧回收、9 路压力 | 已完成并提交 | `rtcwin_frame_health_tests`、`rtcwin_video_surface_pool_tests`、`rtcwin_video_grid_stress_tests`、断流截图 | 无 |
 | M3 | Floor/PTT、主持人操作、实时音量 | 已完成并提交 | `737ac65`、`rtcwin_floor_host_controller_tests`、moderated 双端截图 | 推送 |
 | M4 | 房间设备、热插拔回退、屏幕/窗口源、系统音端点 | 已完成并提交 | `e433396`、`DevicePanel`、设备/共享源切换、fallback 短链路 | 推送 |
-| M5 | resume、退避重连、ICE refresh/restart | 代码完成待用户确认 | `ReconnectController`、resume 双端截图、ICE 刷新日志 | 用户阶段验收、提交 |
+| M5 | resume、退避重连、ICE refresh/restart | 已完成并提交 | `ac39c4f`、`ReconnectController`、resume 双端截图、ICE 刷新日志 | 推送 |
+| M6 | 完整 RTCStats、状态面板、诊断包 | 代码完成待用户确认 | `DiagnosticsExporter`、RTCStats 字段、status-live 截图 | 用户阶段验收、提交 |
 
 ### 0.4 当前计划偏差
 
 必须明确记录以下偏差：
 
 1. `plan/production-plan.md` 是长期 S0-S8 计划；当前执行基线以本文
-   `cd60889` 和 `plan/gap-driven-development-plan.md` 的 M1-M7 为准。
-2. `talk-protocol.md` 定义了 resume、ICE restart、P2P/SFU 先建后断、视频 m-line 等完整约束；当前 SFU 摄像头/屏幕共享和 P2P 音视频三 m-line 已接入，resume/ICE restart 仍未实现。
+   `ac39c4f` 和 `plan/gap-driven-development-plan.md` 的 M1-M7 为准。
+2. `talk-protocol.md` 定义了 resume、ICE restart、P2P/SFU 先建后断、视频 m-line 等完整约束；当前 M5 已接入 resume、ICE refresh/restart，M7 的 WSS/TLS 和凭证安全暂停至转生产阶段。
 3. 第三人加入“先建 SFU、确认可用、再关 P2P”已在短链路验证，后续仍需覆盖网络异常和重复切换。
 4. 服务端计划包含 `p2p.state`、P2P 失败回退、10 秒超时和 candidate 缓存等约束，当前客户端只完成基础转发，没有完整恢复策略。
 5. 计划中的 S5-S8、S4.2 多路 session pool/压力、设备热插拔、WSS、resume 和安装包均不能在交接中写成已完成。
@@ -177,22 +178,23 @@ M1、M2、M3 已通过技术门禁：
 - 9 路 720p 帧注入 29 ms；100 次显示/布局切换 Surface 数不增长。
 - Release/Debug 构建通过，CTest 10/10 通过。
 
-M5 已实现但仍待用户按阶段流程确认：
+M6 已完成技术范围：
 
-- 断线后 1/2/4/8/15 秒退避 reconnect，60 秒 resume 窗口。
-- `session.hello.resume`、resumed 房间快照和成员状态恢复。
-- `session.refreshIce`、TURN 凭证更新和 send 侧 SFU ICE restart 重发布。
-- P2P 失败由服务端 `room.mediaMode.sfu` 切换链路接管。
+- RTT、jitter、loss、bitrate、candidate pair 完整聚合。
+- 房间状态页实时展示媒体统计。
+- 一键导出脱敏诊断包。
+- 日志和事件关联 session/generation/track。
 - 完整 RTCStats、状态面板、诊断包导出。
 - WSS/TLS、Token 安全持久化和正式安装发布。
 
 ### 1.3 当前工作树状态
 
-M3/M4 代码已提交，M5 代码在当前工作树中，尚未提交。
+M1-M6 已确认并纳入本次提交。
 
-- M3/M4 提交：`737ac65`、`e433396`。
+- M3/M4/M5 提交：`737ac65`、`e433396`、`ac39c4f`。
+- M6：诊断、可观测性及文档更新随本次交付提交。
 - 当前 CTest 集：11 个测试，Release/Debug 均 11/11。
-- M5 证据：见 §18.16。
+- M6 证据：见 §18.17。
 
 ### 1.4 计划入口与当前下一步
 
@@ -209,12 +211,13 @@ M3/M4 代码已提交，M5 代码在当前工作树中，尚未提交。
 | M2 多路 Surface 和帧健康 | S4.2 剩余部分 | 已完成 |
 | M3 Floor、PTT 和主持人 | S5 | 已完成，本地提交待推送 |
 | M4 房间设备与屏幕源 | S6 | 已完成并提交 |
-| M5 重连、resume 和 ICE 恢复 | S7 | 代码完成，待用户确认 |
-| M6 诊断和可观测性 | S6/S7 | 未开始 |
-| M7 安全和发布 | S7/S8 | 未开始 |
+| M5 重连、resume 和 ICE 恢复 | S7 | 已完成并提交 |
+| M6 诊断和可观测性 | S6/S7 | 已完成并确认，随本次提交交付 |
+| M7 安全和发布 | S7/S8 | 暂停，转生产前处理 |
 
-当前下一步：用户验收 M5；确认后提交 M5，再进入 M6 诊断和可观测性。M6-M7 的详细范围、
-接口、验收和估算不得在交接文档中另写一套。
+当前下一步：M6 已收口；M7 安全和发布不随功能联调继续，暂停至转生产阶段，
+并具备服务端 WSS/TLS、证书、签名、安装和回滚条件后恢复。
+M7 的详细范围、接口、验收和估算不得在交接文档中另写一套。
 
 ---
 
@@ -1888,7 +1891,7 @@ build/windows-x64/m2-stale-smoke-20261030-165010/b-after-stale.png
 build/windows-x64/m2-paused-smoke-20261030-165144/b-after-pause.png
 ```
 
-M2 已完成。M3/M4/M5 的实现与验证见 §18.14、§18.15、§18.16。
+M2 已完成。M3-M6 的实现与验证见 §18.14、§18.15、§18.16、§18.17。
 
 ### 18.14 M3 Floor、PTT 与主持人（2026-10-30）
 
@@ -1933,7 +1936,7 @@ build/windows-x64/m3-policy-20261030-214816/member.png
 
 ### 18.15 M4 房间设备与屏幕源（2026-10-30）
 
-M4 当前代码尚未提交，等待用户确认。
+M4 已完成、确认并提交：`e433396 feat: complete M4 device and screen source controls`。
 
 本轮实现：
 
@@ -1987,7 +1990,7 @@ build/windows-x64/m4-screen-state-20261030-222631/host.png
 
 ### 18.16 M5 重连、resume 与 ICE 恢复（2026-10-31）
 
-M5 当前代码尚未提交，等待用户确认。
+M5 已完成、确认并提交：`ac39c4f feat: complete M5 resume and ICE recovery`。
 
 本轮实现：
 
@@ -2036,3 +2039,47 @@ build/windows-x64/m5-ice2-20261031-103831/after-restart.png
 - 真实断网 10 秒、恢复网络后的完整音视频恢复。
 - TURN relay 路径强制验证。
 - 断网超过 60 秒后的预入会错误提示。
+
+### 18.17 M6 诊断与可观测性（2026-10-31）
+
+M6 已完成并通过用户确认，随本次交付提交。
+
+本轮实现：
+
+- `PeerMediaStats` 扩展 RTT、jitter、packets_lost、fraction_lost、
+  available_outgoing_bitrate 和当前 ICE candidate pair。
+- `MediaStatus` 聚合 P2P/SFU send/recv 的关键质量指标。
+- `media.stats` 增加 RTT、jitter、loss、bitrate、候选对、generation 和
+  packets_lost。
+- 房间状态页新增 RTT、抖动、丢包、码率和候选对展示。
+- 新增脱敏诊断包 `DiagnosticsExporter`，输出：
+  `session.json`、`logs/rtcwin.log`、`manifest.json`、`README.txt`。
+- 诊断包移除原始端点和候选地址；日志中的 token/credential/password/SDP/
+  candidate 行会被脱敏。
+- `session.state`、`session.connectAndJoin`、`media.published`、
+  `media.track` 和 `media.stats` 增加 generation 关联字段。
+
+验证：
+
+- Release/Debug CTest 均 11/11。
+- 测试服实时 stats 返回 `rtt_ms`、`loss_percent`、`bitrate_bps`、
+  `generation` 和 `available_outgoing_bitrate_bps`。
+- 状态页截图显示 RTT、码率、候选对和“导出诊断包”按钮。
+- 实际生成诊断 ZIP：
+  `C:\Users\huaxiaofeng\Documents\rtc-talk-diagnostics-20261031-110902.zip`
+  - 4 个文件，ZIP 结构正确。
+  - `session.json` 中候选对为 `<redacted>`。
+  - 未将 Token、TURN 密码、SDP 或原始设备端点 ID 写入诊断包。
+
+M6 证据：
+
+```text
+build/windows-x64/m6-live-20261031-110633/status-live.png
+build/windows-x64/m6-final-20261031-110855/status.png
+```
+
+待用户验收：
+
+- 双端有音视频流量时的 RTT/丢包/码率趋势。
+- 用户实际网络异常场景下的诊断包内容检查。
+- 诊断包大小和日志留存周期策略。

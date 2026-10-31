@@ -61,6 +61,7 @@ class RoomPage final : public QWidget {
   void SystemAudioDeviceSelected(const QString& device_id);
   void CameraSelected(int device_index);
   void DesktopSourceSelected(const QString& source_id, bool window);
+  void DiagnosticsExportRequested();
 
  private:
   QWidget* BuildHeader();

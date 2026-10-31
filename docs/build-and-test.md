@@ -126,11 +126,16 @@ command and P5 prejoin page selectors.
 .\build\windows-x64\bin\Release\rtcwin_session_state_tests.exe
 ```
 
-The full CTest set is currently nine tests:
+The full CTest set is currently 11 tests:
 
 - `rtcwin_tests`
 - `rtcwin_session_state_tests`
 - `rtcwin_video_scene_tests`
+- `rtcwin_frame_health_tests`
+- `rtcwin_floor_host_controller_tests`
+- `rtcwin_reconnect_controller_tests`
+- `rtcwin_video_surface_pool_tests`
+- `rtcwin_video_grid_stress_tests`
 - `rtcwin_signaling_tests`
 - `rtcwin_log_adapter_smoke`
 - `rtcwin_media_session_smoke`
@@ -317,3 +322,24 @@ Validated evidence:
 - ICE refresh returned new TURN credentials.
 - SFU send restart produced a second `media.publishing` / `media.published`
   sequence.
+
+## S6 M6 statistics and diagnostics
+
+The status page consumes `media.stats` every five seconds and displays:
+
+- RTT (`rtt_ms`)
+- jitter (`jitter_ms`)
+- loss (`loss_percent`)
+- total bitrate (`bitrate_bps`)
+- selected ICE candidate pair
+
+Diagnostic export can be triggered from the status page or with:
+
+```text
+--auto-export-diagnostics-ms 6500
+--auto-room-tab status
+```
+
+The ZIP contains `manifest.json`, `session.json`, `logs/rtcwin.log`, and a
+README. Session and log data are sanitized: tokens, TURN credentials, SDP,
+ICE candidates, raw endpoint IDs, and raw candidate addresses are not written.

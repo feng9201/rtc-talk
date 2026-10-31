@@ -1,6 +1,7 @@
 add_library(rtcwin_application STATIC
   include/rtcwin/application/app_controller.h
   include/rtcwin/application/engine_client.h
+  include/rtcwin/application/diagnostics_exporter.h
   include/rtcwin/application/frame_health_monitor.h
   include/rtcwin/application/floor_controller.h
   include/rtcwin/application/host_controller.h
@@ -8,6 +9,7 @@ add_library(rtcwin_application STATIC
   include/rtcwin/application/unavailable_engine_client.h
   include/rtcwin/application/video_scene.h
   src/app_controller.cpp
+  src/diagnostics_exporter.cpp
   src/frame_health_monitor.cpp
   src/floor_controller.cpp
   src/host_controller.cpp
@@ -24,6 +26,7 @@ target_link_libraries(rtcwin_application
   PUBLIC
     rtcwin_domain
     Qt5::Core
+    Qt5::GuiPrivate
 )
 
 target_compile_options(rtcwin_application PRIVATE

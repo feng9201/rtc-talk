@@ -728,11 +728,35 @@ struct MediaOrchestrator::Impl {
       audio_source = config.audio_source;
     }
     const auto status = media_session->status();
+    const auto now = std::chrono::steady_clock::now();
+    const std::uint64_t bytes_sent =
+        status.audio_bytes_sent + status.video_bytes_sent;
+    const std::uint64_t bytes_received =
+        status.audio_bytes_received + status.video_bytes_received;
+    double bitrate_bps = 0.0;
+    if (last_stats_at_ != std::chrono::steady_clock::time_point{}) {
+      const double seconds =
+          std::chrono::duration<double>(now - last_stats_at_).count();
+      if (seconds > 0.0) {
+        const std::uint64_t delta =
+            (bytes_sent >= last_bytes_sent_ ? bytes_sent - last_bytes_sent_
+                                            : 0) +
+            (bytes_received >= last_bytes_received_
+                 ? bytes_received - last_bytes_received_
+                 : 0);
+        bitrate_bps = static_cast<double>(delta) * 8.0 / seconds;
+      }
+    }
+    last_stats_at_ = now;
+    last_bytes_sent_ = bytes_sent;
+    last_bytes_received_ = bytes_received;
     LOG_INFO(
-        "media stats source={} muted={} recording={} capture_frames={} "
+        "media stats generation={} source={} muted={} recording={} capture_frames={} "
         "sfu={}/{} p2p={}/{} sent={} recv={} remote_tracks={} level={} "
         "camera_frames={} camera_sender={} video_sent={} video_recv={} "
-        "screen_frames={} screen_sender={} remote_video_tracks={}",
+        "screen_frames={} screen_sender={} remote_video_tracks={} "
+        "rtt_ms={} jitter_ms={} loss={} bitrate_bps={}",
+        context.session.snapshot().generation,
         audio_source, status.muted, status.recording, status.capture_frames,
         status.sfu_send_state, status.sfu_recv_state, status.p2p_state,
         status.p2p_connected, status.p2p_audio_packets_sent,
@@ -740,8 +764,10 @@ struct MediaOrchestrator::Impl {
         status.remote_audio_level, status.camera_capture_frames,
         status.camera_sender_active, status.video_packets_sent,
         status.video_packets_received, status.screen_capture_frames,
-        status.screen_sender_active, status.remote_video_tracks);
+        status.screen_sender_active, status.remote_video_tracks,
+        status.rtt_ms, status.jitter_ms, status.fraction_lost, bitrate_bps);
     Json data = {
+        {"generation", context.session.snapshot().generation},
         {"initialized", status.initialized},
         {"sfu_send_ready", status.sfu_send_ready},
         {"sfu_recv_ready", status.sfu_recv_ready},
@@ -777,6 +803,15 @@ struct MediaOrchestrator::Impl {
         {"audio_bytes_received", status.audio_bytes_received},
         {"video_bytes_sent", status.video_bytes_sent},
         {"video_bytes_received", status.video_bytes_received},
+        {"packets_lost", status.packets_lost},
+        {"rtt_ms", status.rtt_ms},
+        {"jitter_ms", status.jitter_ms},
+        {"loss_percent",
+         status.fraction_lost >= 0.0 ? status.fraction_lost * 100.0 : -1.0},
+        {"bitrate_bps", bitrate_bps},
+        {"available_outgoing_bitrate_bps",
+         status.available_outgoing_bitrate_bps},
+        {"candidate_pair", status.candidate_pair},
         {"remote_audio_level", status.remote_audio_level},
         {"recording_device", status.recording_device},
         {"playout_device", status.playout_device},
@@ -1055,14 +1090,16 @@ struct MediaOrchestrator::Impl {
       return;
     }
     if (method == "media.track" || method == "audio.track") {
+      Json out = data;
+      out["generation"] = generation;
       if (data.value("pc", std::string()) == "p2p") {
-        data["uid"] = p2p_peer;
-        if (data.value("kind", std::string()) == "video" &&
-            !data.contains("source")) {
-          data["source"] = "camera";
+        out["uid"] = p2p_peer;
+        if (out.value("kind", std::string()) == "video" &&
+            !out.contains("source")) {
+          out["source"] = "camera";
         }
       }
-      context.events.EmitNotification("media.track", data);
+      context.events.EmitNotification("media.track", out);
     }
   }
 
@@ -1352,7 +1389,8 @@ struct MediaOrchestrator::Impl {
     sync_video_source("screen",
                       media_session && media_session->status().screen_enabled);
     context.events.EmitNotification(
-        "media.published", Json{{"ok", true}, {"mode", "sfu"}});
+        "media.published",
+        Json{{"ok", true}, {"mode", "sfu"}, {"generation", generation}});
     if (!pending_sfu_request_id.empty()) {
       TryCompleteSfuSwitch(false, generation);
     }
@@ -1586,6 +1624,9 @@ struct MediaOrchestrator::Impl {
   std::atomic<std::uint64_t> mute_generation{0};
   std::atomic<std::uint64_t> camera_generation{0};
   std::atomic<std::uint64_t> screen_generation{0};
+  std::chrono::steady_clock::time_point last_stats_at_{};
+  std::uint64_t last_bytes_sent_ = 0;
+  std::uint64_t last_bytes_received_ = 0;
   camera_win::CameraCaptureSession camera;
   bool camera_preview_active = false;
   std::atomic<bool> camera_publishing{false};

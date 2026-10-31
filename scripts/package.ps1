@@ -162,7 +162,10 @@ rtc-talk-win 使用说明
 8. 当前版本支持摄像机、屏幕共享、P2P/SFU 双路视频，
    以及“共享主画面 + 摄像头 PIP”和底部成员胶片条。
 9. M3 已接入 Floor/PTT、主持人授权/静音/踢人/策略修改和实时成员音量。
-10. 仍需完成设备热插拔、resume/ICE 恢复、完整 RTCStats 和正式安装发布。
+10. M4/M5/M6 已接入设备切换回退、resume/ICE 恢复、RTT/丢包/码率状态
+    和脱敏诊断包导出。
+11. WSS/TLS、Token 安全持久化、正式安装签名、升级回滚和发布验收
+    待转生产前处理。
 "@
 Set-Content -LiteralPath (Join-Path $stage "使用说明.txt") `
   -Value $usage -Encoding UTF8

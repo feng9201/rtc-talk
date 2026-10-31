@@ -134,7 +134,8 @@ struct SessionController::Impl {
     const std::uint64_t generation = context.session.BeginConnect(command.id);
     context.media.Configure(media_config, uid);
     context.media.Reset();
-    Notify("session.state", Json{{"state", "connecting"}});
+    Notify("session.state",
+           Json{{"state", "connecting"}, {"generation", generation}});
 
     const auto fail_session = [this, generation](int code,
                                                  const std::string& message) {
@@ -614,6 +615,7 @@ struct SessionController::Impl {
     if (!context.session.SetMediaEnabled(generation, initialized)) return;
     Json response = data;
     response["media_enabled"] = initialized;
+    response["generation"] = generation;
     if (command_id != 0) {
       EmitResponse(command_id, "session.connectAndJoin", true, 0, {},
                    response);

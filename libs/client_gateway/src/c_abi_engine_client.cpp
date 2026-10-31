@@ -42,7 +42,8 @@ bool SensitiveTraceKey(const QString& key) {
          lower == QStringLiteral("credential") ||
          lower == QStringLiteral("password") ||
          lower == QStringLiteral("sdp") ||
-         lower == QStringLiteral("candidate");
+         lower.startsWith(QStringLiteral("candidate")) ||
+         lower.contains(QStringLiteral("sdp"));
 }
 
 QJsonValue RedactTraceValue(const QJsonValue& value) {
@@ -1109,7 +1110,28 @@ void CAbiEngineClient::HandleEvent(const QString& method,
   const bool ok = event.value(QStringLiteral("ok")).toBool(false);
   if (ok) {
     const QJsonObject data = event.value(QStringLiteral("data")).toObject();
-    if (method == QStringLiteral("camera.devices")) {
+    if (method == QStringLiteral("media.stats")) {
+      snapshot_.media_stats.available = true;
+      snapshot_.media_stats.packets_lost =
+          static_cast<qint64>(data.value(QStringLiteral("packets_lost"))
+                                  .toDouble());
+      snapshot_.media_stats.rtt_ms =
+          data.value(QStringLiteral("rtt_ms")).toDouble(-1.0);
+      snapshot_.media_stats.jitter_ms =
+          data.value(QStringLiteral("jitter_ms")).toDouble(-1.0);
+      snapshot_.media_stats.loss_percent =
+          data.value(QStringLiteral("loss_percent")).toDouble(-1.0);
+      snapshot_.media_stats.bitrate_bps =
+          data.value(QStringLiteral("bitrate_bps")).toDouble();
+      snapshot_.media_stats.available_outgoing_bitrate_bps =
+          data.value(QStringLiteral("available_outgoing_bitrate_bps"))
+              .toDouble(-1.0);
+      snapshot_.media_stats.candidate_pair =
+          data.value(QStringLiteral("candidate_pair"))
+              .toString()
+              .toStdString();
+      emit SnapshotChanged(snapshot_);
+    } else if (method == QStringLiteral("camera.devices")) {
       QVector<domain::CameraDevice> devices;
       for (const QJsonValue& value :
            data.value(QStringLiteral("cameras")).toArray()) {

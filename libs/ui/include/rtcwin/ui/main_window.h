@@ -44,6 +44,8 @@ class MainWindow final : public FramelessWindow {
   void ForceReconnect();
   void RefreshIce();
   void RestartIce(const QString& pc);
+  void ExportDiagnostics();
+  void SelectRoomTab(domain::PanelTab tab);
   void ShowRoomPreview();
   void ShowRoomPreviewTab(domain::PanelTab tab);
   void EnableCameraPreview();

@@ -112,6 +112,12 @@ struct MediaStatus {
   std::uint64_t audio_bytes_received = 0;
   std::uint64_t video_bytes_sent = 0;
   std::uint64_t video_bytes_received = 0;
+  std::int64_t packets_lost = 0;
+  double jitter_ms = -1.0;
+  double fraction_lost = -1.0;
+  double rtt_ms = -1.0;
+  double available_outgoing_bitrate_bps = -1.0;
+  std::string candidate_pair;
   double remote_audio_level = -1.0;
   std::string recording_device;
   std::string playout_device;

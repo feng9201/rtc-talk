@@ -586,6 +586,14 @@ struct MediaSession::Impl {
       out.video_bytes_sent += stats.video_bytes_sent;
       out.video_packets_received += stats.video_packets_received;
       out.video_bytes_received += stats.video_bytes_received;
+      out.packets_lost += stats.packets_lost;
+      out.jitter_ms = std::max(out.jitter_ms, stats.jitter_ms);
+      out.fraction_lost = std::max(out.fraction_lost, stats.fraction_lost);
+      out.rtt_ms = std::max(out.rtt_ms, stats.rtt_ms);
+      out.available_outgoing_bitrate_bps =
+          std::max(out.available_outgoing_bitrate_bps,
+                   stats.available_outgoing_bitrate_bps);
+      if (out.candidate_pair.empty()) out.candidate_pair = stats.candidate_pair;
       out.remote_audio_level = std::max(out.remote_audio_level,
                                         stats.audio_level);
     }
@@ -595,6 +603,14 @@ struct MediaSession::Impl {
       out.audio_bytes_sent += stats.audio_bytes_sent;
       out.video_packets_sent += stats.video_packets_sent;
       out.video_bytes_sent += stats.video_bytes_sent;
+      out.packets_lost += stats.packets_lost;
+      out.jitter_ms = std::max(out.jitter_ms, stats.jitter_ms);
+      out.fraction_lost = std::max(out.fraction_lost, stats.fraction_lost);
+      out.rtt_ms = std::max(out.rtt_ms, stats.rtt_ms);
+      out.available_outgoing_bitrate_bps =
+          std::max(out.available_outgoing_bitrate_bps,
+                   stats.available_outgoing_bitrate_bps);
+      if (out.candidate_pair.empty()) out.candidate_pair = stats.candidate_pair;
     }
     if (sfu_recv && sfu_recv->state_name() == "connected" &&
         sfu_recv->CollectMediaStats(&stats)) {
@@ -602,6 +618,14 @@ struct MediaSession::Impl {
       out.audio_bytes_received += stats.audio_bytes_received;
       out.video_packets_received += stats.video_packets_received;
       out.video_bytes_received += stats.video_bytes_received;
+      out.packets_lost += stats.packets_lost;
+      out.jitter_ms = std::max(out.jitter_ms, stats.jitter_ms);
+      out.fraction_lost = std::max(out.fraction_lost, stats.fraction_lost);
+      out.rtt_ms = std::max(out.rtt_ms, stats.rtt_ms);
+      out.available_outgoing_bitrate_bps =
+          std::max(out.available_outgoing_bitrate_bps,
+                   stats.available_outgoing_bitrate_bps);
+      if (out.candidate_pair.empty()) out.candidate_pair = stats.candidate_pair;
       out.remote_audio_level = std::max(out.remote_audio_level,
                                         stats.audio_level);
     }

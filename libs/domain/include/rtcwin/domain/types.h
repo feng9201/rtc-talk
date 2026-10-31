@@ -229,6 +229,18 @@ struct VideoFrame {
   std::vector<std::uint8_t> v;
   std::int64_t timestamp_us = 0;
 };
+
+struct MediaStats {
+  bool available = false;
+  std::int64_t packets_lost = 0;
+  double rtt_ms = -1.0;
+  double jitter_ms = -1.0;
+  double loss_percent = -1.0;
+  double bitrate_bps = 0.0;
+  double available_outgoing_bitrate_bps = -1.0;
+  std::string candidate_pair;
+};
+
 struct SessionSnapshot {
   ConnectionPhase connection = ConnectionPhase::Disconnected;
   JoinPhase join = JoinPhase::NotJoined;
@@ -251,6 +263,7 @@ struct SessionSnapshot {
   bool media_enabled = false;
   double self_audio_level = 0.0;
   DeviceSelection devices;
+  MediaStats media_stats;
   std::optional<AppError> last_error;
 };
 
