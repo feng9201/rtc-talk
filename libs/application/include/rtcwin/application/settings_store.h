@@ -14,8 +14,9 @@ class SettingsStore {
   SettingsStore(const SettingsStore&) = delete;
   SettingsStore& operator=(const SettingsStore&) = delete;
 
-  domain::PrejoinOptions Load() const;
-  void Save(const domain::PrejoinOptions& options) const;
+  domain::PrejoinOptions Load(QString* error = nullptr) const;
+  bool Save(const domain::PrejoinOptions& options,
+            QString* error = nullptr) const;
 
  private:
   class Impl;

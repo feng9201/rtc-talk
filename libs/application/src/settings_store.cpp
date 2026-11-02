@@ -1,5 +1,7 @@
 #include "rtcwin/application/settings_store.h"
 
+#include "rtcwin/application/token_credential_store.h"
+
 #include <QSettings>
 
 namespace rtcwin::application {
@@ -62,7 +64,7 @@ SettingsStore::SettingsStore(QString file_path)
 
 SettingsStore::~SettingsStore() { delete impl_; }
 
-domain::PrejoinOptions SettingsStore::Load() const {
+domain::PrejoinOptions SettingsStore::Load(QString* error) const {
   QSettings settings(impl_->path, QSettings::IniFormat);
   domain::PrejoinOptions result;
   result.signaling_url =
@@ -105,10 +107,17 @@ domain::PrejoinOptions SettingsStore::Load() const {
           .toString()
           .toStdString();
   result.token.clear();
+  const QString target = TokenCredentialStore::TargetName(
+      result.signaling_url, result.user_id, result.room_id);
+  const auto stored = TokenCredentialStore::Load(target, error);
+  if (stored) {
+    result.token = stored->token;
+  }
   return result;
 }
 
-void SettingsStore::Save(const domain::PrejoinOptions& options) const {
+bool SettingsStore::Save(const domain::PrejoinOptions& options,
+                         QString* error) const {
   QSettings settings(impl_->path, QSettings::IniFormat);
   settings.setValue(QStringLiteral("connection/url"),
                     QString::fromStdString(options.signaling_url));
@@ -140,6 +149,15 @@ void SettingsStore::Save(const domain::PrejoinOptions& options) const {
                     QString::fromStdString(options.camera_device));
   settings.remove(QStringLiteral("connection/token"));
   settings.sync();
+
+  const QString target = TokenCredentialStore::TargetName(
+      options.signaling_url, options.user_id, options.room_id);
+  if (options.fetch_dev_token || options.token.empty()) {
+    return TokenCredentialStore::Delete(target, error);
+  }
+  return TokenCredentialStore::Store(
+      target, options.user_id, options.token,
+      TokenCredentialStore::ParseJwtExpiryMs(options.token), error);
 }
 
 }  // namespace rtcwin::application

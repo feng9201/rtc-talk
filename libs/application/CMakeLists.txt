@@ -6,6 +6,7 @@ add_library(rtcwin_application STATIC
   include/rtcwin/application/floor_controller.h
   include/rtcwin/application/host_controller.h
   include/rtcwin/application/settings_store.h
+  include/rtcwin/application/token_credential_store.h
   include/rtcwin/application/unavailable_engine_client.h
   include/rtcwin/application/video_scene.h
   src/app_controller.cpp
@@ -14,6 +15,7 @@ add_library(rtcwin_application STATIC
   src/floor_controller.cpp
   src/host_controller.cpp
   src/settings_store.cpp
+  src/token_credential_store.cpp
   src/unavailable_engine_client.cpp
   src/video_scene.cpp
 )
@@ -27,6 +29,7 @@ target_link_libraries(rtcwin_application
     rtcwin_domain
     Qt5::Core
     Qt5::GuiPrivate
+    advapi32
 )
 
 target_compile_options(rtcwin_application PRIVATE

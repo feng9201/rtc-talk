@@ -79,7 +79,14 @@ void AppController::BeginJoin(const domain::PrejoinOptions& options) {
                        QString::fromStdString(error->detail));
     return;
   }
-  settings_.Save(options);
+  QString settings_error;
+  if (!settings_.Save(options, &settings_error) &&
+      !settings_error.isEmpty()) {
+    emit Notice(
+        QStringLiteral("凭证保存失败，本次连接仍将继续：%1")
+            .arg(settings_error),
+        QStringLiteral("warn"));
+  }
   snapshot_.connection = domain::ConnectionPhase::Connecting;
   snapshot_.join = domain::JoinPhase::Joining;
   snapshot_.room_id = options.room_id;

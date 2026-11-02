@@ -38,6 +38,7 @@ target_link_libraries(rtcwin_signaling
   PRIVATE
     ws2_32
     mswsock
+    winhttp
     Threads::Threads
 )
 

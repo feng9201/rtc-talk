@@ -127,7 +127,12 @@ QWidget* PrejoinPage::BuildFormCard() {
   room_id_->setPlaceholderText(QStringLiteral("输入房间 ID"));
   token_ = new QLineEdit(card);
   token_->setEchoMode(QLineEdit::Password);
-  token_->setPlaceholderText(QStringLiteral("仅保存在内存，不写入配置"));
+  token_->setClearButtonEnabled(true);
+  token_->setPlaceholderText(QStringLiteral("未保存 Token"));
+  connect(token_, &QLineEdit::textEdited, this, [this] {
+    loaded_token_.clear();
+    token_->setPlaceholderText(QStringLiteral("Token 仅保存到 Windows Credential Manager"));
+  });
   dev_token_ = new QCheckBox(QStringLiteral("开发测试：从 /dev/token 获取凭证"),
                              card);
 
@@ -350,6 +355,9 @@ domain::PrejoinOptions PrejoinPage::Options() const {
   result.user_id = Value(user_id_->text().trimmed());
   result.room_id = Value(room_id_->text().trimmed());
   result.token = Value(token_->text());
+  if (result.token.empty() && !loaded_token_.isEmpty()) {
+    result.token = Value(loaded_token_);
+  }
   result.fetch_dev_token = dev_token_->isChecked();
 
   const QString backend = ComboData(audio_backend_, QStringLiteral("wasapi"));
@@ -388,6 +396,11 @@ void PrejoinPage::SetOptions(const domain::PrejoinOptions& options) {
   if (!options.user_id.empty()) user_id_->setText(Text(options.user_id));
   if (!options.room_id.empty()) room_id_->setText(Text(options.room_id));
   token_->clear();
+  loaded_token_ = QString::fromStdString(options.token);
+  token_->setPlaceholderText(
+      loaded_token_.isEmpty()
+          ? QStringLiteral("Token 仅保存到 Windows Credential Manager")
+          : QStringLiteral("已从 Windows Credential Manager 加载，留空使用"));
   dev_token_->setChecked(options.fetch_dev_token);
 
   const auto set_combo = [](QComboBox* combo, const QString& value) {

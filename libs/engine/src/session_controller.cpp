@@ -79,7 +79,9 @@ struct SessionController::Impl {
         "join request uid={} room={} backend={} source={} mode={} talk={}",
         uid, room_id, request.value("audio_backend", std::string()),
         request.value("audio_source", std::string()), media_mode, talk_mode);
-    if (url.rfind("ws://", 0) != 0 || token.empty() || uid.empty() ||
+    const bool websocket_url =
+        url.rfind("ws://", 0) == 0 || url.rfind("wss://", 0) == 0;
+    if (!websocket_url || token.empty() || uid.empty() ||
         room_id.empty()) {
       EmitResponse(command.id, command.method, false, 400,
                    "信令地址、Token、用户标识和房间 ID 不能为空");

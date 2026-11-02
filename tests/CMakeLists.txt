@@ -19,6 +19,21 @@ set_target_properties(rtcwin_tests PROPERTIES
 
 add_test(NAME rtcwin_tests COMMAND rtcwin_tests)
 
+add_executable(rtcwin_credential_store_tests credential_store_test.cpp)
+target_link_libraries(rtcwin_credential_store_tests PRIVATE
+  rtcwin_application
+  Qt5::Core
+)
+target_compile_options(rtcwin_credential_store_tests PRIVATE
+  $<$<CXX_COMPILER_ID:MSVC>:/utf-8 /EHsc /GR /W3>
+)
+set_target_properties(rtcwin_credential_store_tests PROPERTIES
+  CXX_STANDARD 17
+  CXX_STANDARD_REQUIRED ON
+  MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
+)
+add_test(NAME rtcwin_credential_store_tests COMMAND rtcwin_credential_store_tests)
+
 add_executable(rtcwin_session_state_tests
   session_state_machine_test.cpp
   ../libs/engine/src/session_state_machine.cpp
@@ -172,6 +187,17 @@ set_target_properties(rtcwin_signaling_tests PROPERTIES
   MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
 )
 add_test(NAME rtcwin_signaling_tests COMMAND rtcwin_signaling_tests)
+
+add_executable(rtcwin_wss_transport_smoke wss_transport_smoke.cpp)
+target_link_libraries(rtcwin_wss_transport_smoke PRIVATE rtcwin_signaling)
+target_compile_options(rtcwin_wss_transport_smoke PRIVATE
+  $<$<CXX_COMPILER_ID:MSVC>:/utf-8 /EHsc /GR /W3>
+)
+set_target_properties(rtcwin_wss_transport_smoke PROPERTIES
+  CXX_STANDARD 17
+  CXX_STANDARD_REQUIRED ON
+  MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+)
 
 add_executable(rtcwin_log_adapter_smoke log_adapter_smoke.cpp)
 target_link_libraries(rtcwin_log_adapter_smoke PRIVATE rtcwin_log_adapter)

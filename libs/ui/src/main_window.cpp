@@ -81,7 +81,14 @@ MainWindow::MainWindow(QWidget* parent) : FramelessWindow(parent) {
   setWindowTitle(QStringLiteral("RTC Talk"));
   BuildUi();
   ConnectSignals();
-  prejoin_page_->SetOptions(controller_->settings().Load());
+  QString settings_error;
+  prejoin_page_->SetOptions(controller_->settings().Load(&settings_error));
+  if (!settings_error.isEmpty()) {
+    prejoin_page_->SetStatus(
+        QStringLiteral("读取 Windows Credential Manager 失败：%1")
+            .arg(settings_error),
+        QStringLiteral("warn"));
+  }
   controller_->RefreshCameras();
   controller_->RefreshAudioDevices();
   controller_->RefreshDesktopSources();
@@ -122,9 +129,15 @@ void MainWindow::ConnectSignals() {
           &MainWindow::BeginJoin);
   connect(prejoin_page_, &PrejoinPage::SaveRequested, this,
           [this](const domain::PrejoinOptions& options) {
-            controller_->settings().Save(options);
-            prejoin_page_->SetStatus(QStringLiteral("设置已保存"),
-                                     QStringLiteral("ok"));
+            QString error;
+            if (controller_->settings().Save(options, &error)) {
+              prejoin_page_->SetStatus(QStringLiteral("设置已保存"),
+                                       QStringLiteral("ok"));
+            } else {
+              prejoin_page_->SetStatus(
+                  QStringLiteral("设置保存失败：%1").arg(error),
+                  QStringLiteral("danger"));
+            }
           });
   connect(prejoin_page_, &PrejoinPage::PreviewToggleRequested, this,
           [this](bool start) {

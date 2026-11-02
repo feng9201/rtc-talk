@@ -66,6 +66,7 @@ class PrejoinPage final : public QWidget {
   QLineEdit* user_id_ = nullptr;
   QLineEdit* room_id_ = nullptr;
   QLineEdit* token_ = nullptr;
+  QString loaded_token_;
   QCheckBox* dev_token_ = nullptr;
   QComboBox* audio_backend_ = nullptr;
   QComboBox* media_mode_ = nullptr;

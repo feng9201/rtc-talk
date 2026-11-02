@@ -75,12 +75,15 @@ class SignalingClient {
   asio::io_context& io_;
   Ws ws_;
   Ws::connection_ptr connection_;
+  class WinHttpTransport;
+  std::shared_ptr<WinHttpTransport> winhttp_transport_;
   Handlers handlers_;
   std::map<std::string, Pending> pending_;
   uint64_t generation_ = 0;
   uint64_t next_request_ = 0;
   bool open_ = false;
   bool disposed_ = false;
+  bool tls_ = false;
 };
 
 }  // namespace rtcwin::signaling
