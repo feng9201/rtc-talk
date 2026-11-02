@@ -3,9 +3,9 @@
 > 快照日期：2026-11-02
 > 仓库：`D:\google\webrtc-win-client\rtc-talk-win`
 > 分支：`rtc-talk-win`
-> 代码基线：`96a7008 fix: stabilize multi-party SFU video delivery`
+> 代码基线：`e86178d feat: add WSS transport and secure token storage`
 >
-> 当前状态：M1-M6 已完成并确认；2026-11-02 多端 SFU 视频稳定性修复已提交并验证；M7 安全和发布暂停。未完成与暂停任务见 §1.5。
+> 当前状态：M1-M6 已完成并确认；M7 客户端 WSS、系统证书校验路径和 Windows Credential Manager 已实现；正式证书/域名联调、正式认证刷新及发布工程暂停。未完成与暂停任务见 §1.5。
 > 旧工程：`D:\google\webrtc-win-client\rtc-talk`，只读参考，禁止修改或提交。
 
 本文档面向后续接入业务、继续媒体开发、做代码评审或发布验收的工程师。它描述当前真实代码状态，不把计划中的能力写成已完成能力。
@@ -17,7 +17,7 @@
 
 | 类别 | 仓库 / 分支 / 提交 | 本工程中的用途 | 权限 |
 |---|---|---|---|
-| 当前生产工程 | `D:\google\webrtc-win-client\rtc-talk-win` / `rtc-talk-win` / `96a7008` | 真正交付工程、当前开发分支；文档更新以本文件所在提交为准 | 可开发、可提交到 `rtc-talk-win` |
+| 当前生产工程 | `D:\google\webrtc-win-client\rtc-talk-win` / `rtc-talk-win` / `e86178d` | 真正交付工程、当前开发分支；文档更新以本文件所在提交为准 | 可开发、可提交到 `rtc-talk-win` |
 | 服务端权威参考 | `D:\google\webrtc-win-client\rtc-talk` / `origin/main` / `8e6ff57` | 服务端行为、协议口径、S4 差异和联调依据 | 只读 |
 | 旧 Windows 客户端功能参考 | `origin/feat/windows-client` / `df22708` | `client-win` demo、既有音视频功能和联调逻辑参考 | 只读 |
 | 旧 Windows 生产实现参考 | `origin/codex/feat/windows-production-client` / `bbb3891` | P5 UI、生产模块、历史改造和验收记录参考 | 只读 |
@@ -194,7 +194,8 @@ M1-M6 已确认并纳入本次提交。
 - M3/M4/M5 提交：`737ac65`、`e433396`、`ac39c4f`。
 - M6 提交：`a236462`。
 - 多端 SFU 视频稳定性修复：`96a7008`。
-- 当前 CTest 集：11 个测试，Release/Debug 均 11/11。
+- M7 客户端 WSS/凭证管理：`e86178d`。
+- 当前 CTest 集：12 个测试，Release/Debug 均 12/12。
 - M6 证据：见 §18.17。
 
 ### 1.4 计划入口与当前下一步
@@ -214,23 +215,25 @@ M1-M6 已确认并纳入本次提交。
 | M4 房间设备与屏幕源 | S6 | 已完成并推送 |
 | M5 重连、resume 和 ICE 恢复 | S7 | 已完成并推送 |
 | M6 诊断和可观测性 | S6/S7 | 已完成并推送 |
-| M7 安全和发布 | S7/S8 | 暂停，转生产前处理 |
+| M7 安全和发布 | S7/S8 | 部分完成；客户端 WSS/凭证管理完成，发布工程暂停 |
 
-当前下一步：M6 已收口；M7 安全和发布不随功能联调继续，暂停至转生产阶段，
-并具备服务端 WSS/TLS、证书、签名、安装和回滚条件后恢复。
-M7 的详细范围、接口、验收和估算不得在交接文档中另写一套。
+当前下一步：M6 已收口；M7 的客户端 WSS/证书校验路径和 Credential Manager
+已完成。正式域名/CA 证书成功联调、正式认证刷新及安装签名、升级回滚仍暂停，
+待转生产环境和发布条件具备后恢复。M7 的详细范围、接口、验收和估算不得在
+交接文档中另写一套。
 
 ### 1.5 未完成与暂停任务
 
-截至 2026-11-02，当前工程已完成 M1-M6 和多人 SFU 视频稳定性修复，
-但**不能标记为生产可发布**。以下任务尚未完成；其中 M7 是按用户要求暂停，
-不是已完成。
+截至 2026-11-02，当前工程已完成 M1-M6、多人 SFU 视频稳定性修复，以及 M7 中
+可独立完成的客户端 WSS/系统证书校验路径和 Windows Credential Manager。
+工程仍**不能标记为生产可发布**；正式域名证书联调、正式认证刷新和发布工程
+仍未完成。
 
 | 类别 | 未完成 / 暂停任务 | 当前状态 | 恢复或验收条件 |
 |---|---|---|---|
-| M7 安全与发布 | WSS/TLS、证书校验、代理和 TLS 错误处理 | 暂停；未实现 | 转生产前恢复 M7 |
-| 身份与凭证 | 正式认证接入、Token Credential Manager、安全持久化和轮换 | 暂停；未实现 | 移除生产环境 `/dev/token`，接入正式认证 |
-| 当前信令限制 | 客户端仅支持 `ws://`，Engine 明确拒绝 `wss://` | 未完成 | 切换 TLS WebSocket transport 并接入系统 CA |
+| M7 安全与发布 | 正式域名/CA 证书 WSS 成功联调、代理和完整 TLS 错误验收 | 客户端已实现；正式联调暂停 | 部署正式证书后恢复 M7 |
+| 身份与凭证 | 正式认证接入、Token 刷新/轮换接口 | Credential Manager 和过期清理已完成；正式认证暂停 | 移除生产环境 `/dev/token`，接入正式认证 |
+| 当前信令能力 | `ws://` 与 `wss://` 均已接入；WSS 使用 WinHTTP/SChannel 和系统 CA | 已实现；成功 WSS 握手待正式证书 | 使用正式域名证书完成发布验收 |
 | 发布工程 | ReleaseWithSymbols、安装包、签名、升级、回滚、卸载 | 暂停；未实现 | 具备证书、签名和发布环境 |
 | 发布验收 | 干净 Windows 10/11 机器安装和完整回归 | 未执行 | S8 发布门禁 |
 | 长稳测试 | 30 分钟双人、2 小时多人、连续设备/视频切换和资源泄漏 | 未执行 | 用户安排独立长稳窗口 |
@@ -1516,10 +1519,12 @@ $env:PATH = "C:\Qt\5.15.2\msvc2019_64\bin;" + $env:PATH
 2. fake ADM 不要求启动物理 playout。
 3. 恢复 `CaptureGate`，在编码前执行静音门并统计真实 10ms 采集帧。
 4. 增加 `RTCWIN_WEBRTC_LOG=1` 联调开关，默认关闭。
-5. 补充标准 ICE 状态回调。M146 下 `OnConnectionChange` 未及时从 `new` 变为 `connected`，改为同时消费 `OnStandardizedIceConnectionChange` 并去重上报。
+5. 补充标准 ICE 状态回调。M146 下 `OnConnectionChange` 未及时从
+ew` 变为 `connected`，改为同时消费 `OnStandardizedIceConnectionChange` 并去重上报。
 6. 恢复远端音轨按 `pc + mid` 去重，P2P 关闭时释放对应远端轨引用。
 7. trace 日志对 `token`、`authorization`、`credential`、`password`、`sdp`、`candidate` 做递归脱敏；`RTCWIN_TRACE_EVENTS` 严格只接受 `1/true/yes/on`。
-8. `none` 音频后端贯通到 `room.join.media.send=false`，不再被静默映射为 WASAPI。
+8.
+one` 音频后端贯通到 `room.join.media.send=false`，不再被静默映射为 WASAPI。
 9. `room.mediaMode=sfu` 改为等待 SFU publish 和 subscribe 都就绪后再关闭 P2P；5 秒未就绪则拒绝切换并保留 P2P。
 
 短链路验证结果：
@@ -2165,3 +2170,35 @@ SHA256: DB3B237DA1A508E07040910E610DF629B24FA8CFAD34D17FD5367346225CD332
 ```
 
 包内 `VERSION.txt` 的提交号为 `96a7008`，工作树状态为 `clean`。
+
+### 18.19 M7 客户端 WSS 与 Credential Manager（2026-11-02）
+
+提交：`e86178d feat: add WSS transport and secure token storage`
+
+本轮在不依赖正式域名证书的范围内完成了 M7 的可独立交付部分：
+
+- 信令地址支持 `ws://` 和 `wss://`。
+- WSS 使用 Windows WinHTTP WebSocket + SChannel，避免 OpenSSL 与 libwebrtc
+  内置 BoringSSL 的符号冲突。
+- 使用 Windows 系统证书库进行证书链和主机名校验，强制 TLS 1.2；
+  不提供忽略证书或 `verify_none` 开关。
+- `/dev/token` 根据信令 scheme 使用 HTTP/HTTPS。
+- 新增 Windows Credential Manager Token 存储，按 URL/UID/Room 隔离；
+  QSettings 不保存明文 Token。
+- 支持 JWT `exp` 解析，过期 Token 自动清理；预入会页可使用已保存凭证。
+- 自签名未受信任证书会被拒绝；普通 `ws://` + JWT 信令冒烟通过。
+- Release/Debug CTest：12/12；新增 Windows Credential Manager 测试。
+
+当前仍暂停：
+
+- 正式域名、CA 证书和 WSS 成功握手的真实服务联调。
+- 证书过期、域名不匹配、吊销、代理和完整错误提示发布验收。
+- 正式认证服务、Token 刷新/轮换接口和生产 `/dev/token` 移除。
+- 安装包、签名、升级、回滚和干净机发布验收。
+
+证据/测试目标：
+
+```text
+build/windows-x64/bin/Release/rtcwin_wss_transport_smoke.exe
+build/windows-x64/bin/Release/rtcwin_credential_store_tests.exe
+```
