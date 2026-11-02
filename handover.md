@@ -3,9 +3,9 @@
 > 快照日期：2026-11-02
 > 仓库：`D:\google\webrtc-win-client\rtc-talk-win`
 > 分支：`rtc-talk-win`
-> 代码基线：`a236462 feat: complete M6 diagnostics and observability`
+> 代码基线：`96a7008 fix: stabilize multi-party SFU video delivery`
 >
-> 当前状态：M1-M6 已完成并确认；2026-11-02 多端 SFU 视频稳定性修复随本次提交交付；M7 安全和发布暂停，待转生产前处理。
+> 当前状态：M1-M6 已完成并确认；2026-11-02 多端 SFU 视频稳定性修复已提交并验证；M7 安全和发布暂停，待转生产前处理。
 > 旧工程：`D:\google\webrtc-win-client\rtc-talk`，只读参考，禁止修改或提交。
 
 本文档面向后续接入业务、继续媒体开发、做代码评审或发布验收的工程师。它描述当前真实代码状态，不把计划中的能力写成已完成能力。
@@ -17,7 +17,7 @@
 
 | 类别 | 仓库 / 分支 / 提交 | 本工程中的用途 | 权限 |
 |---|---|---|---|
-| 当前生产工程 | `D:\google\webrtc-win-client\rtc-talk-win` / `rtc-talk-win` / `a236462` | 真正交付工程、当前开发分支；文档更新以本文件所在提交为准 | 可开发、可提交到 `rtc-talk-win` |
+| 当前生产工程 | `D:\google\webrtc-win-client\rtc-talk-win` / `rtc-talk-win` / `96a7008` | 真正交付工程、当前开发分支；文档更新以本文件所在提交为准 | 可开发、可提交到 `rtc-talk-win` |
 | 服务端权威参考 | `D:\google\webrtc-win-client\rtc-talk` / `origin/main` / `8e6ff57` | 服务端行为、协议口径、S4 差异和联调依据 | 只读 |
 | 旧 Windows 客户端功能参考 | `origin/feat/windows-client` / `df22708` | `client-win` demo、既有音视频功能和联调逻辑参考 | 只读 |
 | 旧 Windows 生产实现参考 | `origin/codex/feat/windows-production-client` / `bbb3891` | P5 UI、生产模块、历史改造和验收记录参考 | 只读 |
@@ -2096,6 +2096,8 @@ SHA256: CE8D0E1B36990EAF066FA43DCA034EC83EAB60C43D84E47699CF9E4BD8947F9C
 
 ### 18.18 多端 SFU 视频稳定性修复（2026-11-02）
 
+提交：`96a7008 fix: stabilize multi-party SFU video delivery`
+
 用户实测发现：多人 SFU 房间中同一视频 Tile 会交替显示不同成员画面；
 先入房客户端在成员离开、重新协商和后来成员开摄像头后，可能出现
 `remote_video_tracks > 0` 但 `video_recv=0`，画面一直停留在“等待视频帧”。
@@ -2132,3 +2134,12 @@ build/windows-x64/bug-rk-client-test-routing-fix-20261031/small-tiles-contact-ro
 build/windows-x64/bug-sfu-renegotiate-refresh-20261101/observer.png
 build/windows-x64/bug-dynamic-camera-fixed-20261101/observer.png
 ```
+
+Release 交付包：
+
+```text
+D:\google\webrtc-win-client\rtc-talk-win\dist\rtc-talk-win-20261102-091554.zip
+SHA256: DB3B237DA1A508E07040910E610DF629B24FA8CFAD34D17FD5367346225CD332
+```
+
+包内 `VERSION.txt` 的提交号为 `96a7008`，工作树状态为 `clean`。
