@@ -1,4 +1,4 @@
-add_executable(rtc-talk main.cpp)
+add_executable(rtc-talk main.cpp "${CMAKE_SOURCE_DIR}/resources/app.rc")
 
 target_link_libraries(rtc-talk PRIVATE rtcwin_ui)
 

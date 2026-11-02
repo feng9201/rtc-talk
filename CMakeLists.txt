@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(rtc_talk_win VERSION 0.1.0 LANGUAGES C CXX)
+project(rtc_talk_win VERSION 0.1.0 LANGUAGES C CXX RC)
 
 cmake_policy(SET CMP0091 NEW)
 

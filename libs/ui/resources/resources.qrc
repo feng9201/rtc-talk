@@ -1,6 +1,8 @@
 <RCC>
   <qresource prefix="/rtcwin">
     <file>theme.qss</file>
+    <file alias="icon.ico">../../../resources/icon.ico</file>
+    <file alias="icon.png">../../../resources/icon.png</file>
   </qresource>
   <qresource prefix="/desktop">
     <file>icons/chevron-down.png</file>

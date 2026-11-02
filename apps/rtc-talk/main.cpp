@@ -6,6 +6,7 @@
 #include <QCommandLineParser>
 #include <QDir>
 #include <QFileInfo>
+#include <QIcon>
 #include <QPixmap>
 #include <QScreen>
 #include <QSurfaceFormat>
@@ -25,6 +26,7 @@ int main(int argc, char** argv) {
   app.setOrganizationName(QStringLiteral("rtc-talk"));
   app.setApplicationName(QStringLiteral("rtc-talk-win"));
   app.setApplicationVersion(QStringLiteral("0.1.0"));
+  app.setWindowIcon(QIcon(QStringLiteral(":/rtcwin/icon.ico")));
 
   QCommandLineParser parser;
   parser.addHelpOption();

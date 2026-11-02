@@ -98,7 +98,10 @@ if (Test-Path $stage) {
   }
   Remove-Item -LiteralPath $stage -Recurse -Force
 }
+$iconSource = Join-Path $root "resources\icon.ico"
+if (-not (Test-Path $iconSource)) { throw "Missing icon: $iconSource" }
 New-Item -ItemType Directory -Force -Path $stage, $dist | Out-Null
+Copy-Item -LiteralPath $iconSource -Destination (Join-Path $stage "icon.ico")
 
 foreach ($file in $required) {
   Copy-Item -LiteralPath (Join-Path $bin $file) -Destination $stage
@@ -120,7 +123,8 @@ $runtimeChecks = @(
   "fmt.dll",
   "avutil-59.dll",
   "msvcp140.dll",
-  "vcruntime140.dll"
+  "vcruntime140.dll",
+  "icon.ico"
 )
 foreach ($file in $runtimeChecks) {
   if (-not (Test-Path (Join-Path $stage $file))) {
