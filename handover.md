@@ -2202,3 +2202,12 @@ SHA256: DB3B237DA1A508E07040910E610DF629B24FA8CFAD34D17FD5367346225CD332
 build/windows-x64/bin/Release/rtcwin_wss_transport_smoke.exe
 build/windows-x64/bin/Release/rtcwin_credential_store_tests.exe
 ```
+
+Release 验证包：
+
+```text
+D:\google\webrtc-win-client\rtc-talk-win\dist\rtc-talk-win-20261102-131423.zip
+SHA256: 5A9C37273B67E7CFE3E5B673C63218C1886E145ACACD49E200EA065D26111B4E
+```
+
+包内 `VERSION.txt` 的提交号为 `aebb285`，工作树状态为 `clean`。
