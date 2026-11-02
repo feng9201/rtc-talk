@@ -432,7 +432,9 @@ struct MediaSession::Impl {
     if (!sfu_recv->SetRemote(webrtc::SdpType::kOffer, remote_offer, error)) {
       return false;
     }
+    sfu_recv->RefreshRemoteTracks();
     if (!sfu_recv->CreateAndSetLocal(false, error)) return false;
+    sfu_recv->RefreshRemoteTracks();
     return sfu_recv->GetLocalSdp(answer, error);
   }
 

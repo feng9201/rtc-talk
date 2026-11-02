@@ -54,6 +54,11 @@ bool MuxVideoSurface::SubmitFrame(const domain::VideoFrame& frame) {
 
   frame_width_ = frame.width;
   frame_height_ = frame.height;
+  setProperty("frameUid", QString::fromStdString(frame.uid));
+  setProperty("frameMid", QString::fromStdString(frame.mid));
+  setProperty("frameSource",
+              QString::fromLatin1(
+                  domain::VideoSourceName(frame.source).c_str()));
   AVFrame* av_frame = av_frame_alloc();
   if (av_frame == nullptr) return false;
   av_frame->format = AV_PIX_FMT_YUV420P;

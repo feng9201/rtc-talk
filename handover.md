@@ -1,11 +1,11 @@
 # rtc-talk-win 项目交接文档
 
-> 快照日期：2026-10-31
+> 快照日期：2026-11-02
 > 仓库：`D:\google\webrtc-win-client\rtc-talk-win`
 > 分支：`rtc-talk-win`
 > 代码基线：`a236462 feat: complete M6 diagnostics and observability`
 >
-> 当前状态：M1-M6 已完成并确认；M6 RTCStats 聚合、实时状态面板和脱敏诊断包随本次提交交付；M7 安全和发布暂停，待转生产前处理。
+> 当前状态：M1-M6 已完成并确认；2026-11-02 多端 SFU 视频稳定性修复随本次提交交付；M7 安全和发布暂停，待转生产前处理。
 > 旧工程：`D:\google\webrtc-win-client\rtc-talk`，只读参考，禁止修改或提交。
 
 本文档面向后续接入业务、继续媒体开发、做代码评审或发布验收的工程师。它描述当前真实代码状态，不把计划中的能力写成已完成能力。
@@ -2093,3 +2093,42 @@ SHA256: CE8D0E1B36990EAF066FA43DCA034EC83EAB60C43D84E47699CF9E4BD8947F9C
 - 双端有音视频流量时的 RTT/丢包/码率趋势。
 - 用户实际网络异常场景下的诊断包内容检查。
 - 诊断包大小和日志留存周期策略。
+
+### 18.18 多端 SFU 视频稳定性修复（2026-11-02）
+
+用户实测发现：多人 SFU 房间中同一视频 Tile 会交替显示不同成员画面；
+先入房客户端在成员离开、重新协商和后来成员开摄像头后，可能出现
+`remote_video_tracks > 0` 但 `video_recv=0`，画面一直停留在“等待视频帧”。
+
+根因和修复：
+
+1. `VideoGrid::ApplyFrameToMatchingTiles` 原先只比较 `source`，没有比较
+   `uid`，导致一个摄像头帧会写入所有摄像头 Tile。现改为严格匹配
+   `uid + source`，并为每个 Surface 记录 `frameUid/frameMid/frameSource`
+   用于回归诊断。
+2. `VideoGrid::SetState` 每次音频电平更新都会重复解绑、重新挂载所有
+   muxPlayer Surface，并重建布局。现改为增量 Surface 绑定和布局签名检查，
+   未变化时不再触碰已有 QOpenGLWidget。
+3. `sfu.offer` 重协商后不能保证所有既有远端轨道重新触发 `OnTrack`。
+   新增 `MediaPeer::RefreshRemoteTracks()`，在远端 offer 落地和本地 answer
+   落地后遍历 transceiver，重新注册 receiver track 到
+   `RemoteTrackRegistry`。
+4. 远端客户端无麦克风时，音频初始化失败会导致整个 MediaSession 失败，
+   连视频和 `sfu-recv` 都不会创建。现改为音频设备降级：缺麦克风继续视频，
+   有播放设备继续播放远端音频；只记录“none”设备状态，不阻断媒体会话。
+
+验证：
+
+- Release/Debug 构建通过。
+- Release/Debug CTest 均为 11/11。
+- 动态场景验证：A 先入房，B 后入房并延迟开启摄像头，A 能持续看到 B 画面。
+- 多成员离开、重新协商、后加入发布场景验证：远端 `video_recv` 继续增长。
+- 用户按 A/B/C 顺序及无麦克风客户端场景实测通过。
+
+证据：
+
+```text
+build/windows-x64/bug-rk-client-test-routing-fix-20261031/small-tiles-contact-routing-fix.png
+build/windows-x64/bug-sfu-renegotiate-refresh-20261101/observer.png
+build/windows-x64/bug-dynamic-camera-fixed-20261101/observer.png
+```

@@ -91,6 +91,11 @@ void VideoTile::SetSource(domain::VideoSource source, bool has_camera_pip) {
 
 void VideoTile::AttachMainSurface(
     muxplayer_adapter::MuxVideoSurface* surface) {
+  if (surface != nullptr && pip_surface_ == surface) {
+    pip_surface_ = nullptr;
+    if (pip_border_ != nullptr) pip_border_->hide();
+    if (pip_label_ != nullptr) pip_label_->hide();
+  }
   if (surface_ == surface) return;
   surface_ = surface;
   if (surface_ != nullptr) {
@@ -107,6 +112,9 @@ void VideoTile::AttachMainSurface(
 
 void VideoTile::AttachPipSurface(
     muxplayer_adapter::MuxVideoSurface* surface) {
+  if (surface != nullptr && surface_ == surface) {
+    surface_ = nullptr;
+  }
   if (pip_surface_ == surface) return;
   pip_surface_ = surface;
   if (pip_surface_ != nullptr) {

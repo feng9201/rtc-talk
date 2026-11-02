@@ -53,6 +53,7 @@ class MediaPeer final : public webrtc::PeerConnectionObserver {
                          bool ice_restart = false);
   bool SetRemote(webrtc::SdpType type, const std::string& sdp,
                  MediaError* error);
+  void RefreshRemoteTracks();
   bool AddIceCandidate(const std::string& candidate, const std::string& mid,
                        int mline_index, MediaError* error);
 

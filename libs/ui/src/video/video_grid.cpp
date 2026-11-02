@@ -85,7 +85,8 @@ VideoGridDiagnostics VideoGrid::Diagnostics() const {
       surface_pool_ != nullptr ? surface_pool_->active_count() : 0,
       surface_pool_ != nullptr ? surface_pool_->idle_count() : 0,
       static_cast<int>(frames_.size()),
-      static_cast<int>(health_monitor_.StaleStreams(NowMs()).size())};
+      static_cast<int>(health_monitor_.StaleStreams(NowMs()).size()),
+      surface_attach_changes_};
 }
 
 void VideoGrid::SetLayoutMode(domain::StageLayout layout) {
@@ -180,12 +181,22 @@ void VideoGrid::Rebuild() {
     }
   }
 
-  BindSurfaces();
+  const QSet<QString> new_bindings = BindSurfaces();
   for (const auto& item : scene_.primary) {
-    ApplyFrame(tiles_.value(TileKey(item), nullptr), item);
+    const QString camera_key =
+        FrameKey(item.uid, domain::VideoSource::Camera);
+    if (new_bindings.contains(TileKey(item)) ||
+        (item.has_camera_pip && new_bindings.contains(camera_key))) {
+      ApplyFrame(tiles_.value(TileKey(item), nullptr), item);
+    }
   }
   for (const auto& item : scene_.secondary) {
-    ApplyFrame(tiles_.value(TileKey(item), nullptr), item);
+    const QString camera_key =
+        FrameKey(item.uid, domain::VideoSource::Camera);
+    if (new_bindings.contains(TileKey(item)) ||
+        (item.has_camera_pip && new_bindings.contains(camera_key))) {
+      ApplyFrame(tiles_.value(TileKey(item), nullptr), item);
+    }
   }
 }
 
@@ -250,9 +261,11 @@ void VideoGrid::ApplyFrameToMatchingTiles(
   const auto apply_item =
       [this, &frame, &frame_key, renderable](
           const application::VideoSceneItem& item) {
-        const bool primary = item.source == frame.source;
+        const bool same_member = item.uid == frame.uid;
+        const bool primary =
+            same_member && item.source == frame.source;
         const bool camera_pip =
-            frame.source == domain::VideoSource::Camera &&
+            same_member && frame.source == domain::VideoSource::Camera &&
             item.source == domain::VideoSource::Screen &&
             item.has_camera_pip;
         if (!primary && !camera_pip) return;
@@ -279,9 +292,10 @@ void VideoGrid::ApplyFrameToMatchingTiles(
   for (const auto& item : scene_.secondary) apply_item(item);
 }
 
-void VideoGrid::BindSurfaces() {
+QSet<QString> VideoGrid::BindSurfaces() {
   std::vector<SurfaceBinding> bindings;
   QSet<QString> desired_keys;
+  QSet<QString> new_bindings;
 
   const auto add_binding =
       [this, &bindings, &desired_keys](
@@ -308,9 +322,6 @@ void VideoGrid::BindSurfaces() {
   for (const auto& item : scene_.primary) collect(item);
   for (const auto& item : scene_.secondary) collect(item);
 
-  for (auto it = tiles_.begin(); it != tiles_.end(); ++it) {
-    it.value()->DetachSurfaces();
-  }
   for (auto it = surface_leases_.begin(); it != surface_leases_.end();) {
     if (!desired_keys.contains(it->first)) {
       it = surface_leases_.erase(it);
@@ -321,24 +332,40 @@ void VideoGrid::BindSurfaces() {
 
   for (const auto& binding : bindings) {
     auto lease = surface_leases_.find(binding.key);
+    bool newly_attached = false;
     if (lease == surface_leases_.end()) {
       auto acquired = surface_pool_->Acquire(binding.key, binding.owner);
-      if (!acquired) continue;
+      if (!acquired) return new_bindings;
       lease = surface_leases_.emplace(
           binding.key, std::move(acquired)).first;
+      newly_attached = true;
     }
     auto* surface = lease->second->surface();
     if (surface == nullptr) {
       surface_leases_.erase(lease);
       continue;
     }
-    surface->setParent(binding.owner);
+    const bool wrong_parent = surface->parentWidget() != binding.owner;
+    const bool wrong_role =
+        binding.pip
+            ? binding.owner->cameraPipSurface() != surface
+            : binding.owner->mainSurface() != surface;
+    if (!wrong_parent && !wrong_role) continue;
+    if (wrong_parent) {
+      surface->hide();
+      surface->setParent(binding.owner);
+    }
     if (binding.pip) {
       binding.owner->AttachPipSurface(surface);
     } else {
       binding.owner->AttachMainSurface(surface);
     }
+    if (newly_attached || wrong_parent || wrong_role) {
+      ++surface_attach_changes_;
+      new_bindings.insert(binding.key);
+    }
   }
+  return new_bindings;
 }
 
 void VideoGrid::ClearSurfaceLeases() {
@@ -413,6 +440,22 @@ QString VideoGrid::TileKey(const application::VideoSceneItem& item) {
 }
 
 void VideoGrid::ApplyPlacement() {
+  QString signature = QStringLiteral("%1x%2").arg(layout_plan_.rows).arg(
+      layout_plan_.columns);
+  for (const auto& cell : layout_plan_.cells) {
+    signature += QStringLiteral("|%1:%2:%3:%4:%5")
+                     .arg(QString::fromStdString(cell.key))
+                     .arg(cell.row)
+                     .arg(cell.column)
+                     .arg(cell.row_span)
+                     .arg(cell.column_span);
+  }
+  if (signature == placement_signature_) {
+    update();
+    return;
+  }
+  placement_signature_ = signature;
+
   while (QLayoutItem* item = layout_engine_->takeAt(0)) delete item;
   for (int row = 0; row < placed_rows_; ++row) {
     layout_engine_->setRowStretch(row, 0);

@@ -22,6 +22,12 @@ class VideoTile final : public QWidget {
   void SetMember(const domain::PeerState& member, bool self, bool selected,
                  bool compact = false);
   void SetSource(domain::VideoSource source, bool has_camera_pip);
+  muxplayer_adapter::MuxVideoSurface* mainSurface() const {
+    return surface_;
+  }
+  muxplayer_adapter::MuxVideoSurface* cameraPipSurface() const {
+    return pip_surface_;
+  }
   void AttachMainSurface(
       muxplayer_adapter::MuxVideoSurface* surface);
   void AttachPipSurface(

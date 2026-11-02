@@ -255,6 +255,8 @@ bool AudioPipeline::InitializeDevices(
     SetError(error, 1705, "音频工作线程未初始化");
     return false;
   }
+  recording_available_ = false;
+  playout_available_ = false;
   const auto layer = config.audio_backend == "fake"
                          ? webrtc::AudioDeviceModule::kDummyAudio
                          : webrtc::AudioDeviceModule::kWindowsCoreAudio;
@@ -289,16 +291,32 @@ bool AudioPipeline::InitializeDevices(
         if (layer == webrtc::AudioDeviceModule::kDummyAudio) {
           recording_name_ = "fake-microphone";
           playout_name_ = "fake-speaker";
+          recording_available_ = true;
+          playout_available_ = true;
           return true;
         }
         if (system_audio) {
           recording_name_ = "system-default-render";
-        } else if (!SelectDevice(adm_.get(), true, config.recording_device,
-                                 &recording_name_, &device_error)) {
-          return false;
+          recording_available_ = true;
+        } else if (SelectDevice(adm_.get(), true, config.recording_device,
+                                &recording_name_, &device_error)) {
+          recording_available_ = true;
+        } else {
+          recording_name_ = "none";
+          RTC_LOG(LS_WARNING) << "麦克风不可用，继续初始化视频和远端播放: "
+                              << device_error;
+          device_error.clear();
         }
-        return SelectDevice(adm_.get(), false, config.playout_device,
-                            &playout_name_, &device_error);
+        std::string playout_error;
+        if (SelectDevice(adm_.get(), false, config.playout_device,
+                         &playout_name_, &playout_error)) {
+          playout_available_ = true;
+        } else {
+          playout_name_ = "none";
+          RTC_LOG(LS_WARNING) << "播放设备不可用，继续初始化视频: "
+                              << playout_error;
+        }
+        return true;
       });
   if (!ok) SetError(error, 1705, device_error);
   return ok;
@@ -310,12 +328,20 @@ bool AudioPipeline::EnsurePlayout(std::string* detail) {
     return false;
   }
   if (fake_device_) return true;
+  if (!playout_available_) {
+    if (detail) *detail = "未检测到播放设备，继续视频模式";
+    return true;
+  }
   const bool ok = worker_->BlockingCall([this] {
     if (!adm_->PlayoutIsInitialized() && adm_->InitPlayout() != 0) return false;
     return adm_->Playing() || adm_->StartPlayout() == 0;
   });
-  if (!ok && detail) *detail = "启动音频播放失败";
-  return ok;
+  if (!ok) {
+    playout_available_ = false;
+    if (detail) *detail = "启动音频播放失败，继续视频模式";
+    return true;
+  }
+  return true;
 }
 
 bool AudioPipeline::SetRecordingDevice(const std::string& device_id,
@@ -332,6 +358,7 @@ bool AudioPipeline::SetRecordingDevice(const std::string& device_id,
     }
     recording_name_.assign(device_id.empty() ? "system-default-render"
                                              : "system-selected-render");
+    recording_available_ = true;
     return true;
   }
 
@@ -353,6 +380,7 @@ bool AudioPipeline::SetRecordingDevice(const std::string& device_id,
     }
     return true;
   });
+  recording_available_ = ok;
   if (!ok) SetError(error, 1705, device_error);
   return ok;
 }
@@ -379,6 +407,7 @@ bool AudioPipeline::SetPlayoutDevice(const std::string& device_id,
     }
     return true;
   });
+  playout_available_ = ok;
   if (!ok) SetError(error, 1705, device_error);
   return ok;
 }

@@ -32,6 +32,18 @@ QSet<QString> SurfaceKeys(const rtcwin::ui::VideoGrid& grid) {
   return keys;
 }
 
+QString SurfaceFrameUid(const rtcwin::ui::VideoGrid& grid,
+                        const QString& stream_key) {
+  const auto surfaces =
+      grid.findChildren<rtcwin::muxplayer_adapter::MuxVideoSurface*>();
+  for (const auto* surface : surfaces) {
+    if (surface->property("streamKey").toString() == stream_key) {
+      return surface->property("frameUid").toString();
+    }
+  }
+  return {};
+}
+
 rtcwin::domain::VideoFrame MakeFrame(const std::string& uid,
                                     std::uint8_t seed) {
   rtcwin::domain::VideoFrame frame;
@@ -82,6 +94,8 @@ int main(int argc, char** argv) {
          "nine-video scene did not acquire nine surfaces");
   const QSet<QString> keys = SurfaceKeys(grid);
   Expect(keys.size() == 9, "surface stream keys are duplicated or missing");
+  const int initial_attach_changes =
+      grid.Diagnostics().surface_attach_changes;
 
   QElapsedTimer timer;
   timer.start();
@@ -93,9 +107,24 @@ int main(int argc, char** argv) {
   diagnostics = grid.Diagnostics();
   Expect(diagnostics.cached_frames == 9,
          "nine 720p frames were not cached independently");
+  Expect(SurfaceFrameUid(grid, QStringLiteral("u0|camera")) ==
+             QStringLiteral("u0"),
+         "local camera frame was applied to another member's surface");
+  Expect(SurfaceFrameUid(grid, QStringLiteral("u8|camera")) ==
+             QStringLiteral("u8"),
+         "remote camera frame was applied to the wrong member surface");
   Expect(elapsed_ms < 2000,
          "nine 720p frame intake exceeded the short-test budget");
   std::cout << "nine_streams_720p_intake_ms=" << elapsed_ms << '\n';
+
+  for (int iteration = 0; iteration < 20; ++iteration) {
+    state.self_audio_level = 0.1 * iteration;
+    grid.SetState(state);
+  }
+  QCoreApplication::processEvents();
+  diagnostics = grid.Diagnostics();
+  Expect(diagnostics.surface_attach_changes == initial_attach_changes,
+         "unchanged scene repeatedly rebound video surfaces");
 
   state.peers.front().camera_on = false;
   grid.SetState(state);

@@ -25,6 +25,7 @@ struct VideoGridDiagnostics {
   int idle_surfaces = 0;
   int cached_frames = 0;
   int stale_streams = 0;
+  int surface_attach_changes = 0;
 };
 
 class VideoGrid final : public QWidget {
@@ -56,7 +57,7 @@ class VideoGrid final : public QWidget {
   void ApplyFrame(VideoTile* tile,
                   const application::VideoSceneItem& item);
   void ApplyFrameToMatchingTiles(const domain::VideoFrame& frame);
-  void BindSurfaces();
+  QSet<QString> BindSurfaces();
   void ClearSurfaceLeases();
   void TickFrameHealth();
   void ClearStreamFrames(const domain::VideoStreamKey& key);
@@ -80,6 +81,8 @@ class VideoGrid final : public QWidget {
   QHash<QString, VideoTile*> tiles_;
   QSet<QString> cleared_stale_streams_;
   QHash<QString, std::shared_ptr<domain::VideoFrame>> frames_;
+  QString placement_signature_;
+  int surface_attach_changes_ = 0;
 };
 
 }  // namespace rtcwin::ui

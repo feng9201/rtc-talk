@@ -198,6 +198,36 @@ bool MediaPeer::SetRemote(webrtc::SdpType type, const std::string& sdp,
   return SetRemoteDescription(signaling_, pc_, type, sdp, error);
 }
 
+void MediaPeer::RefreshRemoteTracks() {
+  if (signaling_ == nullptr) return;
+  RunOnSignaling([this] {
+    if (!pc_) return;
+    for (const auto& transceiver : pc_->GetTransceivers()) {
+      if (!transceiver || !transceiver->receiver()) continue;
+      auto track = transceiver->receiver()->track();
+      const std::string mid = transceiver->mid().value_or("");
+      if (!track || mid.empty()) continue;
+      if (track->kind() == "audio") {
+        auto audio = webrtc::scoped_refptr<webrtc::AudioTrackInterface>(
+            static_cast<webrtc::AudioTrackInterface*>(track.get()));
+        if (remote_track_) {
+          remote_track_(
+              name_, mid, "audio", audio,
+              webrtc::scoped_refptr<webrtc::VideoTrackInterface>());
+        }
+      } else if (track->kind() == "video") {
+        auto video = webrtc::scoped_refptr<webrtc::VideoTrackInterface>(
+            static_cast<webrtc::VideoTrackInterface*>(track.get()));
+        if (remote_track_) {
+          remote_track_(
+              name_, mid, "video",
+              webrtc::scoped_refptr<webrtc::AudioTrackInterface>(), video);
+        }
+      }
+    }
+  });
+}
+
 bool MediaPeer::AddIceCandidate(const std::string& candidate,
                                 const std::string& mid, int mline_index,
                                 MediaError* error) {

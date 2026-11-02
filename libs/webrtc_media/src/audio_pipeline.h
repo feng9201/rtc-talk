@@ -79,6 +79,8 @@ class AudioPipeline final {
   std::atomic<double> volume_{0.6};
   bool fake_device_ = false;
   bool initialized_ = false;
+  bool recording_available_ = false;
+  bool playout_available_ = false;
   std::string recording_name_;
   std::string playout_name_;
 };
