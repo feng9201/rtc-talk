@@ -4,6 +4,7 @@
 #include <QApplication>
 #include <QCoreApplication>
 #include <QElapsedTimer>
+#include <QOpenGLWidget>
 #include <QSet>
 #include <QString>
 
@@ -37,11 +38,24 @@ QString SurfaceFrameUid(const rtcwin::ui::VideoGrid& grid,
   const auto surfaces =
       grid.findChildren<rtcwin::muxplayer_adapter::MuxVideoSurface*>();
   for (const auto* surface : surfaces) {
-    if (surface->property("streamKey").toString() == stream_key) {
+    if (surface->has_frame() &&
+        surface->property("streamKey").toString() == stream_key) {
       return surface->property("frameUid").toString();
     }
   }
   return {};
+}
+
+bool HasRenderedFrame(rtcwin::ui::VideoGrid& grid, const QString& stream_key) {
+  for (auto* surface :
+       grid.findChildren<rtcwin::muxplayer_adapter::MuxVideoSurface*>()) {
+    if (surface->property("streamKey").toString() != stream_key) continue;
+    auto* gl = surface->findChild<QOpenGLWidget*>();
+    if (gl == nullptr || !gl->isVisible() || !gl->isValid()) continue;
+    const auto image = gl->grabFramebuffer();
+    return !image.isNull() && image.pixelColor(image.rect().center()).red() > 120;
+  }
+  return false;
 }
 
 rtcwin::domain::VideoFrame MakeFrame(const std::string& uid,
@@ -134,6 +148,11 @@ int main(int argc, char** argv) {
          "disabled stream should remain as a placeholder tile");
   Expect(diagnostics.active_surfaces == 8 && diagnostics.idle_surfaces == 1,
          "disabled stream did not return its surface to the pool");
+  for (const auto* tile : grid.findChildren<rtcwin::ui::VideoTile*>()) {
+    const auto* surface = tile->mainSurface();
+    Expect(surface == nullptr || surface->parentWidget() == tile,
+           "tile retained a pointer to a released video surface");
+  }
 
   state.peers.front().camera_on = true;
   grid.SetState(state);
@@ -177,6 +196,74 @@ int main(int argc, char** argv) {
   QCoreApplication::processEvents();
   Expect(grid.Diagnostics().cached_frames == 2,
          "shared PIP camera frame was pruned during scene rebuild");
+
+  rtcwin::domain::PeerState remote;
+  remote.uid = "A";
+  remote.camera_on = true;
+  shared_state.camera_on = false;
+  shared_state.media_mode = "p2p";
+  shared_state.peers = {remote};
+  grid.SetState(shared_state);
+  grid.SetFrame(MakeFrame("A", 3));
+  shared_state.media_mode = "sfu";
+  shared_state.peers.emplace_back().uid = "C";
+  // During SFU publication the camera owner may briefly announce a screen
+  // track before its paused state arrives.
+  shared_state.peers.front().screen_on = true;
+  grid.SetState(shared_state);
+  shared_state.peers.front().screen_on = false;
+  grid.SetState(shared_state);
+  const bool check_pixels =
+      app.arguments().contains(QStringLiteral("--render-check"));
+  if (check_pixels) {
+    grid.show();
+    QCoreApplication::processEvents();
+  }
+  auto switched_frame = MakeFrame("A", 184);
+  switched_frame.mid = "1";
+  grid.SetFrame(switched_frame);
+  Expect(SurfaceFrameUid(grid, QStringLiteral("A|camera")) ==
+             QStringLiteral("A"),
+         "remote camera was lost after SFU switch during local sharing");
+  if (check_pixels) {
+    QCoreApplication::processEvents();
+    Expect(HasRenderedFrame(grid, QStringLiteral("A|camera")),
+           "B did not render A's camera pixels after switching to SFU");
+  }
+  for (const auto* tile : grid.findChildren<rtcwin::ui::VideoTile*>()) {
+    for (const auto* surface : {tile->mainSurface(), tile->cameraPipSurface()}) {
+      Expect(surface == nullptr || surface->parentWidget() == tile,
+             "SFU scene change left a surface attached to its previous tile");
+    }
+  }
+
+  rtcwin::ui::VideoGrid newcomer;
+  newcomer.resize(1440, 900);
+  rtcwin::domain::PeerState sharer;
+  sharer.uid = "B";
+  sharer.screen_on = true;
+  shared_state.self_uid = "C";
+  shared_state.sharing = false;
+  shared_state.peers = {sharer, remote};
+  newcomer.SetState(shared_state);
+  if (check_pixels) newcomer.show();
+  auto remote_screen = MakeFrame("B", 160);
+  remote_screen.source = rtcwin::domain::VideoSource::Screen;
+  remote_screen.mid = "2";
+  switched_frame.mid = "4";
+  newcomer.SetFrame(remote_screen);
+  newcomer.SetFrame(switched_frame);
+  Expect(SurfaceFrameUid(newcomer, QStringLiteral("B|screen")) ==
+             QStringLiteral("B") &&
+             SurfaceFrameUid(newcomer, QStringLiteral("A|camera")) ==
+                 QStringLiteral("A"),
+         "C did not route both SFU streams to separate surfaces");
+  if (check_pixels) {
+    QCoreApplication::processEvents();
+    Expect(HasRenderedFrame(newcomer, QStringLiteral("B|screen")) &&
+               HasRenderedFrame(newcomer, QStringLiteral("A|camera")),
+           "C did not render both the remote screen and camera pixels");
+  }
 
   if (failures != 0) {
     std::cerr << failures << " video grid stress test(s) failed\n";

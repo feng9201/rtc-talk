@@ -102,6 +102,9 @@ domain::PrejoinOptions SettingsStore::Load(QString* error) const {
       settings.value(QStringLiteral("audio/system_audio_device"))
           .toString()
           .toStdString();
+  result.camera_width = settings.value(QStringLiteral("video/camera_width"), 1280).toInt();
+  result.camera_height = settings.value(QStringLiteral("video/camera_height"), 720).toInt();
+  result.screen_native_resolution = settings.value(QStringLiteral("video/screen_native"), false).toBool();
   result.camera_device =
       settings.value(QStringLiteral("video/camera_device"))
           .toString()
@@ -145,6 +148,9 @@ bool SettingsStore::Save(const domain::PrejoinOptions& options,
                     QString::fromStdString(options.playout_device));
   settings.setValue(QStringLiteral("audio/system_audio_device"),
                     QString::fromStdString(options.system_audio_device));
+  settings.setValue(QStringLiteral("video/camera_width"), options.camera_width);
+  settings.setValue(QStringLiteral("video/camera_height"), options.camera_height);
+  settings.setValue(QStringLiteral("video/screen_native"), options.screen_native_resolution);
   settings.setValue(QStringLiteral("video/camera_device"),
                     QString::fromStdString(options.camera_device));
   settings.remove(QStringLiteral("connection/token"));

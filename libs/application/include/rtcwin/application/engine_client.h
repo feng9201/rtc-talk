@@ -46,6 +46,10 @@ class EngineClient : public QObject {
   virtual void RestartIce(const std::string& pc) = 0;
   virtual void StartCameraPreview(int device_index) = 0;
   virtual void StopCameraPreview() = 0;
+  virtual void ConfigureCameraPreview(int index, int width, int height) {
+    StartCameraPreview(index);
+  }
+  virtual void SetScreenResolution(bool native) {}
 
  signals:
   void SnapshotChanged(const rtcwin::domain::SessionSnapshot& snapshot);

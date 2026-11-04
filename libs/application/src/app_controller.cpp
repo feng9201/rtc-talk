@@ -100,6 +100,9 @@ void AppController::BeginJoin(const domain::PrejoinOptions& options) {
   snapshot_.devices.playout_device = options.playout_device;
   snapshot_.devices.system_audio_device = options.system_audio_device;
   snapshot_.devices.camera_device = options.camera_device;
+  snapshot_.devices.camera_width = options.camera_width;
+  snapshot_.devices.camera_height = options.camera_height;
+  snapshot_.devices.screen_native_resolution = options.screen_native_resolution;
   floor_controller_->Sync(snapshot_);
   busy_ = true;
   emit SnapshotChanged(snapshot_);
@@ -360,8 +363,14 @@ void AppController::RestartIce(const std::string& pc) {
   if (!domain::CanUseRoomControls(snapshot_)) return;
   engine_->RestartIce(pc);
 }
-void AppController::StartCameraPreview(int device_index) {
-  engine_->StartCameraPreview(device_index);
+void AppController::StartCameraPreview(int device_index, int width, int height) {
+  if (snapshot_.join == domain::JoinPhase::Joined ||
+      snapshot_.join == domain::JoinPhase::Joining) return;
+  engine_->ConfigureCameraPreview(device_index, width, height);
+}
+void AppController::SetScreenResolution(bool native) {
+  if (!domain::CanUseRoomControls(snapshot_) || snapshot_.sharing) return;
+  engine_->SetScreenResolution(native);
 }
 void AppController::StopCameraPreview() { engine_->StopCameraPreview(); }
 }  // namespace rtcwin::application

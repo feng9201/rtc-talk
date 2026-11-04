@@ -62,6 +62,11 @@ bool CollectPeerMediaStats(
       !state->report) {
     return false;
   }
+  std::map<std::string, std::string> codecs;
+  for (const auto* codec :
+       state->report->GetStatsOfType<webrtc::RTCCodecStats>()) {
+    codecs[codec->id()] = codec->mime_type.value_or("");
+  }
   for (const auto* stats :
        state->report->GetStatsOfType<webrtc::RTCOutboundRtpStreamStats>()) {
     const std::string kind = stats->kind.value_or("");
@@ -71,6 +76,22 @@ bool CollectPeerMediaStats(
     } else if (kind == "video") {
       out->video_packets_sent += stats->packets_sent.value_or(0);
       out->video_bytes_sent += stats->bytes_sent.value_or(0);
+      VideoRtpStats video;
+      video.direction = "out";
+      video.width = stats->frame_width.value_or(0);
+      video.height = stats->frame_height.value_or(0);
+      video.mid = stats->mid.value_or("");
+      video.ssrc = stats->ssrc.value_or(0);
+      video.codec = codecs[stats->codec_id.value_or("")];
+      video.implementation = stats->encoder_implementation.value_or("");
+      video.packets = stats->packets_sent.value_or(0);
+      video.bytes = stats->bytes_sent.value_or(0);
+      if (stats->frames_encoded) video.frames = *stats->frames_encoded;
+      if (stats->key_frames_encoded) video.key_frames = *stats->key_frames_encoded;
+      video.nack = stats->nack_count.value_or(0);
+      video.pli = stats->pli_count.value_or(0);
+      video.fir = stats->fir_count.value_or(0);
+      out->video_rtp_stats.push_back(std::move(video));
     }
   }
   for (const auto* stats :
@@ -96,6 +117,23 @@ bool CollectPeerMediaStats(
     } else if (kind == "video") {
       out->video_packets_received += stats->packets_received.value_or(0);
       out->video_bytes_received += stats->bytes_received.value_or(0);
+      VideoRtpStats video;
+      video.direction = "in";
+      video.width = stats->frame_width.value_or(0);
+      video.height = stats->frame_height.value_or(0);
+      video.mid = stats->mid.value_or("");
+      video.ssrc = stats->ssrc.value_or(0);
+      video.codec = codecs[stats->codec_id.value_or("")];
+      video.implementation = stats->decoder_implementation.value_or("");
+      video.packets = stats->packets_received.value_or(0);
+      video.bytes = stats->bytes_received.value_or(0);
+      if (stats->frames_decoded) video.frames = *stats->frames_decoded;
+      if (stats->key_frames_decoded) video.key_frames = *stats->key_frames_decoded;
+      if (stats->frames_received) video.frames_received = *stats->frames_received;
+      video.nack = stats->nack_count.value_or(0);
+      video.pli = stats->pli_count.value_or(0);
+      video.fir = stats->fir_count.value_or(0);
+      out->video_rtp_stats.push_back(std::move(video));
       out->packets_lost += stats->packets_lost.value_or(0);
       if (stats->jitter.has_value()) {
         out->jitter_ms = std::max(out->jitter_ms, *stats->jitter * 1000.0);

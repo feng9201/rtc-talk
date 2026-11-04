@@ -11,6 +11,7 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <vector>
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -35,7 +36,15 @@ struct FrameSize {
   }
 };
 
+struct CaptureMode {
+  int width = 0;
+  int height = 0;
+  int numerator = 0;
+  int denominator = 1;
+};
+
 struct CameraInfo {
+  std::vector<CaptureMode> modes;
   int index = -1;
   std::string name;
   std::list<FrameSize> supportedFrameSize;
@@ -52,7 +61,8 @@ class MFAPICapture {
  public:
   static std::list<CameraInfo> EnumerateDevices();
 
-  bool init(const CameraInfo& camera_info, int width, int height, int fps = 25);
+  bool init(const CameraInfo& camera_info, int width, int height, int fps = 25,
+            int fps_denominator = 1);
 
   std::string getCurErr();
 
@@ -88,7 +98,8 @@ class MFAPICapture {
 
  private:
   bool createDevice(const CameraInfo& camera_info);
-  bool setFrameInfo(int width, int height, int fps);
+  bool setFrameInfo(int width, int height, int fps, int fps_denominator,
+                    bool advanced_conversion = false);
   // 媒体类型变化后重新读取行宽。
   void refreshStride();
 

@@ -9,6 +9,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <functional>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -34,6 +35,7 @@ class DesktopVideoSource : public webrtc::AdaptedVideoTrackSource {
   bool Start(const std::string& source_id, bool window,
              std::string* error);
   void SetSource(const std::string& source_id, bool window);
+  bool SetNativeResolution(bool native);
   void Stop();
   bool running() const { return running_.load(std::memory_order_relaxed); }
   std::uint64_t frames() const {
@@ -49,18 +51,21 @@ class DesktopVideoSource : public webrtc::AdaptedVideoTrackSource {
  private:
   class CaptureCallback;
 
-  void CaptureLoop();
+  void CaptureLoop(std::string source_id, bool window,
+                   std::promise<std::string> started);
   void Deliver(const webrtc::DesktopFrame& frame);
-  void OnDesktopFrame(std::unique_ptr<webrtc::DesktopFrame> frame);
+  void OnCaptureResult(webrtc::DesktopCapturer::Result result,
+                       std::unique_ptr<webrtc::DesktopFrame> frame);
 
   const int max_width_;
   const int max_height_;
   const int fps_;
+  bool native_resolution_ = false;  // Changed only while the capture thread is stopped.
 
   std::mutex mutex_;
   std::condition_variable frame_ready_;
   std::unique_ptr<webrtc::DesktopFrame> pending_;
-  std::unique_ptr<webrtc::DesktopCapturer> capturer_;
+  std::optional<webrtc::DesktopCapturer::Result> capture_result_;
   std::unique_ptr<CaptureCallback> callback_;
   std::thread thread_;
   FrameCallback frame_callback_;

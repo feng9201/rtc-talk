@@ -8,9 +8,15 @@
 
 namespace rtcwin::camera_win {
 
+struct CameraResolution {
+  int width = 0;
+  int height = 0;
+};
+
 struct CameraDeviceInfo {
   int index = -1;
   std::string name;
+  std::vector<CameraResolution> resolutions;
 };
 
 struct CameraCaptureConfig {
@@ -18,6 +24,7 @@ struct CameraCaptureConfig {
   int width = 1280;
   int height = 720;
   int fps = 15;
+  bool exact_resolution = false;
 };
 
 struct I420Frame {

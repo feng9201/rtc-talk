@@ -1,0 +1,19 @@
+Breakpad Windows Client SDK
+src  : D:\google\breakpad\src @ 9a2ad675
+date : 2026-09-23 更新（新增合并 DLL）
+arch : x64 (MSVC v143)
+
+lib\x64\Release\ : common.lib crash_generation_client.lib crash_generation_server.lib crash_report_sender.lib exception_handler.lib
+lib\x64\Debug\   : 同上 (Debug /MTd)
+lib\x64\*\dll\   : breakpad_client.dll + breakpad_client.lib(导入库) + breakpad_client.pdb
+                     = 抓 dmp 三库（exception_handler + crash_generation_client + common）合并
+                     = 只编 4 源文件（exception_handler/crash_generation_client/guid_string/string_utils），不含 http_upload → 无 wininet 依赖
+bin\x64\         : dump_syms.exe symupload.exe (官方预编译)
+include\         : 头文件闭包，include 根目录
+ usage.md         : 使用说明（接入方式 A/B/C/D、工具用法、注意事项）
+
+链接方式：
+- 抓 dmp（推荐，DLL）：链 lib\x64\Release\dll\breakpad_client.lib（导入库），运行时带 breakpad_client.dll；无需 wininet
+- 抓 dmp（静态）：链 exception_handler.lib + crash_generation_client.lib + common.lib，无需 wininet
+- 进程外服务端：另链 crash_generation_server.lib（保持独立静态库）
+- 上传报告：另链 crash_report_sender.lib + common.lib + wininet.lib（保持独立静态库）

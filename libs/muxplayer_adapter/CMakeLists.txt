@@ -9,6 +9,7 @@ target_include_directories(rtcwin_muxplayer_adapter PUBLIC
 
 target_link_libraries(rtcwin_muxplayer_adapter
   PUBLIC rtcwin_domain Qt5::Widgets muxplayer_render
+  PRIVATE rtcwin_log_adapter
 )
 
 target_compile_options(rtcwin_muxplayer_adapter PRIVATE

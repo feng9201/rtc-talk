@@ -29,6 +29,14 @@ struct SurfaceBinding {
   bool pip = false;
 };
 
+void DetachSurface(muxplayer_adapter::MuxVideoSurface* surface) {
+  if (surface == nullptr) return;
+  auto* tile = qobject_cast<VideoTile*>(surface->parentWidget());
+  if (tile == nullptr) return;
+  if (tile->mainSurface() == surface) tile->AttachMainSurface(nullptr);
+  if (tile->cameraPipSurface() == surface) tile->AttachPipSurface(nullptr);
+}
+
 }  // namespace
 
 VideoGrid::VideoGrid(QWidget* parent) : QWidget(parent) {
@@ -324,6 +332,7 @@ QSet<QString> VideoGrid::BindSurfaces() {
 
   for (auto it = surface_leases_.begin(); it != surface_leases_.end();) {
     if (!desired_keys.contains(it->first)) {
+      DetachSurface(it->second->surface());
       it = surface_leases_.erase(it);
     } else {
       ++it;
@@ -335,7 +344,7 @@ QSet<QString> VideoGrid::BindSurfaces() {
     bool newly_attached = false;
     if (lease == surface_leases_.end()) {
       auto acquired = surface_pool_->Acquire(binding.key, binding.owner);
-      if (!acquired) return new_bindings;
+      if (!acquired) continue;
       lease = surface_leases_.emplace(
           binding.key, std::move(acquired)).first;
       newly_attached = true;
@@ -350,8 +359,9 @@ QSet<QString> VideoGrid::BindSurfaces() {
         binding.pip
             ? binding.owner->cameraPipSurface() != surface
             : binding.owner->mainSurface() != surface;
-    if (!wrong_parent && !wrong_role) continue;
+    if (!newly_attached && !wrong_parent && !wrong_role) continue;
     if (wrong_parent) {
+      DetachSurface(surface);
       surface->hide();
       surface->setParent(binding.owner);
     }
@@ -360,10 +370,8 @@ QSet<QString> VideoGrid::BindSurfaces() {
     } else {
       binding.owner->AttachMainSurface(surface);
     }
-    if (newly_attached || wrong_parent || wrong_role) {
-      ++surface_attach_changes_;
-      new_bindings.insert(binding.key);
-    }
+    ++surface_attach_changes_;
+    new_bindings.insert(binding.key);
   }
   return new_bindings;
 }
@@ -392,22 +400,10 @@ void VideoGrid::ClearStreamFrames(const domain::VideoStreamKey& key) {
   frames_.remove(FrameKey(key.uid, key.source));
   const QString lease_key = FrameKey(key.uid, key.source);
 
-  const auto clear_item = [this, &key](const application::VideoSceneItem& item) {
-    if (item.uid != key.uid) return;
-    VideoTile* tile = tiles_.value(TileKey(item), nullptr);
-    if (tile == nullptr) return;
-    if (item.source == key.source) {
-      tile->AttachMainSurface(nullptr);
-    }
-    if (key.source == domain::VideoSource::Camera &&
-        item.source == domain::VideoSource::Screen &&
-        item.has_camera_pip) {
-      tile->AttachPipSurface(nullptr);
-    }
-  };
-  for (const auto& item : scene_.primary) clear_item(item);
-  for (const auto& item : scene_.secondary) clear_item(item);
-  surface_leases_.erase(lease_key);
+  const auto lease = surface_leases_.find(lease_key);
+  if (lease == surface_leases_.end()) return;
+  DetachSurface(lease->second->surface());
+  surface_leases_.erase(lease);
 }
 
 bool VideoGrid::IsSurfaceRenderable(

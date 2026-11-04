@@ -242,6 +242,13 @@ CAbiEngineClient::~CAbiEngineClient() {
 void CAbiEngineClient::ConnectAndJoin(
     const domain::PrejoinOptions& options) {
   snapshot_ = {};
+  snapshot_.devices.camera_device = options.camera_device;
+  snapshot_.devices.recording_device = options.recording_device;
+  snapshot_.devices.playout_device = options.playout_device;
+  snapshot_.devices.system_audio_device = options.system_audio_device;
+  snapshot_.devices.camera_width = options.camera_width;
+  snapshot_.devices.camera_height = options.camera_height;
+  snapshot_.devices.screen_native_resolution = options.screen_native_resolution;
   snapshot_.room_id = options.room_id;
   snapshot_.self_uid = options.user_id;
   snapshot_.self_display_name = options.user_id;
@@ -623,6 +630,9 @@ void CAbiEngineClient::SubmitConnectAndJoin(
                  QString::fromStdString(options.system_audio_device));
   payload.insert(QStringLiteral("camera_device"),
                  QString::fromStdString(options.camera_device));
+  payload.insert(QStringLiteral("camera_width"), options.camera_width);
+  payload.insert(QStringLiteral("camera_height"), options.camera_height);
+  payload.insert(QStringLiteral("screen_native_resolution"), options.screen_native_resolution);
   QString audio_backend = QStringLiteral("wasapi");
   if (options.audio_backend == domain::AudioBackend::Fake) {
     audio_backend = QStringLiteral("fake");
@@ -790,6 +800,15 @@ void CAbiEngineClient::RestartIce(const std::string& pc) {
 void CAbiEngineClient::StartCameraPreview(int device_index) {
   Submit(QStringLiteral("camera.preview.start"),
          QJsonObject{{QStringLiteral("device_index"), device_index}});
+}
+void CAbiEngineClient::ConfigureCameraPreview(int index, int width, int height) {
+  Submit(QStringLiteral("camera.preview.start"),
+         QJsonObject{{QStringLiteral("device_index"), index},
+                     {QStringLiteral("width"), width}, {QStringLiteral("height"), height}});
+}
+void CAbiEngineClient::SetScreenResolution(bool native) {
+  Submit(QStringLiteral("desktop.setResolution"),
+         QJsonObject{{QStringLiteral("native"), native}});
 }
 void CAbiEngineClient::StopCameraPreview() {
   Submit(QStringLiteral("camera.preview.stop"));
@@ -1021,6 +1040,10 @@ void CAbiEngineClient::HandleEvent(const QString& method,
           data.value(QStringLiteral("uid")).toString().toStdString();
       const QString source = data.value(QStringLiteral("source")).toString();
       const bool paused = data.value(QStringLiteral("paused")).toBool(true);
+      if (uid.empty() || (source != QStringLiteral("camera") &&
+                          source != QStringLiteral("screen"))) {
+        return;
+      }
       const bool on = !paused;
       if (uid == snapshot_.self_uid) {
         if (source == QStringLiteral("camera")) {
@@ -1058,30 +1081,27 @@ void CAbiEngineClient::HandleEvent(const QString& method,
       }
       const std::string mid =
           data.value(QStringLiteral("mid")).toString().toStdString();
-      if (!mid.empty()) {
-        domain::VideoStreamState* stream = nullptr;
-        for (domain::VideoStreamState& current : snapshot_.streams) {
-          if (current.mid == mid) {
-            stream = &current;
-            break;
-          }
-        }
-        if (stream == nullptr) {
-          snapshot_.streams.push_back({});
-          stream = &snapshot_.streams.back();
-          stream->mid = mid;
-        }
-        const QString uid = data.value(QStringLiteral("uid")).toString();
-        if (!uid.isEmpty()) stream->uid = uid.toStdString();
-        stream->source =
-            data.value(QStringLiteral("source")).toString() ==
-                    QStringLiteral("screen")
-                ? domain::VideoSource::Screen
-                : domain::VideoSource::Camera;
-        stream->producer_paused = false;
-        stream->receiving = false;
-        emit SnapshotChanged(snapshot_);
+      const auto uid = data.value(QStringLiteral("uid")).toString().toStdString();
+      const auto source = data.value(QStringLiteral("source")).toString();
+      if (mid.empty() || uid.empty() ||
+          (source != QStringLiteral("camera") &&
+           source != QStringLiteral("screen"))) {
+        return;
       }
+      const auto video_source = source == QStringLiteral("screen")
+                                    ? domain::VideoSource::Screen
+                                    : domain::VideoSource::Camera;
+      auto& streams = snapshot_.streams;
+      const auto stream = std::find_if(
+          streams.begin(), streams.end(), [&](const auto& current) {
+            return current.uid == uid && current.source == video_source;
+          });
+      if (stream == streams.end()) {
+        streams.push_back({mid, uid, video_source, false, false});
+      } else {
+        stream->mid = mid;
+      }
+      emit SnapshotChanged(snapshot_);
     } else if (method == QStringLiteral("media.error")) {
       const QJsonObject data =
           event.value(QStringLiteral("data")).toObject();
@@ -1131,6 +1151,12 @@ void CAbiEngineClient::HandleEvent(const QString& method,
               .toString()
               .toStdString();
       emit SnapshotChanged(snapshot_);
+    } else if (method == QStringLiteral("desktop.setResolution")) {
+      snapshot_.devices.screen_native_resolution = data.value(QStringLiteral("native")).toBool();
+      emit SnapshotChanged(snapshot_);
+    } else if (method == QStringLiteral("camera.select")) {
+      snapshot_.devices.camera_device = std::to_string(data.value(QStringLiteral("device_index")).toInt());
+      emit SnapshotChanged(snapshot_);
     } else if (method == QStringLiteral("camera.devices")) {
       QVector<domain::CameraDevice> devices;
       for (const QJsonValue& value :
@@ -1140,6 +1166,11 @@ void CAbiEngineClient::HandleEvent(const QString& method,
         device.id = object.value(QStringLiteral("id")).toString().toStdString();
         device.name =
             object.value(QStringLiteral("name")).toString().toStdString();
+        for (const QJsonValue& size : object.value(QStringLiteral("resolutions")).toArray()) {
+          const auto resolution = size.toObject();
+          device.resolutions.push_back({resolution.value(QStringLiteral("width")).toInt(),
+                                        resolution.value(QStringLiteral("height")).toInt()});
+        }
         if (!device.name.empty()) devices.push_back(device);
       }
       emit CameraDevicesChanged(devices);

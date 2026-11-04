@@ -1,4 +1,5 @@
 #include "rtcwin/engine/session_controller.h"
+#include "Version.h"
 
 #include "engine_log.h"
 #include "rtcwin/engine/reconnect_controller.h"
@@ -122,6 +123,15 @@ struct SessionController::Impl {
         request.value("system_audio_device", std::string());
     media_config.volume = std::clamp(request.value("volume", 60), 0, 100);
     media_config.muted = true;
+    media_config.camera_width = request.value("camera_width", 1280);
+    media_config.camera_height = request.value("camera_height", 720);
+    media_config.screen_native_resolution = request.value("screen_native_resolution", false);
+    if (media_config.camera_width < 16 || media_config.camera_height < 16 ||
+        media_config.camera_width > 16384 || media_config.camera_height > 16384 ||
+        media_config.camera_width % 2 || media_config.camera_height % 2) {
+      EmitResponse(command.id, command.method, false, 400, "摄像头分辨率无效");
+      return;
+    }
     const bool audio_requested = media_config.audio_backend != "none";
 
     {
@@ -163,7 +173,7 @@ struct SessionController::Impl {
       Json hello = {
           {"client",
            {{"platform", "windows-x64"},
-            {"version", "0.1.0"},
+            {"version", RTC_TALK_WIN_VERSION},
             {"sdk", "rtcwin-s4"}}},
           {"caps",
            {{"audio", {{"codecs", Json::array({"opus"})}, {"aec", "webrtc"}}},
@@ -623,6 +633,7 @@ struct SessionController::Impl {
                    response);
     }
     Notify("session.ready", response);
+    context.media.Start(generation);
     if (!audio_requested) {
       LOG_INFO("join finalized without audio backend=none");
       Notify("media.disabled", Json{{"reason", "backend_none"}});
@@ -637,7 +648,6 @@ struct SessionController::Impl {
       return;
     }
     LOG_INFO("join finalized media_enabled=true");
-    context.media.Start(generation);
     context.signaling.Request(
         "room.subscribeLevels", Json{{"enabled", true}},
         [this, generation](Json result) {

@@ -13,12 +13,15 @@ class FramelessWindow : public QWidget {
   void ToggleMaximize();
 
  protected:
+  bool event(QEvent* event) override;
   bool nativeEvent(const QByteArray& event_type, void* message,
                    long* result) override;
   void paintEvent(QPaintEvent* event) override;
 
  private:
+  void ApplyWindowCorners();
   bool IsInteractiveAt(const QPoint& global_pos) const;
+  bool native_corners_ = false;
 };
 
 }  // namespace rtcwin::ui

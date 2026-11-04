@@ -17,6 +17,7 @@ struct SmokeContext {
   std::condition_variable cv;
   std::vector<std::string> events;
   std::atomic<uint64_t> frames{0};
+  std::atomic<int> width{0}, height{0};
 };
 
 int IntArg(int argc, char** argv, const std::string& name, int fallback) {
@@ -48,6 +49,8 @@ void OnLocalFrame(void* userdata, const rtcwin_frame_view* frame) {
       frame->width <= 0 || frame->height <= 0) {
     return;
   }
+  context->width.store(frame->width);
+  context->height.store(frame->height);
   context->frames.fetch_add(1);
   context->cv.notify_all();
 }
@@ -118,6 +121,8 @@ int main(int argc, char** argv) {
   int cycles = IntArg(argc, argv, "--cycles", 3);
   int hold_ms = IntArg(argc, argv, "--hold-ms", 500);
   const int device_index = IntArg(argc, argv, "--device-index", -1);
+  const int width = IntArg(argc, argv, "--width", 1280);
+  const int height = IntArg(argc, argv, "--height", 720);
   if (cycles < 1 || cycles > 1000 || hold_ms < 0 || hold_ms > 60000) {
     std::cerr << "invalid arguments\n";
     return 2;
@@ -147,7 +152,9 @@ int main(int argc, char** argv) {
   for (int cycle = 1; cycle <= cycles; ++cycle) {
     const uint64_t first_frame = context.frames.load() + 1;
     const std::string payload =
-        "{\"device_index\":" + std::to_string(device_index) + "}";
+        "{\"device_index\":" + std::to_string(device_index) +
+        ",\"width\":" + std::to_string(width) +
+        ",\"height\":" + std::to_string(height) + "}";
     if (!SubmitAndWait(handle, &context, "camera.preview.start", payload,
                        std::chrono::seconds(15))) {
       rtcwin_destroy(handle);
@@ -159,6 +166,11 @@ int main(int argc, char** argv) {
       return 6;
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(hold_ms));
+    if (context.width.load() != width || context.height.load() != height) {
+      std::cerr << "unexpected capture resolution\n";
+      rtcwin_destroy(handle);
+      return 9;
+    }
     if (!SubmitAndWait(handle, &context, "camera.preview.stop", "{}",
                        std::chrono::seconds(10))) {
       rtcwin_destroy(handle);
@@ -172,7 +184,8 @@ int main(int argc, char** argv) {
       return 8;
     }
     std::cout << "cycle " << cycle << '/' << cycles
-              << " frames=" << context.frames.load() << '\n';
+              << " frames=" << context.frames.load()
+              << " size=" << context.width.load() << 'x' << context.height.load() << '\n';
   }
 
   rtcwin_destroy(handle);

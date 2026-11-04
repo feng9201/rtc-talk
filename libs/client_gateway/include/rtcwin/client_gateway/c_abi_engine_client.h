@@ -53,6 +53,8 @@ class CAbiEngineClient final : public application::EngineClient {
   void RestartIce(const std::string& pc) override;
   void StartCameraPreview(int device_index) override;
   void StopCameraPreview() override;
+  void ConfigureCameraPreview(int index, int width, int height) override;
+  void SetScreenResolution(bool native) override;
 
  private:
   struct CallbackContext;

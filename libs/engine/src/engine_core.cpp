@@ -1,6 +1,7 @@
 #include "rtcwin/engine/engine_core.h"
 
 #include "engine_log.h"
+#include "Version.h"
 #include "rtcwin/webrtc_media/audio_device_service.h"
 #include "rtcwin/webrtc_media/desktop_capture_service.h"
 
@@ -22,7 +23,7 @@ EngineCore::EngineCore(const rtcwin_options& options, std::string config_json)
              PostToWorker(std::move(task));
            }}) {
   InitializeEngineLogging();
-  LOG_INFO("engine starting version={} log={}", "0.1.0", EngineLogPath());
+  LOG_INFO("engine starting version={} log={}", RTC_TALK_WIN_VERSION, EngineLogPath());
   RegisterCommandHandlers();
   worker_ = std::thread(&EngineCore::WorkerLoop, this);
 }
@@ -44,6 +45,7 @@ EngineCore::~EngineCore() {
 }
 
 uint64_t EngineCore::Submit(std::string method, std::string json) {
+  //最大队列数，超过时会直接返回
   constexpr std::size_t kMaxPendingCommands = 256;
   const uint64_t id = next_id_.fetch_add(1);
   Command command;
@@ -126,6 +128,10 @@ void EngineCore::RegisterCommandHandlers() {
   command_router_.Register(
       "audio.devices", [this](const EngineCommand& command) {
         HandleAudioDevices(command);
+      });
+  command_router_.Register(
+      "desktop.setResolution", [this](const EngineCommand& command) {
+        media_.HandleScreenResolution(command);
       });
   command_router_.Register(
       "desktop.sources", [this](const EngineCommand& command) {

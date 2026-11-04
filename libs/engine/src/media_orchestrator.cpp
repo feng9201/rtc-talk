@@ -85,7 +85,7 @@ struct MediaOrchestrator::Impl {
       if (error) *error = {409, "会话已失效"};
       return false;
     }
-    Reset();
+    Reset(/*preserve_pending_offer=*/true);
 
     SessionMediaMode mode = context.session.media_mode();
     if (mode == SessionMediaMode::Unknown) {
@@ -167,10 +167,15 @@ struct MediaOrchestrator::Impl {
   }
 
   void Start(std::uint64_t generation) {
-    if (!context.session.IsCurrent(generation) ||
-        !context.session.media_ready()) {
-      return;
+    if (!context.session.IsCurrent(generation)) return;
+    media_start_pending = false;
+    if (!early_sfu_offer_id.empty()) {
+      auto id = std::move(early_sfu_offer_id);
+      early_sfu_offer_id.clear();
+      auto data = std::move(early_sfu_offer);
+      ApplySfuOfferRequest(id, data, generation);
     }
+    if (!context.session.media_ready()) return;
     if (context.session.media_mode() == SessionMediaMode::P2p) {
       StartP2p(generation);
     } else {
@@ -178,7 +183,7 @@ struct MediaOrchestrator::Impl {
     }
   }
 
-  void Reset() {
+  void Reset(bool preserve_pending_offer = false) {
     camera_generation.fetch_add(1);
     screen_generation.fetch_add(1);
     mute_generation.fetch_add(1);
@@ -200,6 +205,11 @@ struct MediaOrchestrator::Impl {
     sfu_subscribe_ready = false;
     pending_sfu_request_id.clear();
     pending_sfu_room_mode = Json::object();
+    media_start_pending = true;
+    if (!preserve_pending_offer) {
+      early_sfu_offer_id.clear();
+      early_sfu_offer = Json{};
+    }
     context.signaling.Post([this] { media_mode_timer.cancel(); });
   }
 
@@ -207,8 +217,12 @@ struct MediaOrchestrator::Impl {
     const auto devices = camera_win::CameraService::Enumerate();
     Json cameras = Json::array();
     for (const auto& device : devices) {
-      cameras.push_back(
-          {{"id", std::to_string(device.index)}, {"name", device.name}});
+      Json sizes = Json::array();
+      for (const auto& size : device.resolutions) {
+        sizes.push_back({{"width", size.width}, {"height", size.height}});
+      }
+      cameras.push_back({{"id", std::to_string(device.index)}, {"name", device.name},
+                         {"resolutions", std::move(sizes)}});
     }
     context.events.EmitResponse(command.id, command.method, true, 0, {},
                                 Json{{"cameras", std::move(cameras)}});
@@ -229,8 +243,9 @@ struct MediaOrchestrator::Impl {
     }
     const int previous_index = camera_device_index;
     const bool restart =
-        camera_preview_active || camera_publishing.load();
-    camera.Stop();
+        next_index != previous_index &&
+        (camera_preview_active || camera_publishing.load());
+    if (next_index != previous_index) camera.Stop();
     camera_device_index = next_index;
     std::string error;
     if (restart && !EnsureCameraCapture(&error)) {
@@ -256,6 +271,21 @@ struct MediaOrchestrator::Impl {
   }
 
   void HandleCameraPreviewStart(const EngineCommand& command) {
+    const auto phase = context.session.snapshot().phase;
+    if (phase != SessionPhase::Disconnected && phase != SessionPhase::Failed) {
+      context.events.EmitResponse(command.id, command.method, false, 409,
+                                  "入房期间不可修改摄像头采集设置");
+      return;
+    }
+    const int width = command.data.value("width", 1280);
+    const int height = command.data.value("height", 720);
+    if (width < 16 || height < 16 || width > 16384 || height > 16384 ||
+        width % 2 || height % 2) {
+      context.events.EmitResponse(command.id, command.method, false, 400, "摄像头分辨率无效");
+      return;
+    }
+    { std::lock_guard<std::mutex> lock(config_mutex);
+      config.camera_width = width; config.camera_height = height; }
     camera.Stop();
     camera_preview_active = false;
     camera_device_index = command.data.value("device_index", -1);
@@ -716,6 +746,25 @@ struct MediaOrchestrator::Impl {
     });
   }
 
+  void HandleScreenResolution(const EngineCommand& command) {
+    if (!media_session || !context.session.joined() || screen_toggle_pending ||
+        media_session->status().screen_enabled) {
+      context.events.EmitResponse(command.id, command.method, false, 409,
+                                  "仅可在未共享屏幕时修改分辨率");
+      return;
+    }
+    const bool native = command.data.value("native", false);
+    webrtc_media::MediaError error;
+    if (!media_session->SetScreenResolution(native, &error)) {
+      context.events.EmitResponse(command.id, command.method, false, error.code, error.message);
+      return;
+    }
+    { std::lock_guard<std::mutex> lock(config_mutex);
+      config.screen_native_resolution = native; }
+    LOG_INFO("screen resolution native={}", native);
+    context.events.EmitResponse(command.id, command.method, true, 0, {}, Json{{"native", native}});
+  }
+
   void HandleStats(const EngineCommand& command) {
     if (!media_session) {
       context.events.EmitResponse(command.id, command.method, false, 409,
@@ -766,6 +815,25 @@ struct MediaOrchestrator::Impl {
         status.video_packets_received, status.screen_capture_frames,
         status.screen_sender_active, status.remote_video_tracks,
         status.rtt_ms, status.jitter_ms, status.fraction_lost, bitrate_bps);
+    LOG_INFO("capture size camera={}x{} fps={}", camera.width(), camera.height(), camera.fps());
+    for (const auto& video : status.remote_video_stats) {
+      LOG_INFO("video sink generation={} pc={} mid={} uid={} source={} "
+               "enabled={} sink_frames={} converted_frames={}",
+               context.session.snapshot().generation, video.pc, video.mid,
+               video.uid, video.source, video.enabled, video.sink_frames,
+               video.converted_frames);
+    }
+    for (const auto& video : status.video_rtp_stats) {
+      LOG_INFO(
+          "video rtp generation={} pc={} direction={} mid={} ssrc={} codec={} "
+          "implementation={} packets={} bytes={} frames={} key_frames={} "
+          "frames_received={} nack={} pli={} fir={} sfu_paused={} size={}x{}",
+          context.session.snapshot().generation, video.pc, video.direction,
+          video.mid, video.ssrc, video.codec, video.implementation,
+          video.packets, video.bytes, video.frames, video.key_frames,
+          video.frames_received, video.nack, video.pli, video.fir,
+          status.sfu_paused, video.width, video.height);
+    }
     Json data = {
         {"generation", context.session.snapshot().generation},
         {"initialized", status.initialized},
@@ -882,58 +950,72 @@ struct MediaOrchestrator::Impl {
 
   void HandleSfuOfferRequest(const std::string& request_id, const Json& data,
                              std::uint64_t generation) {
+    context.post_to_worker([this, request_id, data, generation] {
+      ApplySfuOfferRequest(request_id, data, generation);
+    });
+  }
+
+  void ApplySfuOfferRequest(const std::string& request_id, const Json& data,
+                            std::uint64_t generation) {
+    if (!context.session.IsCurrent(generation)) return;
     const std::string sdp = data.value("sdp", std::string());
     if (sdp.empty()) {
       context.signaling.Send(
           signaling::Failure(request_id, 400, "缺少 SDP"));
       return;
     }
+    const auto phase = context.session.snapshot().phase;
+    if (media_start_pending &&
+        (phase == SessionPhase::JoiningRoom || phase == SessionPhase::Joined)) {
+      // The server serializes receive offers and can send the first one
+      // before room.join completes. Keep it until the media session exists.
+      if (early_sfu_offer_id.empty() || early_sfu_offer_id == request_id) {
+        early_sfu_offer_id = request_id;
+        early_sfu_offer = data;
+        LOG_INFO("sfu subscribe deferred until join generation={}", generation);
+      } else {
+        context.signaling.Send(
+            signaling::Failure(request_id, 409, "已有待处理的 SFU 订阅"));
+      }
+      return;
+    }
+    if (!media_session) {
+      context.signaling.Send(
+          signaling::Failure(request_id, 409, "音频媒体未就绪"));
+      return;
+    }
     const auto consumers =
         ParseRemoteTracks(data.value("consumers", Json::array()));
-    context.post_to_worker([this, request_id, sdp, consumers, generation] {
-      if (!context.session.IsCurrent(generation)) return;
-      if (!media_session) {
-        context.signaling.Send(
-            signaling::Failure(request_id, 409, "音频媒体未就绪"));
-        return;
+    std::string answer;
+    webrtc_media::MediaError error;
+    const bool ok = media_session->CreateSfuSubscribeAnswer(
+        sdp, consumers, &answer, &error);
+    LOG_INFO("sfu subscribe generation={} consumers={} ok={} code={}",
+             generation, consumers.size(), ok, error.code);
+    if (ok) {
+      for (const auto& consumer : consumers) {
+        LOG_INFO("sfu consumer generation={} mid={} uid={} kind={} source={}",
+                 generation, consumer.mid, consumer.uid, consumer.kind,
+                 consumer.source);
+        Json track = {{"pc", "sfu-recv"},
+                      {"mid", consumer.mid},
+                      {"uid", consumer.uid},
+                      {"kind", consumer.kind},
+                      {"source", consumer.source}};
+        context.events.EmitNotification("media.track", track);
       }
-      std::string answer;
-      webrtc_media::MediaError error;
-      const bool ok = media_session->CreateSfuSubscribeAnswer(
-          sdp, consumers, &answer, &error);
-      if (ok) {
-        for (const auto& consumer : consumers) {
-          Json track = {{"pc", "sfu-recv"},
-                        {"mid", consumer.mid},
-                        {"uid", consumer.uid},
-                        {"kind", consumer.kind},
-                        {"source", consumer.source}};
-          context.events.EmitNotification("media.track", track);
-        }
-        context.signaling.Send(
-            signaling::Response(request_id, Json{{"sdp", answer}}));
-        context.post_to_worker([this, generation] {
-          if (!context.session.IsCurrent(generation)) return;
-          sfu_subscribe_ready = true;
-          if (!pending_sfu_request_id.empty()) {
-            TryCompleteSfuSwitch(false, generation);
-          }
-        });
-      } else {
-        context.signaling.Send(signaling::Failure(
-            request_id, error.code == 0 ? 500 : error.code, error.message));
-        context.post_to_worker([this, error, generation] {
-          if (!context.session.IsCurrent(generation)) return;
-          if (!pending_sfu_request_id.empty()) {
-            FailPendingSfuSwitch(
-                error.code == 0 ? 500 : error.code,
-                error.message.empty() ? "SFU subscribe 失败"
-                                      : error.message,
-                generation);
-          }
-        });
-      }
-    });
+      context.signaling.Send(
+          signaling::Response(request_id, Json{{"sdp", answer}}));
+      sfu_subscribe_ready = true;
+      TryCompleteSfuSwitch(false, generation);
+    } else {
+      context.signaling.Send(signaling::Failure(
+          request_id, error.code == 0 ? 500 : error.code, error.message));
+      FailPendingSfuSwitch(error.code == 0 ? 500 : error.code,
+                           error.message.empty() ? "SFU subscribe 失败"
+                                                 : error.message,
+                           generation);
+    }
   }
 
   bool HandleSignalingEvent(const std::string& method, const Json& data,
@@ -1067,7 +1149,7 @@ struct MediaOrchestrator::Impl {
       const std::string pc = data.value("pc", std::string());
       const std::string state = data.value("state", std::string());
       LOG_INFO("audio connection pc={} state={}", pc, state);
-      if (pc == "p2p") {
+      if (pc == "p2p" && !p2p_session.empty()) {
         if (state == "connected") {
           sfu_paused = true;
           if (media_session) {
@@ -1092,11 +1174,16 @@ struct MediaOrchestrator::Impl {
     if (method == "media.track" || method == "audio.track") {
       Json out = data;
       out["generation"] = generation;
-      if (data.value("pc", std::string()) == "p2p") {
+      const auto pc = data.value("pc", std::string());
+      // SFU tracks are announced with authoritative consumer metadata
+      // by HandleSfuOfferRequest.
+      if (pc == "sfu-recv") return;
+      if (pc == "p2p") {
         out["uid"] = p2p_peer;
         if (out.value("kind", std::string()) == "video" &&
             !out.contains("source")) {
-          out["source"] = "camera";
+          out["source"] =
+              out.value("mid", std::string()) == "2" ? "screen" : "camera";
         }
       }
       context.events.EmitNotification("media.track", out);
@@ -1107,6 +1194,10 @@ struct MediaOrchestrator::Impl {
     if (camera.running()) return true;
     camera_win::CameraCaptureConfig capture_config;
     capture_config.device_index = camera_device_index;
+    { std::lock_guard<std::mutex> lock(config_mutex);
+      capture_config.width = config.camera_width;
+      capture_config.height = config.camera_height; }
+    capture_config.exact_resolution = true;
     return camera.Start(
         capture_config,
         [this](const camera_win::I420Frame& frame) { OnCameraFrame(frame); },
@@ -1640,6 +1731,9 @@ struct MediaOrchestrator::Impl {
   bool sfu_paused = false;
   bool sfu_publish_ready = false;
   bool sfu_subscribe_ready = false;
+  bool media_start_pending = true;
+  std::string early_sfu_offer_id;
+  Json early_sfu_offer;
   std::string pending_sfu_request_id;
   Json pending_sfu_room_mode;
   bool deafened = false;
@@ -1738,6 +1832,10 @@ void MediaOrchestrator::HandleSelectScreenSource(
 
 void MediaOrchestrator::RestartSfuSend(std::uint64_t generation) {
   impl_->RestartSfuSend(generation);
+}
+
+void MediaOrchestrator::HandleScreenResolution(const EngineCommand& command) {
+  impl_->HandleScreenResolution(command);
 }
 
 void MediaOrchestrator::HandleStats(const EngineCommand& command) {

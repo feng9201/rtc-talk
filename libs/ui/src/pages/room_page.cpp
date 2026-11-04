@@ -285,6 +285,7 @@ void RoomPage::SetState(const domain::SessionSnapshot& state) {
   UpdateStatusPanel();
   if (device_panel_ != nullptr) {
     device_panel_->SetSelection(state_.devices);
+    device_panel_->SetCaptureState(state_.devices, state_.sharing);
     device_panel_->SetSystemAudioEnabled(
         state_.audio_source == domain::AudioSource::System);
   }
@@ -327,6 +328,7 @@ void RoomPage::SetCameraDevices(
     device_panel_->SetDevices(recording_devices_, playout_devices_,
                               camera_devices_, desktop_sources_);
     device_panel_->SetSelection(state_.devices);
+    device_panel_->SetCaptureState(state_.devices, state_.sharing);
     device_panel_->SetSystemAudioEnabled(
         state_.audio_source == domain::AudioSource::System);
   }
@@ -341,6 +343,7 @@ void RoomPage::SetAudioDevices(
     device_panel_->SetDevices(recording_devices_, playout_devices_,
                               camera_devices_, desktop_sources_);
     device_panel_->SetSelection(state_.devices);
+    device_panel_->SetCaptureState(state_.devices, state_.sharing);
   }
 }
 
@@ -351,6 +354,7 @@ void RoomPage::SetDesktopSources(
     device_panel_->SetDevices(recording_devices_, playout_devices_,
                               camera_devices_, desktop_sources_);
     device_panel_->SetSelection(state_.devices);
+    device_panel_->SetCaptureState(state_.devices, state_.sharing);
   }
 }
 
@@ -516,6 +520,7 @@ void RoomPage::RebuildSidePanel() {
     device_panel_->SetDevices(recording_devices_, playout_devices_,
                               camera_devices_, desktop_sources_);
     device_panel_->SetSelection(state_.devices);
+    device_panel_->SetCaptureState(state_.devices, state_.sharing);
     connect(device_panel_, &DevicePanel::RefreshRequested, this,
             &RoomPage::RefreshDeviceInventoryRequested);
     connect(device_panel_, &DevicePanel::RecordingDeviceSelected, this,
@@ -524,6 +529,8 @@ void RoomPage::RebuildSidePanel() {
             &RoomPage::PlayoutDeviceSelected);
     connect(device_panel_, &DevicePanel::SystemAudioDeviceSelected, this,
             &RoomPage::SystemAudioDeviceSelected);
+    connect(device_panel_, &DevicePanel::ScreenResolutionSelected, this,
+            &RoomPage::ScreenResolutionSelected);
     connect(device_panel_, &DevicePanel::CameraSelected, this,
             &RoomPage::CameraSelected);
     connect(device_panel_, &DevicePanel::DesktopSourceSelected, this,
@@ -659,6 +666,9 @@ void RoomPage::RebuildSidePanel() {
 }
 
 void RoomPage::RefreshMembers() {
+  // Device/status panels intentionally have no member rows. Rebuilding them
+  // on each snapshot destroys active editors and dismisses their popups.
+  if (tabs_ == nullptr || tabs_->CurrentId() != QStringLiteral("members")) return;
   QStringList ids;
   const auto self = SelfPeer();
   ids << Text(self.uid);

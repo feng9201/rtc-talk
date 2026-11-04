@@ -41,7 +41,7 @@ Windows x64 生产级 RTC 桌面客户端，面向实时对讲、多人音视频
 | 多人 SFU 视频稳定性修复 | 已完成 |
 | M7 客户端 WSS、系统证书校验路径、Credential Manager | 已完成 |
 | M7 正式域名证书联调、正式认证刷新 | 暂停 |
-| S8 安装包、签名、升级、回滚和干净机验收 | 暂停 |
+| S8 Inno Setup 安装包 | 已实现并验证本机安装/卸载；签名、完整升级回滚和干净机验收待完成 |
 | 30 分钟/2 小时长稳、强制 TURN 和完整弱网验收 | 未执行 |
 
 当前结论：
@@ -273,7 +273,16 @@ UI 不在页面内解析信令 JSON，也不直接持有 WebRTC/采集对象。
 
 ## 10. 构建
 
-环境变量：
+可直接运行根目录脚本，无需预先设置环境变量：
+
+```powershell
+.\build.bat          # 配置并编译 Release（默认）
+.\build.bat Debug    # 配置并编译 Debug
+.\build.bat -p       # 版本第四位 +1，编译 Release 并生成 ZIP/安装包
+```
+
+脚本默认使用下列路径，已有环境变量优先；失败时返回非零退出码。
+测试仍单独执行。直接调用 CMake 或需要覆盖路径时，设置以下环境变量：
 
 ```powershell
 $env:VCPKG_ROOT = 'D:\vcpkg'
@@ -296,9 +305,18 @@ cmake --build --preset windows-x64-debug --parallel
 ctest --test-dir build/windows-x64 -C Debug --output-on-failure
 ```
 
-当前 CTest：`12/12`。
+当前 CTest：`16/16`（包含 Breakpad 崩溃子进程、入房错误气泡、设备下拉框和采集分辨率设置验证）。
+
+采集分辨率：摄像头在入房前选择 720P、1080P 或设备最大支持尺寸，入房后锁定；
+桌面可选 1080P 或原始尺寸，共享期间锁定。详见 [采集分辨率设置](docs/capture-resolution.md)。
 
 ## 11. 运行和打包
+
+Inno Setup 安装包：运行 `.\build.bat -p`，产物为
+`dist\rtc-talk-win_Setup_<版本>_x64.exe`。需要安装 Inno Setup 6，可用 `ISCC`
+环境变量指定编译器完整路径。`Version.txt` 为统一版本源，从 `1.0.0.0` 起，
+仅 `-p` 递增第四位；普通构建不递增。安装后默认不开机自启动。
+首次验证安装包版本为 `1.0.0.1`。详细流程见 [安装打包说明](docs/installer.md)。
 
 运行：
 
@@ -317,6 +335,7 @@ pwsh -File .\scripts\package.ps1
 
 - `rtc-talk.exe`
 - `rtcwin_engine.dll`
+- `rtcwin_crash_handler.dll`（Breakpad 本地崩溃捕获）
 - `rtcwin_log_adapter.dll`
 - `log-cpp.dll`
 - Qt runtime 和平台插件
@@ -334,6 +353,14 @@ pwsh -File .\scripts\package.ps1
 日志会轮转为 `rtcwin.1.log`、`rtcwin.2.log` 等。
 
 ## 12. 测试与验收
+
+崩溃转储：程序启动时安装 Breakpad，默认保存到
+`%LOCALAPPDATA%\rtc-talk-win\crash_dumps\<GUID>.dmp`，仅本地保存，不上传。
+Breakpad 必要头文件与 Debug/Release 静态库已放入 `third_party/breakpad`，
+不需要设置 SDK 环境变量。发布时须携带 `rtcwin_crash_handler.dll`。
+Release 构建会生成主程序、Engine 和捕获 DLL 的 PDB，分析时保留同一构建的
+二进制与 PDB；转储不做日志脱敏，不自动加入诊断 ZIP。
+详细边界和验证方法见 [崩溃捕获说明](docs/crash-dumps.md)。
 
 当前已有测试覆盖：
 
@@ -353,7 +380,7 @@ pwsh -File .\scripts\package.ps1
 - 正式认证服务、Token 刷新/轮换接口和 `/dev/token` 生产移除。
 - 强制 TURN relay、断网超过 60 秒和网络切换。
 - 30 分钟双人、2 小时多人、连续设备/视频切换长稳。
-- 安装包、签名、升级、回滚、干净 Windows 10/11 验收。
+- 安装包签名、跨版本升级/回滚、干净 Windows 10/11 验收（安装包生成及本机安装/卸载已验证）。
 
 ## 13. 文档索引
 

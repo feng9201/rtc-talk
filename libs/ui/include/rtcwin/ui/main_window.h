@@ -7,6 +7,7 @@
 
 class QResizeEvent;
 class QStackedWidget;
+class BubbleMsgWithClose;
 
 namespace rtcwin::application {
 class AppController;
@@ -66,6 +67,8 @@ class MainWindow final : public FramelessWindow {
   PrejoinPage* prejoin_page_ = nullptr;
   RoomPage* room_page_ = nullptr;
   WindowControls* window_controls_ = nullptr;
+  BubbleMsgWithClose* join_error_bubble_ = nullptr;
+  bool join_attempt_active_ = false;
   std::unique_ptr<application::AppController> controller_;
   bool auto_preview_ = false;
 };

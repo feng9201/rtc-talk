@@ -17,6 +17,7 @@ RemoteVideoSink::RemoteVideoSink(
       callback_(std::move(callback)) {}
 
 void RemoteVideoSink::OnFrame(const webrtc::VideoFrame& frame) {
+  frames_.fetch_add(1, std::memory_order_relaxed);
   if (!callback_) return;
   webrtc::scoped_refptr<webrtc::VideoFrameBuffer> buffer =
       frame.video_frame_buffer();
@@ -44,6 +45,7 @@ void RemoteVideoSink::OnFrame(const webrtc::VideoFrame& frame) {
       out.u.data(), out.stride_u, out.v.data(), out.stride_v, out.width,
       out.height);
   out.timestamp_us = frame.timestamp_us();
+  converted_frames_.fetch_add(1, std::memory_order_relaxed);
   callback_(std::move(out));
 }
 

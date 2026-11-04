@@ -7,6 +7,7 @@
 #include "rtcwin/ui/pages/room_policy_dialog.h"
 #include "rtcwin/ui/pages/room_page.h"
 #include "rtcwin/ui/widgets/window_controls.h"
+#include "widgets/msg_box/BubbleMsg.h"
 
 #include <QResizeEvent>
 #include <QDir>
@@ -115,6 +116,9 @@ void MainWindow::BuildUi() {
   window_controls_ = new WindowControls(this);
   window_controls_->raise();
   PositionWindowControls();
+  join_error_bubble_ = new BubbleMsgWithClose(this);
+  join_error_bubble_->setObjectName(QStringLiteral("JoinErrorBubble"));
+  join_error_bubble_->hide();
 }
 
 void MainWindow::ConnectSignals() {
@@ -156,9 +160,12 @@ void MainWindow::ConnectSignals() {
             if (!prejoin_page_->PreviewActive() || device_index < 0) return;
             prejoin_page_->SetPreviewPending(
                 QStringLiteral("正在切换摄像头…"));
-            controller_->StartCameraPreview(device_index);
+            const auto options = prejoin_page_->Options();
+            controller_->StartCameraPreview(device_index, options.camera_width, options.camera_height);
           });
 
+  connect(room_page_, &RoomPage::ScreenResolutionSelected, controller_.get(),
+          &application::AppController::SetScreenResolution);
   connect(room_page_, &RoomPage::SettingsRequested, this, [this] {
     RoomPolicyDialog dialog(controller_->snapshot().policy, this);
     connect(&dialog, &RoomPolicyDialog::PolicyChanged, controller_.get(),
@@ -278,9 +285,14 @@ void MainWindow::ConnectSignals() {
             }
           });
   connect(controller_.get(), &application::AppController::Joined, this,
-          &MainWindow::ShowRoomPage);
+          [this] {
+            join_attempt_active_ = false;
+            prejoin_page_->SetPreviewActive(false, {}, 0, 0, 0);
+            ShowRoomPage();
+          });
   connect(controller_.get(), &application::AppController::Left, this,
           [this] {
+            join_attempt_active_ = false;
             ShowPrejoinPage();
             prejoin_page_->SetStatus(QStringLiteral("已离开房间"),
                                      QStringLiteral("info"));
@@ -297,17 +309,25 @@ void MainWindow::ConnectSignals() {
           });
   connect(controller_.get(), &application::AppController::ErrorOccurred,
           this, [this](const QString& message, const QString& detail) {
+            const QString error_text = detail.isEmpty() ? message
+                : QStringLiteral("%1：%2").arg(message, detail);
+            if (join_attempt_active_) {
+              join_attempt_active_ = false;
+              // Validation errors arrive synchronously, without BusyChanged.
+              prejoin_page_->SetBusy(false);
+              join_error_bubble_->showMessage(BubbleType::Error, error_text);
+            }
             if (prejoin_page_->PreviewPending()) {
               prejoin_page_->SetPreviewActive(false, {}, 0, 0, 0);
             }
-            UpdateStatus(detail.isEmpty() ? message
-                                         : QStringLiteral("%1：%2")
-                                               .arg(message, detail),
-                         QStringLiteral("danger"));
+            UpdateStatus(error_text, QStringLiteral("danger"));
           });
 }
 
 void MainWindow::BeginJoin(const domain::PrejoinOptions& options) {
+  if (join_attempt_active_) return;
+  join_error_bubble_->hide();
+  join_attempt_active_ = true;
   prejoin_page_->SetBusy(true);
   UpdateStatus(QStringLiteral("正在建立会话…"), QStringLiteral("info"));
   controller_->BeginJoin(options);
@@ -405,7 +425,8 @@ bool MainWindow::StartSelectedCameraPreview() {
   }
   prejoin_page_->SetPreviewPending(QStringLiteral("正在打开摄像头…"));
   UpdateStatus(QStringLiteral("正在打开摄像头…"), QStringLiteral("info"));
-  controller_->StartCameraPreview(index);
+  const auto options = prejoin_page_->Options();
+  controller_->StartCameraPreview(index, options.camera_width, options.camera_height);
   return true;
 }
 

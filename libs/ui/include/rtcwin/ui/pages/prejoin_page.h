@@ -60,6 +60,12 @@ class PrejoinPage final : public QWidget {
   QWidget* MakePair(QWidget* left, QWidget* right);
   void TogglePreview();
   void UpdatePreviewControls();
+  void UpdateCameraResolutions();
+  QVector<rtcwin::domain::CameraDevice> camera_devices_;
+  int preferred_camera_width_ = 1280;
+  int preferred_camera_height_ = 720;
+  QComboBox* camera_resolution_ = nullptr;
+  QComboBox* screen_resolution_ = nullptr;
   void UpdateSummary();
 
   QLineEdit* url_ = nullptr;

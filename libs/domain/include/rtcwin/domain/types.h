@@ -118,10 +118,16 @@ struct AppError {
   std::string detail;
 };
 
+struct CameraResolution {
+  int width = 0;
+  int height = 0;
+};
+
 struct CameraDevice {
   std::string id;
   std::string name;
   bool available = true;
+  std::vector<CameraResolution> resolutions;
 };
 
 struct AudioDevice {
@@ -138,6 +144,9 @@ struct DesktopSource {
 };
 
 struct DeviceSelection {
+  int camera_width = 1280;
+  int camera_height = 720;
+  bool screen_native_resolution = false;
   std::string recording_device;
   std::string playout_device;
   std::string system_audio_device;
@@ -147,6 +156,9 @@ struct DeviceSelection {
 };
 
 struct PrejoinOptions {
+  int camera_width = 1280;
+  int camera_height = 720;
+  bool screen_native_resolution = false;
   std::string signaling_url;
   std::string user_id;
   std::string room_id;

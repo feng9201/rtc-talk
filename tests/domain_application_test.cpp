@@ -56,6 +56,9 @@ void TestSettings() {
   options.media_mode = rtcwin::domain::MediaModePreference::Sfu;
   options.talk_mode = rtcwin::domain::TalkMode::Ptt;
   options.volume = 77;
+  options.camera_width = 1920;
+  options.camera_height = 1080;
+  options.screen_native_resolution = true;
   store.Save(options);
   const auto loaded = store.Load();
   Check(loaded.signaling_url == options.signaling_url, "settings url");
@@ -69,6 +72,8 @@ void TestSettings() {
   Check(loaded.talk_mode == rtcwin::domain::TalkMode::Ptt,
         "settings talk mode");
   Check(loaded.volume == 77, "settings volume");
+  Check(loaded.camera_width == 1920 && loaded.camera_height == 1080 &&
+            loaded.screen_native_resolution, "settings capture resolutions");
   Check(loaded.token.empty(), "settings never persist token");
 }
 
@@ -114,6 +119,16 @@ void TestCApi() {
   Check(unsupported != 0 && unsupported_event &&
             final_event.find("\"ok\":false") != std::string::npos,
         "C ABI unsupported result");
+  const auto rejected = [&](const char* method, const char* payload, int count, int code) {
+    const auto id = rtcwin_submit(handle, method, payload, 1000);
+    const bool received = WaitForEvents(count);
+    std::lock_guard<std::mutex> lock(event_mutex);
+    Check(id != 0 && received && last_event.find("\"ok\":false") != std::string::npos &&
+              last_event.find("\"code\":" + std::to_string(code)) != std::string::npos,
+          "capture settings reject invalid input/state");
+  };
+  rejected("camera.preview.start", "{\"width\":3,\"height\":720}", 3, 400);
+  rejected("desktop.setResolution", "{\"native\":true}", 4, 409);
   rtcwin_destroy(handle);
 }
 

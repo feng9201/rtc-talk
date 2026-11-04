@@ -21,6 +21,9 @@ struct IceServer {
 };
 
 struct MediaConfig {
+  int camera_width = 1280;
+  int camera_height = 720;
+  bool screen_native_resolution = false;
   std::string audio_backend = "wasapi";
   std::string audio_source = "mic";
   std::string recording_device;
@@ -76,7 +79,39 @@ struct MediaSfuOffer {
   std::string source = "mic";
 };
 
+// Cumulative counters from one RTP stream; -1 means the SDK omitted a field.
+struct VideoRtpStats {
+  int width = 0;
+  int height = 0;
+  std::string pc;
+  std::string direction;
+  std::string mid;
+  std::string codec;
+  std::string implementation;
+  std::uint32_t ssrc = 0;
+  std::uint64_t packets = 0;
+  std::uint64_t bytes = 0;
+  std::int64_t frames = -1;
+  std::int64_t key_frames = -1;
+  std::int64_t frames_received = -1;
+  std::uint32_t nack = 0;
+  std::uint32_t pli = 0;
+  std::uint32_t fir = 0;
+};
+
+struct RemoteVideoStats {
+  std::string pc;
+  std::string mid;
+  std::string uid;
+  std::string source;
+  bool enabled = false;
+  std::uint64_t sink_frames = 0;
+  std::uint64_t converted_frames = 0;
+};
+
 struct MediaStatus {
+  std::vector<RemoteVideoStats> remote_video_stats;
+  std::vector<VideoRtpStats> video_rtp_stats;
   bool initialized = false;
   bool sfu_send_ready = false;
   bool sfu_recv_ready = false;
@@ -172,6 +207,7 @@ class MediaSession final {
   bool SetSfuPaused(bool paused, MediaError* error);
   bool SetCameraEnabled(bool enabled, MediaError* error);
   bool SetScreenEnabled(bool enabled, MediaError* error);
+  bool SetScreenResolution(bool native, MediaError* error);
   bool SetScreenSource(const std::string& source_id, bool window,
                        MediaError* error);
   bool PushCameraFrame(const VideoFrameData& frame, MediaError* error);

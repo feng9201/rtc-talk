@@ -1,5 +1,6 @@
 #include "desktop_video_source.h"
 
+#include "rtcwin/log_adapter/log_api.h"
 #include "rtcwin/webrtc_media/desktop_capture_service.h"
 
 #include <windows.h>
@@ -24,6 +25,19 @@ namespace rtcwin::webrtc_media {
 namespace {
 
 constexpr int kFrameWaitMs = 200;
+constexpr auto kCaptureRestartDelay = std::chrono::seconds(2);
+
+class CaptureComApartment {
+ public:
+  CaptureComApartment() : result_(::CoInitializeEx(nullptr, COINIT_MULTITHREADED)) {}
+  ~CaptureComApartment() {
+    if (SUCCEEDED(result_)) ::CoUninitialize();
+  }
+  bool initialized() const { return SUCCEEDED(result_); }
+
+ private:
+  HRESULT result_;
+};
 
 int AlignEven(int value) { return std::max(2, value & ~1); }
 
@@ -36,8 +50,7 @@ class DesktopVideoSource::CaptureCallback
 
   void OnCaptureResult(webrtc::DesktopCapturer::Result result,
                        std::unique_ptr<webrtc::DesktopFrame> frame) override {
-    if (result != webrtc::DesktopCapturer::Result::SUCCESS || !frame) return;
-    owner_->OnDesktopFrame(std::move(frame));
+    owner_->OnCaptureResult(result, std::move(frame));
   }
 
  private:
@@ -62,12 +75,27 @@ bool DesktopVideoSource::Start(std::string* error) {
 bool DesktopVideoSource::Start(const std::string& source_id, bool window,
                                std::string* error) {
   if (running_.load(std::memory_order_relaxed)) return true;
+  if (thread_.joinable()) thread_.join();
   source_id_ = source_id;
   source_window_ = window;
-  const HRESULT hr = ::CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-  if (FAILED(hr) && hr != RPC_E_CHANGED_MODE && hr != S_FALSE) {
-    if (error) *error = "桌面采集 COM 初始化失败";
-    return false;
+  std::promise<std::string> started;
+  auto result = started.get_future();
+  running_.store(true, std::memory_order_relaxed);
+  thread_ = std::thread(&DesktopVideoSource::CaptureLoop, this, source_id,
+                        window, std::move(started));
+  const auto message = result.get();
+  if (message.empty()) return true;
+  Stop();
+  if (error) *error = message;
+  return false;
+}
+
+void DesktopVideoSource::CaptureLoop(std::string source_id, bool window,
+                                     std::promise<std::string> started) {
+  const CaptureComApartment com;
+  if (!com.initialized()) {
+    started.set_value("桌面采集 COM 初始化失败");
+    return;
   }
 
   auto options = webrtc::DesktopCaptureOptions::CreateDefault();
@@ -75,27 +103,27 @@ bool DesktopVideoSource::Start(const std::string& source_id, bool window,
   options.set_prefer_cursor_embedded(true);
   options.set_detect_updated_region(false);
 
-  auto capturer =
-      window ? webrtc::DesktopCapturer::CreateWindowCapturer(options)
-             : webrtc::DesktopCapturer::CreateScreenCapturer(options);
+  const auto create_capturer = [&] {
+    return window ? webrtc::DesktopCapturer::CreateWindowCapturer(options)
+                  : webrtc::DesktopCapturer::CreateScreenCapturer(options);
+  };
+  auto capturer = create_capturer();
   if (!capturer) {
-    if (error) *error = window ? "窗口采集器创建失败"
-                               : "桌面采集器创建失败";
-    return false;
+    started.set_value(window ? "窗口采集器创建失败" : "桌面采集器创建失败");
+    return;
   }
   webrtc::DesktopCapturer::SourceList sources;
   if (!capturer->GetSourceList(&sources) || sources.empty()) {
-    if (error) *error = window ? "未找到可共享的窗口"
-                               : "未找到可共享的屏幕";
-    return false;
+    started.set_value(window ? "未找到可共享的窗口" : "未找到可共享的屏幕");
+    return;
   }
   auto selected = sources.begin();
   if (!source_id.empty()) {
     char* end = nullptr;
     const long long wanted = std::strtoll(source_id.c_str(), &end, 10);
     if (end == source_id.c_str() || *end != '\0') {
-      if (error) *error = "共享源编号无效";
-      return false;
+      started.set_value("共享源编号无效");
+      return;
     }
     selected = std::find_if(
         sources.begin(), sources.end(),
@@ -103,30 +131,77 @@ bool DesktopVideoSource::Start(const std::string& source_id, bool window,
           return static_cast<long long>(source.id) == wanted;
         });
     if (selected == sources.end()) {
-      if (error) *error = window ? "窗口共享源不存在"
-                                 : "屏幕共享源不存在";
-      return false;
+      started.set_value(window ? "窗口共享源不存在" : "屏幕共享源不存在");
+      return;
     }
   }
-  if (!capturer->SelectSource(selected->id)) {
-    if (error) *error = window ? "选择窗口失败" : "选择屏幕失败";
-    return false;
+  const auto start_capturer = [&](webrtc::DesktopCapturer* capture) {
+    if (capture == nullptr || !capture->SelectSource(selected->id)) return false;
+    capture->SetMaxFrameRate(static_cast<std::uint32_t>(fps_));
+    capture->Start(callback_.get());
+    return true;
+  };
+  if (!start_capturer(capturer.get())) {
+    started.set_value(window ? "选择窗口失败" : "选择屏幕失败");
+    return;
   }
-  capturer->SetMaxFrameRate(static_cast<std::uint32_t>(fps_));
-  capturer->Start(callback_.get());
-
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
-    capturer_ = std::move(capturer);
-    pending_.reset();
-  }
-  running_.store(true, std::memory_order_relaxed);
-  thread_ = std::thread(&DesktopVideoSource::CaptureLoop, this);
   RTC_LOG(LS_INFO) << "screen capture started fps=" << fps_
                    << " max=" << max_width_ << "x" << max_height_
                    << " source=" << selected->title
                    << " type=" << (window ? "window" : "screen");
-  return true;
+  started.set_value({});
+
+  const std::int64_t interval_us = 1000000 / fps_;
+  std::int64_t next_us = webrtc::TimeMicros();
+  auto next_restart = std::chrono::steady_clock::now() + kCaptureRestartDelay;
+  bool interrupted = false;
+  while (running_.load(std::memory_order_relaxed)) {
+    if (capturer) capturer->CaptureFrame();
+    std::unique_ptr<webrtc::DesktopFrame> frame;
+    std::optional<webrtc::DesktopCapturer::Result> result;
+    {
+      std::unique_lock<std::mutex> lock(mutex_);
+      frame_ready_.wait_for(
+          lock, std::chrono::milliseconds(kFrameWaitMs),
+          [this] { return capture_result_.has_value() || !running_.load(); });
+      frame = std::move(pending_);
+      result = std::exchange(capture_result_, std::nullopt);
+    }
+    if (!running_.load(std::memory_order_relaxed)) break;
+    const auto now = std::chrono::steady_clock::now();
+    if (frame) {
+      Deliver(*frame);
+      next_restart = now + kCaptureRestartDelay;
+      if (interrupted) {
+        rtcwin_log_write(RTCWIN_LOG_INFO, __FILE__, __LINE__, __func__,
+                         "screen capture recovered");
+      }
+      interrupted = false;
+    } else if (now >= next_restart) {
+      if (!interrupted) {
+        const auto message = "screen capture stalled; restarting source id=" +
+            std::to_string(selected->id) + " result=" +
+            std::to_string(result ? static_cast<int>(*result) : -1);
+        rtcwin_log_write(RTCWIN_LOG_WARN, __FILE__, __LINE__, __func__,
+                         message.c_str());
+      }
+      interrupted = true;
+      capturer.reset();
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        pending_.reset();
+        capture_result_.reset();
+      }
+      capturer = create_capturer();
+      if (!start_capturer(capturer.get())) capturer.reset();
+      next_restart = now + kCaptureRestartDelay;
+    }
+    next_us = std::max(next_us + interval_us, webrtc::TimeMicros());
+    std::unique_lock<std::mutex> lock(mutex_);
+    frame_ready_.wait_for(
+        lock, std::chrono::microseconds(next_us - webrtc::TimeMicros()),
+        [this] { return !running_.load(std::memory_order_relaxed); });
+  }
 }
 
 void DesktopVideoSource::SetSource(const std::string& source_id, bool window) {
@@ -134,16 +209,19 @@ void DesktopVideoSource::SetSource(const std::string& source_id, bool window) {
   source_window_ = window;
 }
 
+bool DesktopVideoSource::SetNativeResolution(bool native) {
+  if (running_.load(std::memory_order_relaxed)) return false;
+  native_resolution_ = native;
+  return true;
+}
+
 void DesktopVideoSource::Stop() {
-  if (!running_.exchange(false, std::memory_order_acq_rel)) {
-    if (thread_.joinable()) thread_.join();
-  } else {
-    frame_ready_.notify_all();
-    if (thread_.joinable()) thread_.join();
-  }
+  running_.store(false, std::memory_order_relaxed);
+  frame_ready_.notify_all();
+  if (thread_.joinable()) thread_.join();
   std::lock_guard<std::mutex> lock(mutex_);
   pending_.reset();
-  capturer_.reset();
+  capture_result_.reset();
 }
 
 void DesktopVideoSource::SetFrameCallback(FrameCallback callback) {
@@ -151,45 +229,17 @@ void DesktopVideoSource::SetFrameCallback(FrameCallback callback) {
   frame_callback_ = std::move(callback);
 }
 
-void DesktopVideoSource::OnDesktopFrame(
+void DesktopVideoSource::OnCaptureResult(
+    webrtc::DesktopCapturer::Result result,
     std::unique_ptr<webrtc::DesktopFrame> frame) {
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    pending_ = std::move(frame);
+    capture_result_ = result;
+    pending_ = result == webrtc::DesktopCapturer::Result::SUCCESS
+                   ? std::move(frame)
+                   : nullptr;
   }
   frame_ready_.notify_all();
-}
-
-void DesktopVideoSource::CaptureLoop() {
-  const std::int64_t interval_us = 1000000 / fps_;
-  std::int64_t next_us = webrtc::TimeMicros();
-  while (running_.load(std::memory_order_relaxed)) {
-    std::unique_ptr<webrtc::DesktopFrame> frame;
-    {
-      std::unique_lock<std::mutex> lock(mutex_);
-      frame = std::move(pending_);
-      pending_.reset();
-    }
-    if (!frame) {
-      capturer_->CaptureFrame();
-      std::unique_lock<std::mutex> lock(mutex_);
-      frame_ready_.wait_for(
-          lock, std::chrono::milliseconds(kFrameWaitMs),
-          [this] { return pending_ != nullptr || !running_.load(); });
-      frame = std::move(pending_);
-      pending_.reset();
-    }
-    if (!running_.load(std::memory_order_relaxed)) break;
-    if (frame) Deliver(*frame);
-
-    next_us += interval_us;
-    const std::int64_t now_us = webrtc::TimeMicros();
-    if (next_us > now_us) {
-      std::this_thread::sleep_for(std::chrono::microseconds(next_us - now_us));
-    } else {
-      next_us = now_us;
-    }
-  }
 }
 
 void DesktopVideoSource::Deliver(const webrtc::DesktopFrame& frame) {
@@ -199,7 +249,7 @@ void DesktopVideoSource::Deliver(const webrtc::DesktopFrame& frame) {
 
   int width = src_width;
   int height = src_height;
-  if (width > max_width_ || height > max_height_) {
+  if (!native_resolution_ && (width > max_width_ || height > max_height_)) {
     const double scale =
         std::min(static_cast<double>(max_width_) / width,
                  static_cast<double>(max_height_) / height);

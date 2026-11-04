@@ -41,6 +41,7 @@ target_include_directories(rtcwin_webrtc_media
 
 target_link_libraries(rtcwin_webrtc_media PRIVATE
   rtcwin_webrtc
+  rtcwin_log_adapter
   mf
   mfplat
   mfuuid

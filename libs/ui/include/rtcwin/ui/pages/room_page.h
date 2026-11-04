@@ -60,6 +60,7 @@ class RoomPage final : public QWidget {
   void PlayoutDeviceSelected(const QString& device_id);
   void SystemAudioDeviceSelected(const QString& device_id);
   void CameraSelected(int device_index);
+  void ScreenResolutionSelected(bool native);
   void DesktopSourceSelected(const QString& source_id, bool window);
   void DiagnosticsExportRequested();
 

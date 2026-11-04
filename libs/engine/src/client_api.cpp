@@ -1,6 +1,7 @@
 #include "rtcwin/client_api.h"
 
 #include "rtcwin/engine/engine_core.h"
+#include "Version.h"
 
 #include <exception>
 #include <memory>
@@ -12,7 +13,7 @@ struct rtcwin_handle {
 
 extern "C" {
 
-const char* rtcwin_version(void) { return "0.1.0"; }
+const char* rtcwin_version(void) { return RTC_TALK_WIN_VERSION; }
 
 rtcwin_handle* rtcwin_create(const rtcwin_options* options) {
   if (options == nullptr || options->struct_size < sizeof(rtcwin_options) ||

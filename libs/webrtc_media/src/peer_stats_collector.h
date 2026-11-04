@@ -2,6 +2,7 @@
 
 #include "api/peer_connection_interface.h"
 #include "rtc_base/thread.h"
+#include "rtcwin/webrtc_media/media_session.h"
 
 #include <cstdint>
 #include <string>
@@ -9,6 +10,7 @@
 namespace rtcwin::webrtc_media {
 
 struct PeerMediaStats {
+  std::vector<VideoRtpStats> video_rtp_stats;
   std::uint64_t audio_packets_sent = 0;
   std::uint64_t audio_bytes_sent = 0;
   std::uint64_t audio_packets_received = 0;

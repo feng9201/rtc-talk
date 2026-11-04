@@ -175,14 +175,34 @@ class CameraCaptureSession::Impl {
     }
 
     const auto size = ChooseSize(*chosen, config_.width, config_.height);
-    const int fps = ChooseFps(*chosen, config_.fps);
+    if (config_.exact_resolution &&
+        (size.width != config_.width || size.height != config_.height)) {
+      FinishStart(false, "camera does not support the selected resolution");
+      running_ = false;
+      return;
+    }
+    int numerator = ChooseFps(*chosen, config_.fps);
+    int denominator = 1;
+    double closest = 1e9;
+    for (const auto& mode : chosen->modes) {
+      if (mode.width != size.width || mode.height != size.height) continue;
+      const double distance = std::abs(static_cast<double>(mode.numerator) /
+                                       mode.denominator - config_.fps);
+      if (distance < closest) {
+        closest = distance;
+        numerator = mode.numerator;
+        denominator = mode.denominator;
+      }
+    }
+    const int fps = std::max(1, static_cast<int>(static_cast<double>(numerator) /
+                                               denominator + 0.5));
     const size_t bytes = static_cast<size_t>(size.width) * size.height * 3 / 2;
     auto nv12 = std::shared_ptr<uint8_t>(new uint8_t[bytes],
                                          std::default_delete<uint8_t[]>());
     auto capture = std::make_unique<talk::camera::MFAPICapture>();
     capture->setBuffer(nv12, bytes);
     std::string init_error;
-    if (!capture->init(*chosen, size.width, size.height, fps)) {
+    if (!capture->init(*chosen, size.width, size.height, numerator, denominator)) {
       init_error = capture->getCurErr();
       FinishStart(false, init_error.empty() ? "camera init failed" : init_error);
       running_ = false;
@@ -262,7 +282,17 @@ bool CameraCaptureSession::running() const { return impl_->running(); }
 std::vector<CameraDeviceInfo> CameraService::Enumerate() {
   std::vector<CameraDeviceInfo> result;
   for (const auto& device : talk::camera::MFAPICapture::EnumerateDevices()) {
-    result.push_back({device.index, device.name});
+    CameraDeviceInfo info{device.index, device.name};
+    for (const auto& mode : device.modes) {
+      const auto found = std::find_if(info.resolutions.begin(), info.resolutions.end(),
+          [&mode](const CameraResolution& size) {
+            return size.width == mode.width && size.height == mode.height;
+          });
+      if (found == info.resolutions.end()) {
+        info.resolutions.push_back({mode.width, mode.height});
+      }
+    }
+    result.push_back(std::move(info));
   }
   return result;
 }

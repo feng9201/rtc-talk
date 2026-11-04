@@ -1,15 +1,20 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
-  Build a self-contained rtc-talk-win portable package.
+  Build a portable ZIP and optionally an Inno Setup installer.
 
   Usage:
     pwsh -File scripts\package.ps1
     pwsh -File scripts\package.ps1 -NoBuild
+    pwsh -File scripts\package.ps1 -Installer -IncrementVersion
+    pwsh -File scripts\package.ps1 -Installer -NoBuild
 #>
 [CmdletBinding()]
 param(
   [string]$Qt = "C:\Qt\5.15.2\msvc2019_64",
-  [switch]$NoBuild
+  [switch]$NoBuild,
+  [switch]$Installer,
+  [switch]$IncrementVersion,
+  [string]$ISCC = $env:ISCC
 )
 
 $ErrorActionPreference = "Stop"
@@ -17,6 +22,30 @@ $root = Split-Path -Parent $PSScriptRoot
 $bin = Join-Path $root "build\windows-x64\bin\Release"
 $stage = Join-Path $root "build\windows-x64\package"
 $dist = Join-Path $root "dist"
+
+if ($IncrementVersion -and ($NoBuild -or -not $Installer)) {
+  throw "IncrementVersion requires an installer build (without NoBuild)"
+}
+if ($Installer) {
+  if (-not $ISCC) {
+    $compiler = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+    if ($compiler) { $ISCC = $compiler.Source }
+  }
+  if (-not $ISCC) {
+    $ISCC = @(
+      "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+      "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
+    ) | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+      Select-Object -First 1
+  }
+  if (-not $ISCC -or -not (Test-Path -LiteralPath $ISCC -PathType Leaf)) {
+    throw "Inno Setup 6 not found. Set ISCC to the full ISCC.exe path."
+  }
+}
+$windeployqt = Join-Path $Qt "bin\windeployqt.exe"
+if (-not (Test-Path -LiteralPath $windeployqt -PathType Leaf)) {
+  throw "windeployqt not found: $windeployqt"
+}
 
 function Copy-CrtRuntime([string]$target) {
   $files = @(
@@ -64,16 +93,37 @@ if (-not $NoBuild) {
   }
   Push-Location $root
   try {
-    cmake --build --preset windows-x64-release
+    if ($IncrementVersion) {
+      cmake "-DVERSION_FILE=$root/Version.txt" -P (Join-Path $root "cmake/Version.cmake")
+      if ($LASTEXITCODE -ne 0) { throw "Version increment failed" }
+    }
+    cmake --preset windows-x64
+    if ($LASTEXITCODE -ne 0) { throw "CMake configure failed" }
+    cmake --build --preset windows-x64-release --parallel
     if ($LASTEXITCODE -ne 0) { throw "Release build failed" }
   } finally {
     Pop-Location
   }
 }
 
+$productVersion = (Get-Item -LiteralPath (Join-Path $bin "rtc-talk.exe")).VersionInfo.FileVersion
+if ($Installer) {
+  $expectedVersion = (Get-Content -LiteralPath (Join-Path $root "Version.txt") -Raw).Trim()
+  if ($productVersion -ne $expectedVersion) {
+    throw "EXE version $productVersion differs from Version.txt $expectedVersion. Rebuild first."
+  }
+  foreach ($dll in @('rtcwin_engine.dll', 'rtcwin_crash_handler.dll', 'rtcwin_log_adapter.dll')) {
+    $dllVersion = (Get-Item -LiteralPath (Join-Path $bin $dll)).VersionInfo.FileVersion
+    if ($dllVersion -ne $expectedVersion) {
+      throw "$dll version $dllVersion differs from $expectedVersion. Rebuild the complete application."
+    }
+  }
+}
+
 $required = @(
   "rtc-talk.exe",
   "rtcwin_engine.dll",
+  "rtcwin_crash_handler.dll",
   "rtcwin_log_adapter.dll",
   "log-cpp.dll",
   "fmt.dll",
@@ -83,11 +133,6 @@ foreach ($file in $required) {
   if (-not (Test-Path (Join-Path $bin $file))) {
     throw "Missing release artifact: $file"
   }
-}
-
-$windeployqt = Join-Path $Qt "bin\windeployqt.exe"
-if (-not (Test-Path $windeployqt)) {
-  throw "windeployqt not found: $windeployqt"
 }
 
 if (Test-Path $stage) {
@@ -102,6 +147,8 @@ $iconSource = Join-Path $root "resources\icon.ico"
 if (-not (Test-Path $iconSource)) { throw "Missing icon: $iconSource" }
 New-Item -ItemType Directory -Force -Path $stage, $dist | Out-Null
 Copy-Item -LiteralPath $iconSource -Destination (Join-Path $stage "icon.ico")
+Copy-Item -LiteralPath (Join-Path $root "third_party\breakpad\LICENSE") `
+  -Destination (Join-Path $stage "Breakpad-LICENSE.txt")
 
 foreach ($file in $required) {
   Copy-Item -LiteralPath (Join-Path $bin $file) -Destination $stage
@@ -118,6 +165,7 @@ $runtimeChecks = @(
   "Qt5Network.dll",
   "platforms\qwindows.dll",
   "rtcwin_engine.dll",
+  "rtcwin_crash_handler.dll",
   "rtcwin_log_adapter.dll",
   "log-cpp.dll",
   "fmt.dll",
@@ -142,6 +190,7 @@ $worktree = if ([string]::IsNullOrWhiteSpace(
 }
 $versionText = @"
 rtc-talk-win
+Version: $productVersion
 Build: $stamp
 Commit: $commit
 Worktree: $worktree
@@ -163,13 +212,15 @@ rtc-talk-win 使用说明
 6. 如果对端看不到画面，使用“诊断启动.bat”启动。
    日志位置：%LOCALAPPDATA%\rtc-talk-win\logs\rtcwin.log
 7. 必须同时更新 rtc-talk.exe 和 rtcwin_engine.dll，不能只替换一个文件。
+   rtcwin_crash_handler.dll 也必须随程序分发。
+   崩溃转储保存在 %LOCALAPPDATA%\rtc-talk-win\crash_dumps\*.dmp，仅本地保存。
 8. 当前版本支持摄像机、屏幕共享、P2P/SFU 双路视频，
    以及“共享主画面 + 摄像头 PIP”和底部成员胶片条。
 9. M3 已接入 Floor/PTT、主持人授权/静音/踢人/策略修改和实时成员音量。
 10. M4/M5/M6 已接入设备切换回退、resume/ICE 恢复、RTT/丢包/码率状态
     和脱敏诊断包导出。
-11. WSS/TLS、Token 安全持久化、正式安装签名、升级回滚和发布验收
-    待转生产前处理。
+11. 已支持 WSS/TLS 和 Windows Credential Manager；正式证书/认证联调、
+    安装签名、升级回滚及干净机发布验收仍待完成。
 "@
 Set-Content -LiteralPath (Join-Path $stage "使用说明.txt") `
   -Value $usage -Encoding UTF8
@@ -199,7 +250,21 @@ $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
 $zip = Join-Path $dist "rtc-talk-win-$stamp.zip"
 if (Test-Path $zip) { Remove-Item -LiteralPath $zip -Force }
-Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $zip -CompressionLevel Optimal
+# Use the framework API in both Windows PowerShell 5.1 and PowerShell 7; avoid
+# loading an incompatible Archive module inherited through PSModulePath.
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+[System.IO.Compression.ZipFile]::CreateFromDirectory(
+  $stage, $zip, [System.IO.Compression.CompressionLevel]::Optimal, $false)
 
 Write-Host "Package directory: $stage"
 Write-Host ("ZIP: {0} ({1:N1} MB)" -f $zip, ((Get-Item $zip).Length / 1MB))
+
+if ($Installer) {
+  & $ISCC /Qp (Join-Path $root "rtc-talk.iss")
+  if ($LASTEXITCODE -ne 0) { throw "Inno Setup compilation failed" }
+  $setup = Join-Path $dist "rtc-talk-win_Setup_${productVersion}_x64.exe"
+  if (-not (Test-Path -LiteralPath $setup -PathType Leaf)) {
+    throw "Installer output is missing: $setup"
+  }
+  Write-Host "Installer: $setup"
+}

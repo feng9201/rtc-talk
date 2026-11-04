@@ -1,6 +1,7 @@
 #include "rtcwin/ui/widgets/device_panel.h"
 
 #include "rtcwin/ui/theme/theme.h"
+#include "rtcwin/ui/widgets/device_combo_box.h"
 
 #include <QComboBox>
 #include <QLabel>
@@ -23,11 +24,11 @@ DevicePanel::DevicePanel(QWidget* parent) : QWidget(parent) {
   layout->setContentsMargins(0, 0, 0, 0);
   layout->setSpacing(9);
 
-  recording_ = new QComboBox(this);
-  playout_ = new QComboBox(this);
-  system_audio_ = new QComboBox(this);
-  camera_ = new QComboBox(this);
-  desktop_source_ = new QComboBox(this);
+  recording_ = new DeviceComboBox(this);
+  playout_ = new DeviceComboBox(this);
+  system_audio_ = new DeviceComboBox(this);
+  camera_ = new DeviceComboBox(this);
+  desktop_source_ = new DeviceComboBox(this);
 
   layout->addWidget(BuildField(
       QStringLiteral("麦克风"), recording_,
@@ -44,6 +45,20 @@ DevicePanel::DevicePanel(QWidget* parent) : QWidget(parent) {
   layout->addWidget(BuildField(
       QStringLiteral("屏幕/窗口共享源"), desktop_source_,
       QStringLiteral("选择后立即切换共享源")));
+
+  camera_resolution_ = new DeviceComboBox(this);
+  camera_resolution_->setObjectName(QStringLiteral("RoomCameraResolution"));
+  camera_resolution_->setEnabled(false);
+  layout->addWidget(BuildField(QStringLiteral("摄像头采集分辨率"), camera_resolution_,
+                                QStringLiteral("已锁定，离房后可修改")));
+  screen_resolution_ = new DeviceComboBox(this);
+  screen_resolution_->setObjectName(QStringLiteral("RoomScreenResolution"));
+  screen_resolution_->addItem(QStringLiteral("1080P（等比，最高 1920×1080）"), false);
+  screen_resolution_->addItem(QStringLiteral("原始分辨率（所选屏幕/窗口）"), true);
+  layout->addWidget(BuildField(QStringLiteral("桌面采集分辨率"), screen_resolution_,
+                                QStringLiteral("共享期间不可修改")));
+  connect(screen_resolution_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+          this, [this] { emit ScreenResolutionSelected(screen_resolution_->currentData().toBool()); });
 
   refresh_ = theme::Button(QStringLiteral("重新扫描设备"),
                            QStringLiteral("ghost"), this);
@@ -107,7 +122,9 @@ QWidget* DevicePanel::BuildField(const QString& label, QComboBox* combo,
   layout->addWidget(theme::Label(label, QStringLiteral("FieldLabel"), field));
   layout->addWidget(combo);
   if (!hint.isEmpty()) {
-    layout->addWidget(theme::Label(hint, QStringLiteral("Hint"), field));
+    auto* description = theme::Label(hint, QStringLiteral("Hint"), field);
+    description->setWordWrap(true);
+    layout->addWidget(description);
   }
   return field;
 }
@@ -115,25 +132,24 @@ QWidget* DevicePanel::BuildField(const QString& label, QComboBox* combo,
 void DevicePanel::FillAudioCombo(
     QComboBox* combo, const QVector<rtcwin::domain::AudioDevice>& devices,
     const QString& empty_text) {
-  const QSignalBlocker blocker(combo);
-  combo->clear();
+  DeviceComboBox::Items items;
   for (const auto& device : devices) {
     if (!device.available) continue;
-    combo->addItem(Text(device.name), Text(device.id));
+    items.push_back({Text(device.name), Text(device.id)});
   }
-  if (combo->count() == 0) {
-    combo->addItem(empty_text, QString());
-    combo->setEnabled(false);
-  } else {
-    combo->setEnabled(true);
-  }
+  const bool enabled = !items.isEmpty();
+  if (!enabled) items.push_back({empty_text, QString()});
+  static_cast<DeviceComboBox*>(combo)->SetItems(std::move(items), enabled);
 }
 
 void DevicePanel::SelectData(QComboBox* combo, const QString& value) {
   if (combo == nullptr || value.isEmpty()) return;
   const QSignalBlocker blocker(combo);
   const int index = combo->findData(value);
-  if (index >= 0) combo->setCurrentIndex(index);
+  if (index >= 0) {
+    combo->setCurrentIndex(index);
+    combo->setToolTip(combo->currentText());
+  }
 }
 
 void DevicePanel::SetDevices(
@@ -148,42 +164,34 @@ void DevicePanel::SetDevices(
   SetSystemAudioEnabled(system_audio_enabled_);
 
   {
-    const QSignalBlocker blocker(camera_);
-    camera_->clear();
+    DeviceComboBox::Items items;
     for (const auto& device : cameras) {
       bool ok = false;
       const int index = Text(device.id).toInt(&ok);
       if (ok && index >= 0 && device.available) {
-        camera_->addItem(Text(device.name), index);
+        items.push_back({Text(device.name), index});
       }
     }
-    if (camera_->count() == 0) {
-      camera_->addItem(QStringLiteral("未检测到摄像头"), -1);
-      camera_->setEnabled(false);
-    } else {
-      camera_->setEnabled(true);
-    }
+    const bool enabled = !items.isEmpty();
+    if (!enabled) items.push_back({QStringLiteral("未检测到摄像头"), -1});
+    static_cast<DeviceComboBox*>(camera_)->SetItems(std::move(items), enabled);
   }
   {
-    const QSignalBlocker blocker(desktop_source_);
-    desktop_source_->clear();
+    DeviceComboBox::Items items;
     for (const auto& source : desktop_sources) {
       const QString data =
           (source.window ? QStringLiteral("window:")
                          : QStringLiteral("screen:")) +
           Text(source.id);
-      desktop_source_->addItem(
+      items.push_back({
           (source.window ? QStringLiteral("窗口 · ")
                          : QStringLiteral("屏幕 · ")) +
               Text(source.title),
-          data);
+          data});
     }
-    if (desktop_source_->count() == 0) {
-      desktop_source_->addItem(QStringLiteral("未发现可共享源"), QString());
-      desktop_source_->setEnabled(false);
-    } else {
-      desktop_source_->setEnabled(true);
-    }
+    const bool enabled = !items.isEmpty();
+    if (!enabled) items.push_back({QStringLiteral("未发现可共享源"), QString()});
+    static_cast<DeviceComboBox*>(desktop_source_)->SetItems(std::move(items), enabled);
   }
 }
 
@@ -196,7 +204,10 @@ void DevicePanel::SetSelection(
     const QString value = Text(selection.camera_device);
     const QSignalBlocker blocker(camera_);
     const int index = camera_->findData(value.toInt());
-    if (index >= 0) camera_->setCurrentIndex(index);
+    if (index >= 0) {
+      camera_->setCurrentIndex(index);
+      camera_->setToolTip(camera_->currentText());
+    }
   }
   if (!selection.screen_source.empty()) {
     const QString value =
@@ -214,6 +225,15 @@ void DevicePanel::SetSystemAudioEnabled(bool enabled) {
                             !system_audio_->currentData().toString().isEmpty());
 }
 
+void DevicePanel::SetCaptureState(const domain::DeviceSelection& selection, bool sharing) {
+  const QSignalBlocker camera_blocker(camera_resolution_);
+  const QSignalBlocker screen_blocker(screen_resolution_);
+  const QString text = QStringLiteral("%1×%2（入房前设置）")
+                           .arg(selection.camera_width).arg(selection.camera_height);
+  static_cast<DeviceComboBox*>(camera_resolution_)->SetItems({{text, QVariant()}}, false);
+  screen_resolution_->setCurrentIndex(selection.screen_native_resolution ? 1 : 0);
+  screen_resolution_->setEnabled(!sharing);
+}
 void DevicePanel::SetStatus(const QString& text) {
   if (status_ != nullptr) status_->setText(text);
 }

@@ -1,4 +1,7 @@
 <RCC>
+  <qresource prefix="/res/common">
+    <file alias="close.png">icons/bubble-close.png</file>
+  </qresource>
   <qresource prefix="/rtcwin">
     <file>theme.qss</file>
     <file alias="icon.ico">../../../resources/icon.ico</file>

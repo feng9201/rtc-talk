@@ -51,7 +51,8 @@ class AppController final : public QObject {
   void ForceReconnect();
   void RefreshIce();
   void RestartIce(const std::string& pc);
-  void StartCameraPreview(int device_index);
+  void StartCameraPreview(int device_index, int width = 1280, int height = 720);
+  void SetScreenResolution(bool native);
   void StopCameraPreview();
 
  signals:

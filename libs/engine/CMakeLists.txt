@@ -34,8 +34,10 @@ target_compile_definitions(rtcwin_engine PRIVATE
   $<$<CONFIG:Debug>:_HAS_ITERATOR_DEBUGGING=0>
 )
 target_compile_options(rtcwin_engine PRIVATE
+  $<$<CONFIG:Release>:/Zi>
   $<$<CXX_COMPILER_ID:MSVC>:/utf-8 /EHsc /GR /W3>
 )
+target_link_options(rtcwin_engine PRIVATE $<$<CONFIG:Release>:/DEBUG>)
 target_link_libraries(rtcwin_engine PRIVATE
   rtcwin_camera_win
   rtcwin_signaling

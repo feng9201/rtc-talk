@@ -1,0 +1,7 @@
+function(rtcwin_add_library_version target)
+  set(RTCWIN_RESOURCE_NAME "${target}")
+  set(RTCWIN_RESOURCE_FILENAME "${target}.dll")
+  set(resource "${CMAKE_BINARY_DIR}/generated/${target}.rc")
+  configure_file("${CMAKE_SOURCE_DIR}/cmake/library.rc.in" "${resource}" @ONLY)
+  target_sources(${target} PRIVATE "${resource}")
+endfunction()

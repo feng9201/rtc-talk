@@ -21,6 +21,7 @@ class RemoteVideoSink;
 class RemoteTrackRegistry final {
  public:
   struct Counts {
+    std::vector<RemoteVideoStats> video_stats;
     std::uint64_t tracks = 0;
     std::uint64_t active_tracks = 0;
     std::uint64_t video_tracks = 0;

@@ -1,6 +1,11 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(rtc_talk_win VERSION 0.1.0 LANGUAGES C CXX RC)
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/Version.cmake")
+read_version("${CMAKE_CURRENT_SOURCE_DIR}/Version.txt")
+project(rtc_talk_win VERSION "${CURRENT_VERSION}" LANGUAGES C CXX RC)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+  "${CMAKE_CURRENT_SOURCE_DIR}/Version.txt")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/version_setting.cmake")
 
 cmake_policy(SET CMP0091 NEW)
 
@@ -49,6 +54,7 @@ add_subdirectory(libs/client_api)
 add_subdirectory(libs/signaling)
 add_subdirectory(libs/camera_win)
 add_subdirectory(libs/log_adapter)
+add_subdirectory(libs/crash_handler)
 
 if(RTCWIN_BUILD_MUXPLAYER)
   find_package(FFMPEG REQUIRED)
@@ -69,6 +75,12 @@ add_subdirectory(libs/engine)
 add_subdirectory(libs/client_gateway)
 add_subdirectory(libs/ui)
 add_subdirectory(apps/rtc-talk)
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/library_rc_setting.cmake")
+foreach(target rtcwin_engine rtcwin_log_adapter rtcwin_crash_handler)
+  rtcwin_add_library_version(${target})
+endforeach()
+target_include_directories(rtcwin_engine PRIVATE "${VERSION_PATH}")
 
 if(RTCWIN_BUILD_TESTS)
   enable_testing()

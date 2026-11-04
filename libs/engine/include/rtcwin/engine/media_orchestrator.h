@@ -63,6 +63,7 @@ class MediaOrchestrator final {
   void HandleSelectScreenSource(const EngineCommand& command);
   void RestartSfuSend(std::uint64_t generation);
   void HandleStats(const EngineCommand& command);
+  void HandleScreenResolution(const EngineCommand& command);
 
   void HandleMediaModeRequest(const std::string& request_id,
                               const signaling::Json& data,

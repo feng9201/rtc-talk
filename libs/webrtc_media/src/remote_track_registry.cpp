@@ -51,6 +51,22 @@ void RemoteTrackRegistry::AddVideoTrack(
     const std::string& pc, const std::string& mid,
     webrtc::scoped_refptr<webrtc::VideoTrackInterface> track) {
   if (!track) return;
+  VideoEntry previous;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto existing = std::find_if(video_tracks_.begin(), video_tracks_.end(),
+        [&](const VideoEntry& entry) { return entry.pc == pc && entry.mid == mid; });
+    if (existing != video_tracks_.end()) {
+      // OnTrack and RefreshRemoteTracks can report the same receiver.
+      if (existing->track == track) return;
+      previous = std::move(*existing);
+      video_tracks_.erase(existing);
+    }
+  }
+  // RemoveSink waits for in-flight OnFrame calls, which also use mutex_.
+  if (previous.track && previous.sink) {
+    previous.track->RemoveSink(previous.sink.get());
+  }
   auto sink = std::make_unique<RemoteVideoSink>(
       mid,
       [this, pc, mid] { return TrackInfoFor(pc, mid); },
@@ -63,21 +79,9 @@ void RemoteTrackRegistry::AddVideoTrack(
         if (callback) callback(std::move(frame));
       });
 
-  std::lock_guard<std::mutex> lock(mutex_);
-  for (auto& entry : video_tracks_) {
-    if (entry.pc == pc && entry.mid == mid) {
-      if (entry.track && entry.sink) {
-        entry.track->RemoveSink(entry.sink.get());
-      }
-      entry.track = track;
-      entry.sink = std::move(sink);
-      track->AddOrUpdateSink(entry.sink.get(), webrtc::VideoSinkWants());
-      ApplyVideoState(track, pc);
-      return;
-    }
-  }
-  track->AddOrUpdateSink(sink.get(), webrtc::VideoSinkWants());
   ApplyVideoState(track, pc);
+  track->AddOrUpdateSink(sink.get(), webrtc::VideoSinkWants());
+  std::lock_guard<std::mutex> lock(mutex_);
   video_tracks_.push_back(
       VideoEntry{pc, mid, std::move(track), std::move(sink)});
 }
@@ -172,6 +176,11 @@ void RemoteTrackRegistry::Clear() {
 }
 
 RemoteTrackRegistry::Counts RemoteTrackRegistry::counts() const {
+  // Track access can dispatch to signaling. Never wait for that thread
+  // while holding the registry lock from the media worker.
+  if (signaling_ && !signaling_->IsCurrent()) {
+    return signaling_->BlockingCall([this] { return counts(); });
+  }
   Counts result;
   std::lock_guard<std::mutex> lock(mutex_);
   result.tracks = audio_tracks_.size();
@@ -180,6 +189,24 @@ RemoteTrackRegistry::Counts RemoteTrackRegistry::counts() const {
   }
   result.video_tracks = video_tracks_.size();
   for (const auto& entry : video_tracks_) {
+    RemoteVideoStats video;
+    video.pc = entry.pc;
+    video.mid = entry.mid;
+    // Same lookup as TrackInfoFor, under the lock already held here.
+    const auto info = track_info_.find(entry.mid);
+    if (info != track_info_.end()) {
+      video.uid = info->second.uid;
+      video.source = info->second.source;
+    } else if (entry.pc == "p2p") {
+      video.uid = p2p_peer_uid_.empty() ? "p2p" : p2p_peer_uid_;
+      video.source = entry.mid == "2" ? "screen" : "camera";
+    }
+    video.enabled = entry.track && entry.track->enabled();
+    if (entry.sink) {
+      video.sink_frames = entry.sink->frames();
+      video.converted_frames = entry.sink->converted_frames();
+    }
+    result.video_stats.push_back(std::move(video));
     if (entry.track && entry.track->enabled()) {
       ++result.active_video_tracks;
     }
@@ -190,8 +217,10 @@ RemoteTrackRegistry::Counts RemoteTrackRegistry::counts() const {
 RemoteTrackInfo RemoteTrackRegistry::TrackInfoFor(
     const std::string& pc, const std::string& mid) const {
   std::lock_guard<std::mutex> lock(mutex_);
-  const auto it = track_info_.find(mid);
-  if (it != track_info_.end()) return it->second;
+  if (pc == "sfu-recv") {
+    const auto it = track_info_.find(mid);
+    if (it != track_info_.end()) return it->second;
+  }
   RemoteTrackInfo info;
   info.mid = mid;
   info.kind = "video";
@@ -218,7 +247,12 @@ void RemoteTrackRegistry::ApplyVideoState(
     const webrtc::scoped_refptr<webrtc::VideoTrackInterface>& track,
     const std::string& pc) const {
   if (!track) return;
-  track->set_enabled(pc != "sfu-recv" || !sfu_paused_);
+  bool paused;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    paused = sfu_paused_;
+  }
+  track->set_enabled(pc != "sfu-recv" || !paused);
 }
 
 void RemoteTrackRegistry::RemoveVideoEntriesOnSignaling(

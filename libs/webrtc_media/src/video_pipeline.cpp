@@ -53,6 +53,15 @@ bool VideoPipeline::SetEnabled(bool enabled, MediaError* error) {
   return true;
 }
 
+bool VideoPipeline::SetScreenResolution(bool native, MediaError* error) {
+  if (!screen_source_ || screen_enabled_.load(std::memory_order_relaxed) ||
+      !screen_source_->SetNativeResolution(native)) {
+    SetError(error, 1736, "仅可在未共享屏幕时修改分辨率");
+    return false;
+  }
+  return true;
+}
+
 bool VideoPipeline::SetScreenEnabled(bool enabled, MediaError* error) {
   if (!screen_track_ || !screen_source_) {
     SetError(error, 1734, "屏幕共享源未初始化");

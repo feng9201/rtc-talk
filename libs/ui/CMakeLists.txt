@@ -12,6 +12,7 @@ set(RTCWIN_UI_SOURCES
   include/rtcwin/ui/video/video_tile.h
   include/rtcwin/ui/widgets/control_button.h
   include/rtcwin/ui/widgets/device_panel.h
+  include/rtcwin/ui/widgets/device_combo_box.h
   include/rtcwin/ui/widgets/icon_button.h
   include/rtcwin/ui/widgets/member_row.h
   include/rtcwin/ui/widgets/pill.h
@@ -29,11 +30,14 @@ set(RTCWIN_UI_SOURCES
   src/video/video_tile.cpp
   src/widgets/control_button.cpp
   src/widgets/device_panel.cpp
+  src/widgets/device_combo_box.cpp
   src/widgets/icon_button.cpp
   src/widgets/member_row.cpp
   src/widgets/pill.cpp
   src/widgets/segmented_control.cpp
   src/widgets/window_controls.cpp
+  src/widgets/msg_box/BubbleMsg.h
+  src/widgets/msg_box/BubbleMsg.cpp
   src/main_window.cpp
   resources/resources.qrc
 )
@@ -57,6 +61,8 @@ target_link_libraries(rtcwin_ui
 target_compile_options(rtcwin_ui PRIVATE
   $<$<CXX_COMPILER_ID:MSVC>:/utf-8 /EHsc /GR /W3>
 )
+
+target_link_libraries(rtcwin_ui PRIVATE dwmapi)
 
 # Qt 5.15 headers use the legacy checked-array iterator with newer MSVC
 # standard libraries. The project does not use that API directly.

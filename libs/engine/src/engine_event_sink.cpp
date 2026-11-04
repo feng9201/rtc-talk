@@ -34,6 +34,17 @@ void EngineEventSink::EmitResponse(std::uint64_t id,
 void EngineEventSink::EmitNotification(const std::string& method,
                                        const Json& data) {
   LOG_INFO("notification method={}", method);
+  // Log only diagnostic fields, never the complete signaling payload (SDP/ICE).
+  if (method == "media.producer") {
+    LOG_INFO("media producer uid={} source={} paused={}",
+             data.value("uid", std::string()),
+             data.value("source", std::string()), data.value("paused", true));
+  } else if (method == "media.track") {
+    LOG_INFO("media track pc={} mid={} uid={} kind={} source={}",
+             data.value("pc", std::string()), data.value("mid", std::string()),
+             data.value("uid", std::string()), data.value("kind", std::string()),
+             data.value("source", std::string()));
+  }
   if (options_.on_event == nullptr) return;
   Json envelope = {
       {"v", 1}, {"type", "ntf"}, {"method", method},

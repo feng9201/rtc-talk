@@ -30,6 +30,21 @@ later stage with their package dependencies.
 
 ## Environment
 
+From PowerShell, build without setting environment variables first:
+
+```powershell
+.\build.bat          # Configure and build Release
+.\build.bat Debug    # Configure and build Debug
+```
+
+The script uses the paths below as defaults. Existing environment variables take
+precedence, so other machines can override them without editing the script.
+It checks dependency paths, runs the existing CMake presets, and returns a
+nonzero exit code if configuration or compilation fails. Tests are run separately.
+The script can also be invoked from another working directory.
+
+For direct CMake commands or custom paths, set:
+
 ```powershell
 $env:VCPKG_ROOT = 'D:\vcpkg'
 $env:QTDIR = 'C:\Qt\5.15.2\msvc2019_64'
@@ -55,6 +70,17 @@ $env:PATH = "$env:QTDIR\bin;" + $env:PATH
 ```
 
 ## Portable ZIP
+
+For a versioned Inno Setup installer and ZIP, run `build.bat -p`.
+This increments only the fourth component in `Version.txt`, configures and builds
+Release, prepares the runtime payload, and invokes ISCC. Ordinary builds only
+read the version. See [installer.md](installer.md) for compiler overrides,
+repackaging without incrementing, and install/uninstall behavior.
+
+Breakpad is bundled in `third_party/breakpad`; no external SDK variable is needed.
+The portable package includes `rtcwin_crash_handler.dll` and its license.
+Crash dumps are saved locally; see [crash-dumps.md](crash-dumps.md) for paths,
+symbol retention and the subprocess crash smoke test.
 
 ```powershell
 pwsh -File .\scripts\package.ps1

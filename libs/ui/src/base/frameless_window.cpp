@@ -3,6 +3,7 @@
 #include <QAbstractButton>
 #include <QAbstractSlider>
 #include <QComboBox>
+#include <QEvent>
 #include <QLineEdit>
 #include <QPainter>
 #include <QScrollArea>
@@ -11,6 +12,7 @@
 #ifdef Q_OS_WIN
 #include <windows.h>
 #include <windowsx.h>
+#include <dwmapi.h>
 #endif
 
 namespace rtcwin::ui {
@@ -23,6 +25,38 @@ FramelessWindow::FramelessWindow(QWidget* parent) : QWidget(parent) {
   setMouseTracking(true);
   setMinimumSize(1100, 720);
   resize(1440, 900);
+}
+
+bool FramelessWindow::event(QEvent* event) {
+  const bool handled = QWidget::event(event);
+  switch (event->type()) {
+    case QEvent::WinIdChange:
+    case QEvent::Show:
+    case QEvent::WindowStateChange:
+      ApplyWindowCorners();
+      break;
+    default:
+      break;
+  }
+  return handled;
+}
+
+void FramelessWindow::ApplyWindowCorners() {
+#ifdef Q_OS_WIN
+  if (!testAttribute(Qt::WA_WState_Created)) return;
+  // Windows 11 DWM performs the anti-aliased clipping after composing all child
+  // widgets, including OpenGL video. Keep the window opaque and unmasked.
+  // Numeric values also allow building against a Windows 10 SDK; unsupported
+  // systems return E_INVALIDARG and retain their original rectangular window.
+  constexpr DWORD kCornerPreference = 33;  // DWMWA_WINDOW_CORNER_PREFERENCE
+  constexpr DWORD kRound = 2;              // DWMWCP_ROUND
+  constexpr DWORD kSquare = 1;             // DWMWCP_DONOTROUND
+  const DWORD preference = isMaximized() || isFullScreen() ? kSquare : kRound;
+  native_corners_ = SUCCEEDED(DwmSetWindowAttribute(
+      reinterpret_cast<HWND>(winId()), kCornerPreference, &preference,
+      sizeof(preference)));
+  update();
+#endif
 }
 
 void FramelessWindow::ToggleMaximize() {
@@ -109,7 +143,7 @@ bool FramelessWindow::nativeEvent(const QByteArray& event_type, void* message,
 
 void FramelessWindow::paintEvent(QPaintEvent* event) {
   QWidget::paintEvent(event);
-  if (isMaximized()) return;
+  if (isMaximized() || isFullScreen() || native_corners_) return;
   QPainter painter(this);
   painter.setRenderHint(QPainter::Antialiasing);
   painter.setPen(QPen(QColor(QStringLiteral("#263543")), 1));

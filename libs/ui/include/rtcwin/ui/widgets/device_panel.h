@@ -25,9 +25,11 @@ class DevicePanel final : public QWidget {
   void SetSelection(const rtcwin::domain::DeviceSelection& selection);
   void SetSystemAudioEnabled(bool enabled);
   void SetStatus(const QString& text);
+  void SetCaptureState(const rtcwin::domain::DeviceSelection& selection, bool sharing);
 
  signals:
   void RefreshRequested();
+  void ScreenResolutionSelected(bool native);
   void RecordingDeviceSelected(const QString& device_id);
   void PlayoutDeviceSelected(const QString& device_id);
   void SystemAudioDeviceSelected(const QString& device_id);
@@ -43,6 +45,8 @@ class DevicePanel final : public QWidget {
       const QString& empty_text);
   static void SelectData(QComboBox* combo, const QString& value);
 
+  QComboBox* screen_resolution_ = nullptr;
+  QComboBox* camera_resolution_ = nullptr;
   QComboBox* recording_ = nullptr;
   QComboBox* playout_ = nullptr;
   QComboBox* system_audio_ = nullptr;

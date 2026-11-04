@@ -1,5 +1,10 @@
 #include "rtcwin/ui/main_window.h"
 #include "rtcwin/ui/theme/theme.h"
+#include "rtcwin/crash_handler/crash_handler.h"
+#include "Version.h"
+
+#include <memory>
+#include <windows.h>
 
 #include <QApplication>
 #include <QCommandLineOption>
@@ -13,6 +18,12 @@
 #include <QTimer>
 
 int main(int argc, char** argv) {
+  const std::unique_ptr<rtcwin_crash_handler,
+                        decltype(&rtcwin_crash_handler_destroy)> crash_handler(
+      rtcwin_crash_handler_create(nullptr), &rtcwin_crash_handler_destroy);
+  if (!crash_handler) {
+    OutputDebugStringW(L"rtc-talk: crash dump handler initialization failed\n");
+  }
 #if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
   QApplication::setAttribute(Qt::AA_EnableHighDpiScaling);
   QApplication::setAttribute(Qt::AA_UseHighDpiPixmaps);
@@ -25,7 +36,7 @@ int main(int argc, char** argv) {
   QApplication app(argc, argv);
   app.setOrganizationName(QStringLiteral("rtc-talk"));
   app.setApplicationName(QStringLiteral("rtc-talk-win"));
-  app.setApplicationVersion(QStringLiteral("0.1.0"));
+  app.setApplicationVersion(QStringLiteral(RTC_TALK_WIN_VERSION));
   app.setWindowIcon(QIcon(QStringLiteral(":/rtcwin/icon.ico")));
 
   QCommandLineParser parser;

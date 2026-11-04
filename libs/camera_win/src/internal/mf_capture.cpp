@@ -197,6 +197,13 @@ std::list<CameraInfo> MFAPICapture::EnumerateDevices() {
           formats |= 8;
         }
       }
+      if (width > 0 && height > 0 && (width % 2) == 0 && (height % 2) == 0 &&
+          numerator > 0 && denominator > 0 &&
+          (subtype == MFVideoFormat_NV12 || subtype == MFVideoFormat_YUY2 ||
+           subtype == MFVideoFormat_MJPG || subtype == MFVideoFormat_RGB24)) {
+        info.modes.push_back({static_cast<int>(width), static_cast<int>(height),
+                              static_cast<int>(numerator), static_cast<int>(denominator)});
+      }
     }
 
     for (const auto& size : frame_sizes) {
@@ -232,7 +239,7 @@ std::string MFAPICapture::getCurErr() {
 }
 
 bool MFAPICapture::init(const CameraInfo& camera_info, int width, int height,
-                        int fps) {
+                        int fps, int fps_denominator) {
   m_strErr.clear();
 
   bool size_supported = false;
@@ -248,7 +255,7 @@ bool MFAPICapture::init(const CameraInfo& camera_info, int width, int height,
                std::to_string(height);
     return false;
   }
-  if (fps <= 0) {
+  if (fps <= 0 || fps_denominator <= 0) {
     m_strErr = "invalid fps";
     return false;
   }
@@ -286,13 +293,21 @@ bool MFAPICapture::init(const CameraInfo& camera_info, int width, int height,
   m_width = width;
   m_height = height;
 
-  if (!setFrameInfo(width, height, fps)) {
+  if (!setFrameInfo(width, height, fps, fps_denominator)) {
     m_pSourceReader.Release();
     m_pDevice.Release();
-    return false;
+    // Releasing a SourceReader may shut down its MediaSource. Reopen the
+    // device before retrying with video processing enabled.
+    if (!createDevice(camera_info) ||
+        !setFrameInfo(width, height, fps, fps_denominator, true)) {
+      m_pSourceReader.Release();
+      m_pDevice.Release();
+      return false;
+    }
   }
 
-  m_fps = fps;
+  m_fps = std::max(1, fps / fps_denominator);
+  m_strErr.clear();
   m_frame_index = 0;
   m_last_timestamp_us = 0;
   m_first_sample_time = 0;
@@ -463,16 +478,17 @@ bool MFAPICapture::createDevice(const CameraInfo& camera_info) {
   return SUCCEEDED(hr);
 }
 
-bool MFAPICapture::setFrameInfo(int width, int height, int fps) {
+bool MFAPICapture::setFrameInfo(int width, int height, int fps, int fps_denominator,
+                                bool advanced_conversion) {
   ComPointer<IMFMediaType> native_type;
   ComPointer<IMFMediaType> type;
 
-  // 低延迟配置：禁用高级视频处理，让设备直接输出 NV12，避免 MF 内部
-  // 额外做一次色彩空间转换和帧缓冲。
+  // Prefer direct NV12. Some large MJPG/RGB modes need MF's video processor;
+  // enable it only when the direct conversion path rejects the requested mode.
   ComPointer<IMFAttributes> reader_attrs;
   if (SUCCEEDED(MFCreateAttributes(&reader_attrs, 1))) {
     reader_attrs->SetUINT32(MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING,
-                            FALSE);
+                            advanced_conversion ? TRUE : FALSE);
   }
 
   if (FAILED(MFCreateSourceReaderFromMediaSource(m_pDevice, reader_attrs.Get(),
@@ -481,6 +497,33 @@ bool MFAPICapture::setFrameInfo(int width, int height, int fps) {
     return false;
   }
 
+  // Select a native mode at this size/rate before requesting NV12 conversion.
+  // High resolutions are often available only through MJPG on USB cameras.
+  bool native_selected = false;
+  for (DWORD index = 0;; ++index) {
+    ComPointer<IMFMediaType> candidate;
+    if (FAILED(m_pSourceReader->GetNativeMediaType(
+            MF_SOURCE_READER_FIRST_VIDEO_STREAM, index, &candidate))) break;
+    UINT32 w = 0, h = 0, n = 0, d = 0;
+    GUID subtype = GUID_NULL;
+    MFGetAttributeSize(candidate, MF_MT_FRAME_SIZE, &w, &h);
+    MFGetAttributeRatio(candidate, MF_MT_FRAME_RATE, &n, &d);
+    candidate->GetGUID(MF_MT_SUBTYPE, &subtype);
+    if (w != static_cast<UINT32>(width) || h != static_cast<UINT32>(height) ||
+        d == 0 || static_cast<uint64_t>(n) * fps_denominator !=
+                      static_cast<uint64_t>(fps) * d) continue;
+    if (subtype != MFVideoFormat_NV12 && subtype != MFVideoFormat_YUY2 &&
+        subtype != MFVideoFormat_MJPG && subtype != MFVideoFormat_RGB24) continue;
+    if (SUCCEEDED(m_pSourceReader->SetCurrentMediaType(
+            MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr, candidate))) {
+      native_selected = true;
+      break;
+    }
+  }
+  if (!native_selected) {
+    m_strErr = "camera native size/rate is unavailable";
+    return false;
+  }
   if (FAILED(m_pSourceReader->GetCurrentMediaType(
           MF_SOURCE_READER_FIRST_VIDEO_STREAM, &native_type))) {
     m_strErr = "GetCurrentMediaType error";
@@ -503,7 +546,8 @@ bool MFAPICapture::setFrameInfo(int width, int height, int fps) {
     return false;
   }
   if (FAILED(MFSetAttributeRatio(type, MF_MT_FRAME_RATE,
-                                 static_cast<UINT32>(fps), 1))) {
+                                 static_cast<UINT32>(fps),
+                                 static_cast<UINT32>(fps_denominator)))) {
     m_strErr = "MFSetAttributeRatio error";
     return false;
   }
@@ -542,6 +586,11 @@ bool MFAPICapture::setFrameInfo(int width, int height, int fps) {
     UINT32 actual_height = 0;
     MFGetAttributeSize(actual_type, MF_MT_FRAME_SIZE, &actual_width,
                        &actual_height);
+    if (actual_width != static_cast<UINT32>(width) ||
+        actual_height != static_cast<UINT32>(height) || subtype != MFVideoFormat_NV12) {
+      m_strErr = "camera negotiated a different size or pixel format";
+      return false;
+    }
     UINT32 numerator = 0;
     UINT32 denominator = 0;
     MFGetAttributeRatio(actual_type, MF_MT_FRAME_RATE, &numerator, &denominator);

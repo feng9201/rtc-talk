@@ -79,7 +79,7 @@
 | S5 | 成员、发言权、主持人、PTT/审核模式 | 已完成并提交 | M3 `737ac65`、Floor/Host 控制器和双端联调证据 | 无 |
 | S6 | 设备、统计、日志和诊断 | 代码完成，待 M6 验收 | M4 `e433396`、M6 RTCStats、状态页和脱敏诊断包 | M6 用户验收 |
 | S7 | 重连、resume、ICE refresh、安全 | 功能部分完成；M7 暂停 | M5 `ac39c4f`；WSS/TLS 与凭证安全未开始 | 转生产前恢复 M7 |
-| S8 | 安装包、签名、升级和发布验收 | 暂停，转生产前处理 | 无 | 安装包、依赖清单、签名、升级和发布验收 |
+| S8 | 安装包、签名、升级和发布验收 | Inno 安装包及本机安装/卸载已验证，发布门禁仍待完成 | 见 §18.21 | 签名、跨版本升级回滚和干净机验收 |
 | P0 | 计划与依赖审计 | 已完成 | 本工程依赖边界和构建脚本 | 后续计划变更时维护 |
 | P1 | muxPlayer 可构建 | 已完成并推送 | `de3a7f1` | 无 |
 | P2 | muxPlayer 原始帧注入 | 已完成并推送 | `de3a7f1` | 远端帧接入在 S4 完成 |
@@ -195,7 +195,7 @@ M1-M6 已确认并纳入本次提交。
 - M6 提交：`a236462`。
 - 多端 SFU 视频稳定性修复：`96a7008`。
 - M7 客户端 WSS/凭证管理：`e86178d`。
-- 当前 CTest 集：12 个测试，Release/Debug 均 12/12。
+- 当前 CTest 集：14 个测试，Release/Debug 均 14/14（含本地 Breakpad 与入房错误气泡验证，见 §18.20、§18.22）。
 - M6 证据：见 §18.17。
 
 ### 1.4 计划入口与当前下一步
@@ -234,7 +234,7 @@ M1-M6 已确认并纳入本次提交。
 | M7 安全与发布 | 正式域名/CA 证书 WSS 成功联调、代理和完整 TLS 错误验收 | 客户端已实现；正式联调暂停 | 部署正式证书后恢复 M7 |
 | 身份与凭证 | 正式认证接入、Token 刷新/轮换接口 | Credential Manager 和过期清理已完成；正式认证暂停 | 移除生产环境 `/dev/token`，接入正式认证 |
 | 当前信令能力 | `ws://` 与 `wss://` 均已接入；WSS 使用 WinHTTP/SChannel 和系统 CA | 已实现；成功 WSS 握手待正式证书 | 使用正式域名证书完成发布验收 |
-| 发布工程 | ReleaseWithSymbols、安装包、签名、升级、回滚、卸载 | 暂停；未实现 | 具备证书、签名和发布环境 |
+| 发布工程 | 签名、跨版本升级/回滚、符号归档和正式卸载矩阵 | Inno 安装包与本机安装/卸载已实现，完整发布未完成 | 见 §18.21，后续需签名和干净机环境 |
 | 发布验收 | 干净 Windows 10/11 机器安装和完整回归 | 未执行 | S8 发布门禁 |
 | 长稳测试 | 30 分钟双人、2 小时多人、连续设备/视频切换和资源泄漏 | 未执行 | 用户安排独立长稳窗口 |
 | 网络恢复 | 强制 TURN relay、断网超过 60 秒、网络切换和 ICE 失败恢复 | 未完整验收 | 恢复 M7/S7 后补测 |
@@ -2211,3 +2211,101 @@ SHA256: 5A9C37273B67E7CFE3E5B673C63218C1886E145ACACD49E200EA065D26111B4E
 ```
 
 包内 `VERSION.txt` 的提交号为 `aebb285`，工作树状态为 `clean`。
+
+### 18.20 本地 Breakpad 崩溃捕获（2026-11-02）
+
+用户要求引入 `D:\google\breakpad_sdk`，只抓本地 dmp，不上传。
+
+- 必要头文件及 Debug/Release 的 exception_handler、crash_generation_client、common
+  静态库已复制到 `third_party/breakpad`，来源版本 `9a2ad675`。约 2.85 MiB，
+  构建和运行不依赖来源目录；没有引入上传库/工具、server 库或 SDK DLL。
+- 新增 `/MT`（Debug `/MTd`）的 `rtcwin_crash_handler.dll`，通过 C ABI 隔离 Qt 的
+  `/MD`（Debug `/MDd`），路径与对象分配均由捕获 DLL 自己管理。
+- `main` 开头安装一次，生命周期覆盖 Qt/Engine 启动、运行和退出；崩溃回调
+  不操作 Qt、不写日志、不上传。
+- 默认转储目录 `%LOCALAPPDATA%\rtc-talk-win\crash_dumps`，每个 dump 使用 GUID
+  文件名；LocalAppData 不可解析时回退到 TEMP 下同名目录。无自动删除策略。
+- Release 主程序、Engine 与捕获 DLL 已生成 PDB；便携包包含捕获 DLL 与许可证，
+  PDB 仍在构建目录单独留存。匹配符号要求与捕获边界见 `docs/crash-dumps.md`。
+- dump 为原始诊断文件，不经过日志脱敏，不自动加入现有诊断 ZIP。
+
+验证：
+
+- Release/Debug 构建通过，CTest 各 13/13。
+- 新增 `rtcwin_crash_handler_smoke`：独立子进程主线程、工作线程真实访问违规，
+  检查 MDMP 文件头和 ExceptionStream 的 `0xC0000005`、非零线程 ID。
+- 生成的测试 dump 位于 `build/windows-x64/crash-handler-smoke/<配置>`。
+- Release/Debug Qt 客户端各 1 秒正常启动/退出通过，默认转储目录创建成功。
+- 便携包在系统目录 PATH 下、不依赖开发环境目录时启动/退出通过。
+- 早期测试在同一进程快速反复安装/卸载处理器时超时，SDK 析构使用
+  TerminateThread；接入采用 SDK 建议的进程启动安装一次、退出销毁，
+  不支持动态反复加载卸载。修正为产品生命周期的子进程测试后通过。
+- 本轮没有执行长稳或新增真实服务联调；没有修改视觉界面。
+
+验证包：`dist/rtc-talk-win-20261102-154432.zip`（工作树 dirty 的本地验证包，
+不是正式发布）。本轮代码尚未提交或推送。
+
+### 18.21 Inno Setup 安装包与统一版本（2026-11-02）
+
+用户明确：从 `1.0.0.0` 开始，仅打包递增第四位，默认不开机自启动。
+
+- 只阅读 `D:\work\device_tool` 的 CMake、build.bat、ISS 打包配置了解流程，
+  不读取业务代码，不修改该工程；当前构建和安装器不依赖它。
+- 根目录 `Version.txt` 统一管理四段版本。CMake 普通配置只读取；`build.bat -p`
+  显式调用版本脚本一次递增，再编译 Release、部署 Qt/VC Runtime 等依赖、生成
+  ZIP 并调用 Inno Setup。第一次实际打包后版本为 `1.0.0.1`。
+- EXE、本项目三个 DLL 的资源、Qt applicationVersion、Engine 版本接口、日志和
+  信令 hello 使用同一版本。Windows RC 改为生成模板，图标仍来自 resources/icon.ico。
+- `rtc-talk.iss` 替换原 OmniStation 名称、进程和 AppId；固定新 AppId
+  `{53dc91bb-5dac-434f-b164-1a3b5ed95cce}`，输出到 dist，默认无开机自启动注册。
+- 运行时从 build/windows-x64/package 整理，不直接打包整个 bin。包含 Engine、
+  Breakpad、Qt 插件和 VC Runtime，排除 PDB、测试 EXE、日志、dmp。
+- Inno 管理已安装文件，提示关闭占用应用，不再 taskkill 其他项目进程或 DelTree
+  用户选定目录。卸载保留用户日志、dump、设置、凭证和未知文件。
+- ISCC 可通过环境变量覆盖，默认查找 PATH 和 Program Files 下 Inno Setup 6。
+  `scripts/package.ps1 -NoBuild -Installer` 可复用当前版本封装，不再次递增。
+
+验证：
+
+- Release/Debug 构建通过，CTest 各 13/13；普通构建、重新配置后仍为 1.0.0.1。
+- EXE、rtcwin_engine.dll、rtcwin_log_adapter.dll、rtcwin_crash_handler.dll 的
+  FileVersion 均为 1.0.0.1，打包脚本会核对，防止混装。
+- 用独立版本文件验证四位递增和 65535 溢出拒绝，生产 Version.txt 未受测试影响。
+- 在 build/windows-x64/installer-smoke/install 做当前用户静默安装，验证依赖、
+  版本、无自启动注册、只含系统目录 PATH 时启动成功。
+- 同版本覆盖安装保留用户文件；卸载删除程序/注册信息并保留用户文件。测试安装
+  已卸载，测试日志保留在 build/windows-x64/installer-smoke。
+- 安装器为 `dist/rtc-talk-win_Setup_1.0.0.1_x64.exe`。这是未签名的本机验证包，
+  不是完整生产发布验收；跨版本升级、降级/回滚和干净 Windows 10/11 测试待完成。
+- 本轮没有执行长稳、真实服务联调、视觉设计修改，也没有提交或推送。
+
+使用方式详见 `docs/installer.md`。
+
+### 18.22 入房错误气泡提示（2026-11-02）
+
+按用户要求复制 `D:\work\device_tool\omni_station\base_ui\msg_box` 下
+BubbleMsg.h/cpp 和关闭图标到当前仓库。源工程只读，构建与运行不依赖源路径。
+
+- 源码位于 `libs/ui/src/widgets/msg_box`，图标通过 Qt Resource 内置。
+- MainWindow 持有独立 BubbleMsgWithClose；开始入房时标记尝试，入房成功或
+  离房时清除标记，尝试期间的 ErrorOccurred 在顶部居中显示红色错误气泡。
+- 气泡常驻至用户关闭；再次入房时隐藏上一条，重复失败复用同一组件，不堆叠。
+- 保留预入会状态文字；设备扫描/预览等入房尝试之外的错误保持原有状态提示。
+- 修复本地参数校验失败没有 BusyChanged 时，预入会“进入房间”按钮无法重试的问题。
+- 保留原气泡配色，增加长文本换行、纯文本显示、鼠标选择、缩放后居中定位；
+  修正关闭按钮受全局 QPushButton 最小高度影响，以及描边浮点坐标被取整的问题。
+- 气泡自身使用透明度效果，不对主窗口或 OpenGL 视频控件施加图形效果。
+
+验证：
+
+- Release/Debug 构建通过，CTest 各 14/14。
+- 新增 rtcwin_join_error_bubble_tests，覆盖入房校验错误、可重试、复用、关闭图标、
+  手动关闭、长文本、纯文本标签和 resize 定位；不连接服务、不保存设置或凭证。
+- 离屏测试指定 Qt 开发环境的 offscreen 平台插件，避免运行目录仅部署 qwindows
+  导致启动失败；长文本额外使用 Windows 原生平台截图核查字体和内容。
+- 真实 P5 基线和当前程序均以 1440x900、同一 comparison.png 路径截图。
+  当前程序通过内置 auto-join 参数触发无效 URL 的真实校验错误，确认气泡可见。
+- 证据：build/windows-x64/join-error-bubble/p5-baseline.png、join-error.png、
+  long-error-native.png。原有 P5 布局保持；未重新执行真实服务认证失败联调或长稳。
+- 本轮视觉核查针对错误气泡；此前 Windows 11 原生主窗口圆角的人工验收仍未补做。
+- 本轮未重新生成安装包、递增版本、提交或推送。

@@ -7,6 +7,7 @@
 
 #include <QCheckBox>
 #include <QComboBox>
+#include "rtcwin/ui/widgets/device_combo_box.h"
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -181,7 +182,7 @@ QWidget* PrejoinPage::BuildFormCard() {
   system_audio_device_ = new QComboBox(card);
   system_audio_device_->addItem(QStringLiteral("默认播放端点"), QString());
   system_audio_device_->setEnabled(false);
-  camera_device_ = new QComboBox(card);
+  camera_device_ = new DeviceComboBox(card);
   camera_device_->addItem(QStringLiteral("正在扫描摄像头…"), -1);
   camera_device_->setEnabled(false);
   layout->addWidget(MakePair(
@@ -203,6 +204,27 @@ QWidget* PrejoinPage::BuildFormCard() {
   layout->addWidget(MakeField(QStringLiteral("摄像头"), camera_row,
                               QStringLiteral("设备索引会随入房配置传给媒体核心")));
 
+  camera_resolution_ = new DeviceComboBox(card);
+  camera_resolution_->setObjectName(QStringLiteral("CameraResolution"));
+  camera_resolution_->addItem(QStringLiteral("等待摄像头能力信息"));
+  camera_resolution_->setEnabled(false);
+  screen_resolution_ = new DeviceComboBox(card);
+  screen_resolution_->setObjectName(QStringLiteral("ScreenResolution"));
+  screen_resolution_->addItem(QStringLiteral("1080P（等比，最高 1920×1080）"), false);
+  screen_resolution_->addItem(QStringLiteral("原始分辨率（所选屏幕/窗口）"), true);
+  layout->addWidget(MakePair(
+      MakeField(QStringLiteral("摄像头采集分辨率"), camera_resolution_,
+                QStringLiteral("仅入房前可修改")),
+      MakeField(QStringLiteral("桌面采集分辨率"), screen_resolution_,
+                QStringLiteral("未共享时可修改"))));
+  connect(camera_resolution_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+          this, [this] {
+    const auto size = camera_resolution_->currentData().toSize();
+    if (!size.isValid()) return;
+    preferred_camera_width_ = size.width();
+    preferred_camera_height_ = size.height();
+    if (preview_active_ && !preview_pending_) emit CameraSelectionChanged(SelectedCameraIndex());
+  });
   auto* volume_row = new QHBoxLayout;
   volume_row->setContentsMargins(0, 0, 0, 0);
   volume_row->setSpacing(10);
@@ -249,6 +271,8 @@ QWidget* PrejoinPage::BuildFormCard() {
   connect(camera_device_,
           QOverload<int>::of(&QComboBox::currentIndexChanged), this,
           [this] {
+            preferred_camera_id_ = QString::number(SelectedCameraIndex());
+            UpdateCameraResolutions();
             const int index = SelectedCameraIndex();
             if (index >= 0 && !preview_pending_) {
               if (preview_active_) {
@@ -285,6 +309,7 @@ QWidget* PrejoinPage::BuildPreviewColumn() {
                                  QStringLiteral("TitleSmall"), preview_card));
   preview_device_ = Label(QStringLiteral("选择摄像头后可启动预览"),
                           QStringLiteral("Hint"), preview_card);
+  preview_device_->setWordWrap(true);
   identity_text->addWidget(preview_device_);
   identity->addLayout(identity_text, 1);
   preview_button_ = theme::Button(QStringLiteral("启动本地预览"),
@@ -388,6 +413,9 @@ domain::PrejoinOptions PrejoinPage::Options() const {
   result.system_audio_device =
       Value(ComboData(system_audio_device_, QString()));
   result.camera_device = Value(QString::number(SelectedCameraIndex()));
+  result.camera_width = preferred_camera_width_;
+  result.camera_height = preferred_camera_height_;
+  result.screen_native_resolution = screen_resolution_->currentData().toBool();
   return result;
 }
 
@@ -430,6 +458,9 @@ void PrejoinPage::SetOptions(const domain::PrejoinOptions& options) {
           ? QStringLiteral("system")
           : QStringLiteral("mic"));
   volume_->setValue(options.volume);
+  preferred_camera_width_ = options.camera_width;
+  preferred_camera_height_ = options.camera_height;
+  screen_resolution_->setCurrentIndex(options.screen_native_resolution ? 1 : 0);
   preferred_camera_id_ = Text(options.camera_device);
   preferred_recording_id_ = Text(options.recording_device);
   preferred_playout_id_ = Text(options.playout_device);
@@ -448,6 +479,7 @@ void PrejoinPage::SetOptions(const domain::PrejoinOptions& options) {
     const int index = camera_device_->findData(preferred_index);
     if (index >= 0) camera_device_->setCurrentIndex(index);
   }
+  UpdateCameraResolutions();
   UpdateSummary();
 }
 
@@ -455,6 +487,7 @@ void PrejoinPage::SetBusy(bool busy) {
   busy_ = busy;
   if (join_button_ != nullptr) join_button_->setEnabled(!busy);
   if (save_button_ != nullptr) save_button_->setEnabled(!busy);
+  screen_resolution_->setEnabled(!busy);
   UpdatePreviewControls();
 }
 
@@ -504,6 +537,18 @@ void PrejoinPage::SetCameraDevices(
     const QVector<rtcwin::domain::CameraDevice>& devices) {
   if (camera_device_ == nullptr) return;
 
+  auto next = devices;
+  // An opened camera may not expose capabilities to a second MF reader.
+  for (auto& device : next) {
+    if (!device.resolutions.empty()) continue;
+    for (const auto& previous : camera_devices_) {
+      if (previous.id == device.id && previous.name == device.name) {
+        device.resolutions = previous.resolutions;
+        break;
+      }
+    }
+  }
+  camera_devices_ = next;
   const QSignalBlocker blocker(camera_device_);
   bool has_current = false;
   int current = camera_device_->currentData().toInt(&has_current);
@@ -511,19 +556,21 @@ void PrejoinPage::SetCameraDevices(
   const int preferred = preferred_camera_id_.toInt(&has_preferred);
   if (has_preferred) current = preferred;
 
-  camera_device_->clear();
-  for (const rtcwin::domain::CameraDevice& device : devices) {
+  DeviceComboBox::Items items;
+  for (const rtcwin::domain::CameraDevice& device : next) {
     bool is_index = false;
     const int index = Text(device.id).toInt(&is_index);
     if (!is_index || !device.available) continue;
-    camera_device_->addItem(Text(device.name), index);
+    items.push_back({Text(device.name), index});
   }
 
+  static_cast<DeviceComboBox*>(camera_device_)->SetItems(std::move(items), !next.isEmpty());
   if (camera_device_->count() == 0) {
     camera_device_->addItem(QStringLiteral("未找到可用摄像头"), -1);
     camera_device_->setCurrentIndex(0);
     preview_device_->setText(QStringLiteral("未找到可用摄像头"));
     SetStatus(QStringLiteral("未找到可用摄像头"), QStringLiteral("warn"));
+    UpdateCameraResolutions();
     UpdatePreviewControls();
     return;
   }
@@ -535,6 +582,7 @@ void PrejoinPage::SetCameraDevices(
   if (!preview_active_) {
     preview_device_->setText(camera_device_->currentText());
   }
+  UpdateCameraResolutions();
   SetStatus(QStringLiteral("已发现 %1 个摄像头").arg(camera_device_->count()),
             QStringLiteral("ok"));
   UpdatePreviewControls();
@@ -549,15 +597,14 @@ void PrejoinPage::SetPreviewPending(const QString& text) {
 
 void PrejoinPage::SetPreviewActive(bool active, const QString& device,
                                    int width, int height, int fps) {
-  Q_UNUSED(width);
-  Q_UNUSED(height);
-  Q_UNUSED(fps);
+
   preview_pending_ = false;
   preview_active_ = active;
   if (active) {
     preview_surface_->SetPlaceholder(QStringLiteral("等待 muxPlayer 本地预览帧"));
-    preview_device_->setText(device.isEmpty() ? camera_device_->currentText()
-                                              : device);
+    preview_device_->setText(QStringLiteral("%1 · %2×%3 · %4 fps")
+                                .arg(device.isEmpty() ? camera_device_->currentText() : device)
+                                .arg(width).arg(height).arg(fps));
     SetStatus(QStringLiteral("本机摄像头预览已启动"), QStringLiteral("ok"));
   } else {
     preview_surface_->Clear();
@@ -587,11 +634,52 @@ int PrejoinPage::SelectedCameraIndex() const {
   return ok ? index : -1;
 }
 
+void PrejoinPage::UpdateCameraResolutions() {
+  const QSignalBlocker blocker(camera_resolution_);
+  DeviceComboBox::Items items;
+  const std::string id = std::to_string(SelectedCameraIndex());
+  for (const auto& device : camera_devices_) {
+    if (device.id != id) continue;
+    rtcwin::domain::CameraResolution maximum;
+    bool has720 = false, has1080 = false;
+    for (const auto& size : device.resolutions) {
+      if (size.width < 16 || size.height < 16 || size.width > 16384 ||
+          size.height > 16384 || size.width % 2 || size.height % 2) continue;
+      has720 |= size.width == 1280 && size.height == 720;
+      has1080 |= size.width == 1920 && size.height == 1080;
+      if (static_cast<qint64>(size.width) * size.height >
+          static_cast<qint64>(maximum.width) * maximum.height) maximum = size;
+    }
+    auto add = [&items, &maximum](QString label, int width, int height) {
+      if (width == maximum.width && height == maximum.height) label += QStringLiteral(" · 最大");
+      items.push_back({label + QStringLiteral("（%1×%2）").arg(width).arg(height), QSize(width, height)});
+    };
+    if (has720) add(QStringLiteral("720P"), 1280, 720);
+    if (has1080) add(QStringLiteral("1080P"), 1920, 1080);
+    if (maximum.width && !(maximum.width == 1280 && maximum.height == 720) &&
+        !(maximum.width == 1920 && maximum.height == 1080)) {
+      add(QStringLiteral("原生"), maximum.width, maximum.height);
+    }
+    break;
+  }
+  const bool known = !items.isEmpty();
+  if (!known) items.push_back({QStringLiteral("无法读取能力，请重新扫描"), QVariant()});
+  static_cast<DeviceComboBox*>(camera_resolution_)->SetItems(std::move(items), known && !busy_ && !preview_pending_);
+  const int selected = camera_resolution_->findData(QSize(preferred_camera_width_, preferred_camera_height_));
+  if (selected >= 0) camera_resolution_->setCurrentIndex(selected);
+  const QSize size = camera_resolution_->currentData().toSize();
+  if (size.isValid()) {
+    preferred_camera_width_ = size.width();
+    preferred_camera_height_ = size.height();
+  }
+}
+
 void PrejoinPage::UpdatePreviewControls() {
   if (preview_button_ == nullptr) return;
   const bool has_device = SelectedCameraIndex() >= 0;
   const bool selectable = !busy_ && !preview_pending_;
   camera_device_->setEnabled(selectable && has_device);
+  camera_resolution_->setEnabled(selectable && camera_resolution_->currentData().toSize().isValid());
   if (rescan_button_ != nullptr) rescan_button_->setEnabled(selectable);
   preview_button_->setText(preview_active_
                                ? QStringLiteral("关闭本地预览")

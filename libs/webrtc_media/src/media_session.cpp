@@ -161,6 +161,10 @@ struct MediaSession::Impl {
       return false;
     }
 
+    if (!video_pipeline_.SetScreenResolution(next.screen_native_resolution, error)) {
+      Shutdown();
+      return false;
+    }
     rtc_config.sdp_semantics = webrtc::SdpSemantics::kUnifiedPlan;
     for (const auto& item : next.ice_servers) {
       webrtc::PeerConnectionInterface::IceServer server;
@@ -578,8 +582,16 @@ struct MediaSession::Impl {
     out.p2p_send_active =
         p2p && p2p->HasAudioSender() && p2p->AudioSenderActive();
     PeerMediaStats stats;
+    const auto append_video_stats = [&out](const PeerMediaStats& peer,
+                                          const char* pc) {
+      for (auto video : peer.video_rtp_stats) {
+        video.pc = pc;
+        out.video_rtp_stats.push_back(std::move(video));
+      }
+    };
     if (p2p && p2p->state_name() == "connected" &&
         p2p->CollectMediaStats(&stats)) {
+      append_video_stats(stats, "p2p");
       out.p2p_audio_packets_sent += stats.audio_packets_sent;
       out.audio_bytes_sent += stats.audio_bytes_sent;
       out.audio_packets_received += stats.audio_packets_received;
@@ -601,6 +613,7 @@ struct MediaSession::Impl {
     }
     if (sfu_send && sfu_send->state_name() == "connected" &&
         sfu_send->CollectMediaStats(&stats)) {
+      append_video_stats(stats, "sfu-send");
       out.sfu_audio_packets_sent += stats.audio_packets_sent;
       out.audio_bytes_sent += stats.audio_bytes_sent;
       out.video_packets_sent += stats.video_packets_sent;
@@ -616,6 +629,7 @@ struct MediaSession::Impl {
     }
     if (sfu_recv && sfu_recv->state_name() == "connected" &&
         sfu_recv->CollectMediaStats(&stats)) {
+      append_video_stats(stats, "sfu-recv");
       out.audio_packets_received += stats.audio_packets_received;
       out.audio_bytes_received += stats.audio_bytes_received;
       out.video_packets_received += stats.video_packets_received;
@@ -633,6 +647,7 @@ struct MediaSession::Impl {
     }
     if (remote_registry) {
       const auto counts = remote_registry->counts();
+      out.remote_video_stats = counts.video_stats;
       out.remote_tracks = counts.tracks;
       out.active_remote_tracks = counts.active_tracks;
       out.remote_video_tracks = counts.video_tracks;
@@ -789,6 +804,9 @@ bool MediaSession::SetCameraEnabled(bool enabled, MediaError* error) {
   return impl_->SetCameraEnabled(enabled, error);
 }
 
+bool MediaSession::SetScreenResolution(bool native, MediaError* error) {
+  return impl_->video_pipeline_.SetScreenResolution(native, error);
+}
 bool MediaSession::SetScreenEnabled(bool enabled, MediaError* error) {
   return impl_->SetScreenEnabled(enabled, error);
 }

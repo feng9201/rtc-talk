@@ -1,5 +1,7 @@
 #include "rtcwin/muxplayer_adapter/mux_video_surface.h"
 
+#include "rtcwin/log_adapter/log_api.h"
+
 #include <frame_pump.h>
 #include <gl_play_widget.h>
 
@@ -52,10 +54,12 @@ bool MuxVideoSurface::SubmitFrame(const domain::VideoFrame& frame) {
     return false;
   }
 
+  const auto mid = QString::fromStdString(frame.mid);
+  const bool first_frame = !has_frame_ || property("frameMid").toString() != mid;
   frame_width_ = frame.width;
   frame_height_ = frame.height;
   setProperty("frameUid", QString::fromStdString(frame.uid));
-  setProperty("frameMid", QString::fromStdString(frame.mid));
+  setProperty("frameMid", mid);
   setProperty("frameSource",
               QString::fromLatin1(
                   domain::VideoSourceName(frame.source).c_str()));
@@ -90,6 +94,18 @@ bool MuxVideoSurface::SubmitFrame(const domain::VideoFrame& frame) {
   has_frame_ = true;
   LayoutSurface();
   if (gl_widget_ != nullptr) gl_widget_->show();
+  if (first_frame) {
+    const auto message =
+        QStringLiteral("video surface frame uid=%1 source=%2 mid=%3 size=%4x%5 visible=%6 gl_valid=%7")
+            .arg(property("frameUid").toString(), property("frameSource").toString(), mid)
+            .arg(frame.width)
+            .arg(frame.height)
+            .arg(isVisible())
+            .arg(gl_widget_ != nullptr && gl_widget_->isValid())
+            .toUtf8();
+    rtcwin_log_write(RTCWIN_LOG_INFO, __FILE__, __LINE__, __func__,
+                     message.constData());
+  }
   return true;
 }
 
