@@ -1,0 +1,33 @@
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "host",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build/host",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release", "BUILD_TESTING": "ON" }
+    },
+    {
+      "name": "host-asan",
+      "inherits": "host",
+      "binaryDir": "${sourceDir}/build/host-asan",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "RTC_ENABLE_SANITIZERS": "ON" }
+    },
+    {
+      "name": "host-tsan",
+      "inherits": "host",
+      "binaryDir": "${sourceDir}/build/host-tsan",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "RTC_ENABLE_TSAN": "ON" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "host", "configurePreset": "host", "jobs": 4 },
+    { "name": "host-asan", "configurePreset": "host-asan", "jobs": 4 },
+    { "name": "host-tsan", "configurePreset": "host-tsan", "jobs": 4 }
+  ],
+  "testPresets": [
+    { "name": "host", "configurePreset": "host", "output": { "outputOnFailure": true } },
+    { "name": "host-asan", "configurePreset": "host-asan", "output": { "outputOnFailure": true } },
+    { "name": "host-tsan", "configurePreset": "host-tsan", "output": { "outputOnFailure": true } }
+  ]
+}

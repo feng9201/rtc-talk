@@ -1,0 +1,21 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "RK product: host foundation",
+      "type": "shell",
+      "command": "bash",
+      "args": ["${workspaceFolder}/scripts/check-host.sh", "host"],
+      "group": "test",
+      "problemMatcher": ["$gcc"]
+    },
+    {
+      "label": "RK product: host ASan UBSan",
+      "type": "shell",
+      "command": "bash",
+      "args": ["${workspaceFolder}/scripts/check-host.sh", "host-asan"],
+      "group": "test",
+      "problemMatcher": ["$gcc"]
+    }
+  ]
+}
