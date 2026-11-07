@@ -79,6 +79,10 @@ M1 hello：Opus + H264(hw=true)、`p2p=false`、`p2p_video=false`，video.max_re
 
 不得把 `room.peerUpdated.video.on=true` 当作已收到或显示视频；后者由流状态事件报告。
 
+退房顺序边界：最后成员 `room.leave` 时，当前服务端会先向该成员发送
+`room.closed{reason:"empty"}`，再返回 leave 成功。处于 Leaving 的客户端应将该通知
+视为正常关闭，不得误报 403 或取消正常退房/bye 流程；其他 room.closed 仍按房间关闭处理。
+
 ## 5. 进程内 API（版本化目标）
 
 ```c

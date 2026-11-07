@@ -14,6 +14,53 @@
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "RTC_ENABLE_SANITIZERS": "ON" }
     },
     {
+      "name": "host-net",
+      "inherits": "host",
+      "binaryDir": "${sourceDir}/build/host-net",
+      "cacheVariables": {
+        "RTC_WITH_SIGNALING": "ON",
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_MANIFEST_INSTALL": "OFF",
+        "VCPKG_TARGET_TRIPLET": "x64-linux",
+        "VCPKG_INSTALLED_DIR": "${sourceDir}/build/host-net/vcpkg_installed"
+      }
+    },
+    {
+      "name": "host-net-asan",
+      "inherits": "host-net",
+      "binaryDir": "${sourceDir}/build/host-net-asan",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "RTC_ENABLE_SANITIZERS": "ON" }
+    },
+    {
+      "name": "rk3576-net",
+      "inherits": "host-net",
+      "binaryDir": "${sourceDir}/build/rk3576-net",
+      "cacheVariables": {
+        "VCPKG_TARGET_TRIPLET": "arm64-rk3576",
+        "VCPKG_INSTALLED_DIR": "${sourceDir}/build/rk3576-net/vcpkg_installed",
+        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/cmake/triplets",
+        "VCPKG_CHAINLOAD_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchain-rk3576.cmake",
+        "RK3576_HOST": "$env{RK3576_HOST}"
+      }
+    },
+    {
+      "name": "rk3576-audio",
+      "inherits": "rk3576-net",
+      "binaryDir": "${sourceDir}/build/rk3576-audio",
+      "cacheVariables": {
+        "RTC_WITH_WEBRTC": "ON",
+        "RTC_ENABLE_TEST_AUDIO": "OFF",
+        "WEBRTC_SOURCE_DIR": "$env{WEBRTC_SOURCE_DIR}",
+        "WEBRTC_BUILD_DIR": "$env{WEBRTC_BUILD_DIR}"
+      }
+    },
+    {
+      "name": "rk3576-audio-dev",
+      "inherits": "rk3576-audio",
+      "binaryDir": "${sourceDir}/build/rk3576-audio-dev",
+      "cacheVariables": { "RTC_ENABLE_TEST_AUDIO": "ON" }
+    },
+    {
       "name": "host-tsan",
       "inherits": "host",
       "binaryDir": "${sourceDir}/build/host-tsan",
@@ -22,11 +69,18 @@
   ],
   "buildPresets": [
     { "name": "host", "configurePreset": "host", "jobs": 4 },
+    { "name": "host-net", "configurePreset": "host-net", "jobs": 4 },
+    { "name": "host-net-asan", "configurePreset": "host-net-asan", "jobs": 2 },
+    { "name": "rk3576-net", "configurePreset": "rk3576-net", "jobs": 2 },
+    { "name": "rk3576-audio-dev", "configurePreset": "rk3576-audio-dev", "jobs": 2 },
+    { "name": "rk3576-audio", "configurePreset": "rk3576-audio", "jobs": 2 },
     { "name": "host-asan", "configurePreset": "host-asan", "jobs": 4 },
     { "name": "host-tsan", "configurePreset": "host-tsan", "jobs": 4 }
   ],
   "testPresets": [
     { "name": "host", "configurePreset": "host", "output": { "outputOnFailure": true } },
+    { "name": "host-net", "configurePreset": "host-net", "output": { "outputOnFailure": true } },
+    { "name": "host-net-asan", "configurePreset": "host-net-asan", "output": { "outputOnFailure": true } },
     { "name": "host-asan", "configurePreset": "host-asan", "output": { "outputOnFailure": true } },
     { "name": "host-tsan", "configurePreset": "host-tsan", "output": { "outputOnFailure": true } }
   ]

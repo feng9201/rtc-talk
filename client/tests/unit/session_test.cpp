@@ -1,6 +1,7 @@
 #include "test.h"
 #include "rtc_client/domain/microphone_gate.h"
 #include "rtc_client/domain/session.h"
+#include "rtc_client/domain/notifications.h"
 
 using namespace rtc_client;
 using E = SessionEvent;
@@ -79,6 +80,10 @@ int main() {
     CHECK(s.complete(s.stamp(), E::join_ok));
 
     CHECK(s.apply(E::leave));
+    CHECK(expected_room_closed(s.state(),"empty"));
+    CHECK(!expected_room_closed(s.state(),"hangup"));
+    CHECK(!expected_room_closed(S::joined,"empty"));
+    CHECK(!expected_room_closed(S::ready,"empty"));
     CHECK(s.apply(E::network_lost));
     CHECK(!s.has_room());
     CHECK(s.apply(E::transport_open));

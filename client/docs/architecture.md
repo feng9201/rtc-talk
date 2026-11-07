@@ -50,6 +50,9 @@ Windows 等远端 <──DTLS-SRTP──> mediasoup SFU <──DTLS-SRTP──> 
 - log-cpp：固定版本的统一日志适配，所有模块只依赖自有日志接口。
 - WebSocket/TLS：可替换传输端口；实现必须有证书链 + 主机名校验，不能禁验证。
 
+实现约束：[ADR 001](adr/001-isolate-media-tls.md) 将媒体 SDK/BoringSSL 私有封装在独立动态库，
+与信令系统 OpenSSL 隔离，禁止两套实现同名函数混合解析；构建自动检查依赖与导出。
+
 依赖方向：`UI → Application → Domain`；`Infrastructure/Media → Ports + Domain`；
 Composition Root 负责注入。Domain 不依赖 Qt、JSON、MPP、WebRTC、日志库或网络。
 原音频原型仅作行为与测试参考，不把旧的集中式 Core 直接定义成生产架构。

@@ -2,6 +2,14 @@
   "version": "2.0.0",
   "tasks": [
     {
+      "label": "RK product: host signaling tests",
+      "type": "shell",
+      "command": "bash",
+      "args": ["${workspaceFolder}/scripts/check-net.sh", "host-net"],
+      "group": "test",
+      "problemMatcher": ["$gcc"]
+    },
+    {
       "label": "RK product: host foundation",
       "type": "shell",
       "command": "bash",

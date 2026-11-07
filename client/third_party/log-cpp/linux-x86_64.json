@@ -1,0 +1,12 @@
+{
+  "abi": 1,
+  "version": "1.0.0",
+  "platform": "linux-x86_64",
+  "source_revision": "d8062b7a74c86028a3a927e76e590f986ce7267b",
+  "compiler": "GNU 9.4.0",
+  "vcpkg_baseline": "d4d39d71b3e6dd7536592c36ab2f7e84a8a64942",
+  "fmt": "9.1.0#1",
+  "spdlog": "1.11.0",
+  "library_sha256": "ebcfe3b43b553191d0b4face84559b1616da5c9961f91fe0e488e11ee158a3f6",
+  "header_sha256": "245830cea58780d6e57369519d5f0e082f7e6128fdb53f9ee531282f8fd0c6ab"
+}

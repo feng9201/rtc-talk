@@ -1,0 +1,4 @@
+RTC_LOG_1 {
+  global: rtc_log_*;
+  local: *;
+};

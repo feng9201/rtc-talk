@@ -1,0 +1,7 @@
+RTC_AUDIO_1 {
+  global:
+    _ZN10rtc_client5media17make_webrtc_audio*;
+    _ZTIN10rtc_client5media5ErrorE;
+    _ZTSN10rtc_client5media5ErrorE;
+  local: *;
+};

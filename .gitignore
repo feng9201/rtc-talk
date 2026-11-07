@@ -9,6 +9,7 @@ __pycache__/
 .env
 deploy/docker/.env
 build/
+/thirdPart/log-cpp/
 release/
 .qoder
 plan/diagnosis-sfu-publish-409.md

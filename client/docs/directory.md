@@ -16,6 +16,8 @@ client/
   apps/
     rtc-cli/                     # 无 UI 的真实信令/媒体诊断客户端
     rtc-qt/                      # 依赖装配、单实例、生命周期
+  adapters/log-cpp/               # 本项目自有 C ABI 封装及 SDK 构建入口
+  third_party/log-cpp/            # 独立头文件、x86_64/ARM64 .so、manifest、许可证
   include/rtc_client/             # 版本化 C ABI、配置和状态契约
   libs/
     domain/                      # 状态机、权限 gate、资源预算、typed IDs
@@ -45,9 +47,11 @@ client/
 
 1. Domain/video 基础设施可独立 host 编译，无 Qt、MPP、私有库依赖；先把并发和状态边界测清。
 2. RK 实现仅通过 ports 注入；Windows 原客户端保持只读参考，不作本轮构建依赖。
-3. vcpkg 固定 baseline、triplet、registry 与版本；log-cpp 固定 `1.0.0#4`，
-   custom registry baseline `8334037c2977ae143cfec7b710366dcd7b4d166d`，
-   built-in baseline `d4d39d71b3e6dd7536592c36ab2f7e84a8a64942`（沿用已验证组合）。
+3. vcpkg 固定 baseline/triplet；公共依赖 baseline 为
+   `d4d39d71b3e6dd7536592c36ab2f7e84a8a64942`（沿用已验证组合）。
+   私有 log-cpp 不再作为应用 manifest 的源码下载依赖；使用 ABI v1 二进制 SDK，
+   配置时验证 manifest/头文件/库 SHA256。SDK 由用户提供的固定提交源码构建，私有源码忽略、不提交。
+   SDK 重建使用独立公共 fmt/spdlog manifest，不改变普通客户端依赖安装。
 4. SDK 根只从环境/CMake 配置导入；机器绝对路径只在个人 preset，不硬编码源文件。
    WebRTC M146、GCC12.4、Qt5.15.11、BSP MPP/Wayland 的 ABI 矩阵写进构建 manifest。
 5. sbdc 仅作为源码参考。提取前记录 commit + 工作区差异/hash，锁定最小依赖闭包、许可证和改动；

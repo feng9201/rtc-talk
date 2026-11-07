@@ -1,0 +1,2 @@
+# Preserve bundled upstream license bytes, including their original whitespace.
+third_party/log-cpp/licenses/*.txt -text -whitespace

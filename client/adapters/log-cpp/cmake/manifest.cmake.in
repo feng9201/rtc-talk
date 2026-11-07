@@ -1,0 +1,5 @@
+set(sdk_lib "${CMAKE_INSTALL_PREFIX}/lib/@RTC_LOG_PLATFORM@/librtc_log_adapter.so.1.0.0")
+file(SHA256 "${sdk_lib}" sdk_sha256)
+file(SHA256 "${CMAKE_INSTALL_PREFIX}/include/rtc_log_adapter.h" header_sha256)
+file(WRITE "${CMAKE_INSTALL_PREFIX}/@RTC_LOG_PLATFORM@.json"
+  "{\n  \"abi\": 1,\n  \"version\": \"1.0.0\",\n  \"platform\": \"@RTC_LOG_PLATFORM@\",\n  \"source_revision\": \"@RTC_LOG_SOURCE_REVISION@\",\n  \"compiler\": \"@CMAKE_CXX_COMPILER_ID@ @CMAKE_CXX_COMPILER_VERSION@\",\n  \"vcpkg_baseline\": \"d4d39d71b3e6dd7536592c36ab2f7e84a8a64942\",\n  \"fmt\": \"9.1.0#1\",\n  \"spdlog\": \"1.11.0\",\n  \"library_sha256\": \"${sdk_sha256}\",\n  \"header_sha256\": \"${header_sha256}\"\n}\n")
